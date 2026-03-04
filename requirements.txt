@@ -1,0 +1,19 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Database
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10        # sync driver for Alembic
+greenlet
+
+# Migrations
+alembic==1.14.0
+
+# Settings & validation
+pydantic==2.10.3
+pydantic-settings==2.6.1
+
+# HTTP client (for Core AI integration)
+httpx==0.28.1

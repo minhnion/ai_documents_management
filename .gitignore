@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Env files (keep .env.example, ignore real .env)
+.env
+!.env.example
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Alembic (keep migrations folder, ignore generated env artefacts)
+alembic/versions/__pycache__/
+
+# Uploads / storage (configure per deployment)
+uploads/
+
+# Temporary files (IDE / tooling)
+tmpclaude*
