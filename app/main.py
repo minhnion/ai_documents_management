@@ -6,7 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
+from app.core.bootstrap import bootstrap_auth_data
 from app.core.config import settings
+from app.core.database import (
+    AsyncSessionLocal,
+    init_db_schema,
+    migrate_auth_schema_to_single_role,
+)
 
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
@@ -23,6 +29,19 @@ async def lifespan(app: FastAPI):
         settings.APP_NAME,
         settings.APP_VERSION,
     )
+    if settings.AUTO_CREATE_TABLES:
+        await init_db_schema()
+        await migrate_auth_schema_to_single_role()
+        logger.info("Database schema ready.")
+
+    async with AsyncSessionLocal() as session:
+        try:
+            await bootstrap_auth_data(session)
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
     yield
     # Shutdown
     logger.info("Application shutdown.")
@@ -35,7 +54,7 @@ def create_application() -> FastAPI:
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
-        lifespan=lifespan,   # 👈 thêm dòng này
+        lifespan=lifespan,
     )
 
     application.add_middleware(

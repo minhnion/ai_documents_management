@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -7,6 +8,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import settings
+from app.models import Base
 
 engine = create_async_engine(
     settings.database_url,
@@ -34,3 +36,57 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
         except Exception:
             await session.rollback()
             raise
+
+
+async def init_db_schema() -> None:
+    """Create database tables if they do not exist."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def migrate_auth_schema_to_single_role() -> None:
+    """
+    Normalize auth schema to single-table RBAC on `users.role`.
+
+    This keeps startup idempotent when code previously used roles/user_roles.
+    """
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS role VARCHAR(20)
+                NOT NULL DEFAULT 'viewer'
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = 'user_roles'
+                    )
+                    AND EXISTS (
+                        SELECT 1
+                        FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = 'roles'
+                    ) THEN
+                        UPDATE users AS u
+                        SET role = r.name
+                        FROM user_roles AS ur
+                        JOIN roles AS r ON r.role_id = ur.role_id
+                        WHERE u.user_id = ur.user_id
+                          AND r.name IN ('admin', 'editor', 'viewer');
+                    END IF;
+                END $$;
+                """
+            )
+        )
+        await conn.execute(text("DROP TABLE IF EXISTS user_roles"))
+        await conn.execute(text("DROP TABLE IF EXISTS roles"))

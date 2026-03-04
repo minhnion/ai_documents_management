@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     CORE_AI_BASE_URL: str = ""
     CORE_AI_API_KEY: str = ""
 
+    # Auth / Security
+    JWT_SECRET_KEY: str = "change-this-secret"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    AUTO_CREATE_TABLES: bool = True
+    SEED_AUTH_DATA: bool = True
+    DEFAULT_ADMIN_EMAIL: str = "admin@example.com"
+    DEFAULT_ADMIN_PASSWORD: str = "ChangeMe123!"
+    DEFAULT_ADMIN_FULL_NAME: str = "System Admin"
+
     @property
     def database_url(self) -> str:
         return (
