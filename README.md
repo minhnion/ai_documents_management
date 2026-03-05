@@ -213,6 +213,7 @@ Ví dụ login:
 | `POST` | `/api/v1/guidelines` | `editor/admin` |
 | `POST` | `/api/v1/guidelines/{guideline_id}/versions` | `editor/admin` |
 | `GET` | `/api/v1/versions/{version_id}/workspace` | `viewer/editor/admin` |
+| `GET` | `/api/v1/documents/{document_id}/file` | `viewer/editor/admin` |
 
 `POST /api/v1/guidelines` dùng `multipart/form-data` với các field:
 
@@ -225,6 +226,12 @@ Ví dụ login:
 - `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
 - `file` (optional, nếu gửi thì phải là PDF)
 - Rule status: nếu version mới có `status` thuộc nhóm active (`active`, `dang_hieu_luc`, `đang hiệu lực`) thì các version active cũ của guideline đó sẽ tự chuyển sang `inactive`
+
+`GET /api/v1/documents/{document_id}/file`:
+
+- Trả stream file theo `storage_uri` trong DB
+- Hỗ trợ header `Range` (ví dụ `Range: bytes=0-1023`) để PDF viewer tải mượt
+- Chỉ cho role `viewer/editor/admin`
 
 ## Database Schema (tóm tắt)
 
