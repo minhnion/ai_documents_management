@@ -1,0 +1,22 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: guideline-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      DEBUG: "false"
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      LOCAL_STORAGE_ROOT: /app/uploads
+      DB_HOST: ${DB_HOST_DOCKER:-host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./uploads:/app/uploads

@@ -120,6 +120,43 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 APP_ENV=production DEBUG=false uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
+## Chạy bằng Docker (để FE gọi trực tiếp)
+
+### 1) Chuẩn bị biến môi trường
+
+- Dùng `.env` hiện tại.
+- Nếu BE chạy trong docker và DB chạy trên host máy:
+  - giữ `DB_HOST=localhost` cho local python run
+  - thêm/đổi `DB_HOST_DOCKER=host.docker.internal`
+- Nếu DB ở server khác/container khác thì set `DB_HOST_DOCKER=<db-host-thực-tế>`.
+
+### 2) Build và chạy
+
+```bash
+docker compose build
+docker compose up -d
+docker compose ps
+docker compose logs -f backend
+```
+
+### 3) URL FE dùng
+
+- Swagger: `http://<server-ip>:8000/docs`
+- API base: `http://<server-ip>:8000/api/v1`
+
+Ví dụ health check từ máy FE:
+
+```bash
+curl http://<server-ip>:8000/api/v1/health
+```
+
+### 4) Cập nhật bản BE mới
+
+```bash
+docker compose build --no-cache backend
+docker compose up -d backend
+```
+
 ## API Docs
 
 Sau khi server chạy, truy cập:
