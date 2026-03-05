@@ -14,6 +14,11 @@ alembic==1.14.0
 # Settings & validation
 pydantic==2.10.3
 pydantic-settings==2.6.1
+email-validator==2.2.0
 
 # HTTP client (for Core AI integration)
 httpx==0.28.1
+
+# Auth / security
+python-jose[cryptography]==3.3.0
+passlib==1.7.4

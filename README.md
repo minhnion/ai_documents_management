@@ -11,6 +11,7 @@ FastAPI backend cho hệ thống quản lý hướng dẫn y tế (Guideline Man
 | Database driver | asyncpg (async), psycopg2 (Alembic) |
 | Migrations | Alembic |
 | Validation | Pydantic v2 |
+| AuthN/AuthZ | JWT Bearer + RBAC (roles: admin/editor/viewer) |
 | Server | Uvicorn |
 
 ## Cấu trúc project
@@ -22,13 +23,16 @@ chatbot-document/
 │   ├── core/
 │   │   ├── config.py               # Settings (pydantic-settings, đọc từ .env)
 │   │   ├── database.py             # Async SQLAlchemy engine & session
+│   │   ├── security.py             # Password hash + JWT helpers
+│   │   ├── bootstrap.py            # Seed default admin khi startup
 │   │   └── exceptions.py           # Custom HTTP exceptions
 │   ├── api/
 │   │   ├── deps.py                 # FastAPI dependencies (DB session, ...)
 │   │   └── v1/
 │   │       ├── router.py           # Tổng hợp tất cả routers của v1
 │   │       └── endpoints/
-│   │           └── health.py       # GET /api/v1/health
+│   │           ├── health.py       # GET /api/v1/health
+│   │           └── auth.py         # Login, me, user/role management
 │   ├── models/                     # SQLAlchemy ORM models (mapping DB schema)
 │   │   ├── base.py
 │   │   ├── guideline.py
@@ -36,10 +40,14 @@ chatbot-document/
 │   │   ├── document.py
 │   │   ├── section.py
 │   │   ├── chunk.py
-│   │   └── chunk_embedding.py
-│   └── schemas/                    # Pydantic schemas (request/response)
+│   │   ├── chunk_embedding.py
+│   │   └── user.py
+│   ├── schemas/                    # Pydantic schemas (request/response)
 │       ├── base.py
-│       └── health.py
+│       ├── health.py
+│       └── auth.py
+│   └── services/
+│       └── auth_service.py         # Business logic cho auth và phân quyền
 ├── .env                            # Biến môi trường (không commit)
 ├── .env.example                    # Mẫu biến môi trường
 ├── .gitignore
@@ -143,6 +151,65 @@ Response mẫu:
 
 Nếu DB không kết nối được, `status` sẽ là `"degraded"` và `database` sẽ là `"disconnected"`.
 
+## Auth & RBAC
+
+### Mặc định khi startup
+
+- App tự `create table` nếu `AUTO_CREATE_TABLES=true`.
+- Role được lưu trực tiếp trong `users.role` với 3 giá trị: `admin`, `editor`, `viewer`.
+- Nếu `SEED_AUTH_DATA=true`, app sẽ đảm bảo có tài khoản admin mặc định từ `.env`.
+
+Biến môi trường liên quan:
+
+```env
+JWT_SECRET_KEY="change-this-secret"
+JWT_ALGORITHM="HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES=60
+AUTO_CREATE_TABLES=true
+SEED_AUTH_DATA=true
+DEFAULT_ADMIN_EMAIL="admin@example.com"
+DEFAULT_ADMIN_PASSWORD="ChangeMe123!"
+DEFAULT_ADMIN_FULL_NAME="System Admin"
+```
+
+### Luồng sử dụng nhanh
+
+1. Đăng nhập bằng tài khoản admin mặc định ở `.env`.
+2. Lấy `access_token` từ `POST /api/v1/auth/login`.
+3. Truyền token vào header: `Authorization: Bearer <token>`.
+4. Quản lý user/role qua các endpoint admin.
+
+Swagger `Authorize`:
+- Gọi `POST /api/v1/auth/login` để lấy `access_token`
+- Bấm `Authorize` và nhập token theo dạng: `Bearer <access_token>`
+
+### Auth Endpoints
+
+| Method | Path | Quyền |
+|---|---|---|
+| `POST` | `/api/v1/auth/login` | Public |
+| `GET` | `/api/v1/auth/me` | Đã đăng nhập |
+| `GET` | `/api/v1/auth/roles` | `admin` |
+| `GET` | `/api/v1/auth/users` | `admin` |
+| `POST` | `/api/v1/auth/users` | `admin` |
+| `PATCH` | `/api/v1/auth/users/{user_id}/role` | `admin` |
+
+Ví dụ login:
+
+```json
+{
+  "email": "admin@example.com",
+  "password": "ChangeMe123!"
+}
+```
+
+### Guideline Endpoints (Step 1)
+
+| Method | Path | Quyền |
+|---|---|---|
+| `GET` | `/api/v1/guidelines` | `viewer/editor/admin` |
+| `GET` | `/api/v1/guidelines/{guideline_id}/versions` | `viewer/editor/admin` |
+
 ## Database Schema (tóm tắt)
 
 ```
@@ -152,4 +219,5 @@ documents           — file PDF gốc gắn với version (storage_uri, ...)
 sections            — cây mục lục TOC (heading, level, parent_id, ...)
 chunks              — đoạn văn bản đã chia nhỏ cho AI retrieval
 chunk_embeddings    — vector embedding cho mỗi chunk
+users               — tài khoản đăng nhập CMS + cột role (admin/editor/viewer)
 ```

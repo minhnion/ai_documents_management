@@ -49,3 +49,6 @@ uploads/
 
 # Temporary files (IDE / tooling)
 tmpclaude*
+
+# Tests
+tests/
