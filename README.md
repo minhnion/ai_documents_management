@@ -203,6 +203,13 @@ Ví dụ login:
 }
 ```
 
+### Guideline Endpoints (Step 1)
+
+| Method | Path | Quyền |
+|---|---|---|
+| `GET` | `/api/v1/guidelines` | `viewer/editor/admin` |
+| `GET` | `/api/v1/guidelines/{guideline_id}/versions` | `viewer/editor/admin` |
+
 ## Database Schema (tóm tắt)
 
 ```
