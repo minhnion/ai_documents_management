@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     DB_NAME: str = "chatbot_healthcare"
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
+    LOCAL_STORAGE_ROOT: str = "uploads"
 
     # API
     API_V1_PREFIX: str = "/api/v1"

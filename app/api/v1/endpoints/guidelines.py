@@ -1,15 +1,18 @@
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
-from app.api.deps import ActiveUser, DBSession
+from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
+    CreateGuidelineResponse,
     GuidelineListItem,
     GuidelineListResponse,
     GuidelineVersionItem,
     GuidelineVersionListResponse,
     GuidelineVersionSummary,
 )
+from app.services.guideline_command_service import GuidelineCommandService
 from app.services.guideline_query_service import GuidelineQueryService
 
 router = APIRouter(prefix="/guidelines", tags=["Guidelines"])
@@ -53,6 +56,41 @@ async def list_guidelines(
         total=total,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.post("", response_model=CreateGuidelineResponse, summary="Create Guideline")
+async def create_guideline(
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+    title: Annotated[str, Form(min_length=1, max_length=1000)],
+    file: Annotated[UploadFile, File()],
+    publisher: Annotated[str | None, Form(max_length=500)] = None,
+    chuyen_khoa: Annotated[str | None, Form(max_length=255)] = None,
+    version_label: Annotated[str | None, Form(max_length=50)] = None,
+    release_date: Annotated[date | None, Form()] = None,
+    effective_from: Annotated[date | None, Form()] = None,
+    effective_to: Annotated[date | None, Form()] = None,
+    status: Annotated[str | None, Form(max_length=50)] = "active",
+) -> CreateGuidelineResponse:
+    service = GuidelineCommandService(db)
+    guideline, guideline_version, document = await service.create_guideline(
+        title=title,
+        publisher=publisher,
+        chuyen_khoa=chuyen_khoa,
+        version_label=version_label,
+        release_date=release_date,
+        effective_from=effective_from,
+        effective_to=effective_to,
+        status=status,
+        upload_file=file,
+        doc_type="pdf",
+    )
+    return CreateGuidelineResponse(
+        guideline_id=guideline.guideline_id,
+        version_id=guideline_version.version_id,
+        document_id=document.document_id,
+        storage_uri=document.storage_uri,
     )
 
 

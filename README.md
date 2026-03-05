@@ -170,6 +170,7 @@ SEED_AUTH_DATA=true
 DEFAULT_ADMIN_EMAIL="admin@example.com"
 DEFAULT_ADMIN_PASSWORD="ChangeMe123!"
 DEFAULT_ADMIN_FULL_NAME="System Admin"
+LOCAL_STORAGE_ROOT=uploads
 ```
 
 ### Luồng sử dụng nhanh
@@ -203,12 +204,20 @@ Ví dụ login:
 }
 ```
 
-### Guideline Endpoints (Step 1)
+### Guideline Endpoints (Current)
 
 | Method | Path | Quyền |
 |---|---|---|
 | `GET` | `/api/v1/guidelines` | `viewer/editor/admin` |
 | `GET` | `/api/v1/guidelines/{guideline_id}/versions` | `viewer/editor/admin` |
+| `POST` | `/api/v1/guidelines` | `editor/admin` |
+| `GET` | `/api/v1/versions/{version_id}/workspace` | `viewer/editor/admin` |
+
+`POST /api/v1/guidelines` dùng `multipart/form-data` với các field:
+
+- `title` (required)
+- `file` (required, PDF)
+- `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
 
 ## Database Schema (tóm tắt)
 
