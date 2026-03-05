@@ -56,6 +56,15 @@ class CreateGuidelineResponse(BaseModel):
     storage_uri: str | None = None
 
 
+class CreateGuidelineVersionResponse(BaseModel):
+    guideline_id: int
+    version_id: int
+    status: str | None = None
+    previous_active_versions_updated: int = 0
+    document_id: int | None = None
+    storage_uri: str | None = None
+
+
 class WorkspaceGuidelineInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

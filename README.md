@@ -211,6 +211,7 @@ Ví dụ login:
 | `GET` | `/api/v1/guidelines` | `viewer/editor/admin` |
 | `GET` | `/api/v1/guidelines/{guideline_id}/versions` | `viewer/editor/admin` |
 | `POST` | `/api/v1/guidelines` | `editor/admin` |
+| `POST` | `/api/v1/guidelines/{guideline_id}/versions` | `editor/admin` |
 | `GET` | `/api/v1/versions/{version_id}/workspace` | `viewer/editor/admin` |
 
 `POST /api/v1/guidelines` dùng `multipart/form-data` với các field:
@@ -218,6 +219,12 @@ Ví dụ login:
 - `title` (required)
 - `file` (required, PDF)
 - `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
+
+`POST /api/v1/guidelines/{guideline_id}/versions` dùng `multipart/form-data` với các field:
+
+- `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
+- `file` (optional, nếu gửi thì phải là PDF)
+- Rule status: nếu version mới có `status` thuộc nhóm active (`active`, `dang_hieu_luc`, `đang hiệu lực`) thì các version active cũ của guideline đó sẽ tự chuyển sang `inactive`
 
 ## Database Schema (tóm tắt)
 

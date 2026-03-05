@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
     CreateGuidelineResponse,
+    CreateGuidelineVersionResponse,
     GuidelineListItem,
     GuidelineListResponse,
     GuidelineVersionItem,
@@ -91,6 +92,45 @@ async def create_guideline(
         version_id=guideline_version.version_id,
         document_id=document.document_id,
         storage_uri=document.storage_uri,
+    )
+
+
+@router.post(
+    "/{guideline_id}/versions",
+    response_model=CreateGuidelineVersionResponse,
+    summary="Create Guideline Version",
+)
+async def create_guideline_version(
+    guideline_id: int,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+    version_label: Annotated[str | None, Form(max_length=50)] = None,
+    release_date: Annotated[date | None, Form()] = None,
+    effective_from: Annotated[date | None, Form()] = None,
+    effective_to: Annotated[date | None, Form()] = None,
+    status: Annotated[str | None, Form(max_length=50)] = "active",
+    file: Annotated[UploadFile | None, File()] = None,
+) -> CreateGuidelineVersionResponse:
+    service = GuidelineCommandService(db)
+    _, guideline_version, document, previous_active_versions_updated = (
+        await service.create_guideline_version(
+            guideline_id=guideline_id,
+            version_label=version_label,
+            release_date=release_date,
+            effective_from=effective_from,
+            effective_to=effective_to,
+            status=status,
+            upload_file=file,
+            doc_type="pdf",
+        )
+    )
+    return CreateGuidelineVersionResponse(
+        guideline_id=guideline_id,
+        version_id=guideline_version.version_id,
+        status=guideline_version.status,
+        previous_active_versions_updated=previous_active_versions_updated,
+        document_id=document.document_id if document else None,
+        storage_uri=document.storage_uri if document else None,
     )
 
 
