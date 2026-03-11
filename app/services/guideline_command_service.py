@@ -1,4 +1,5 @@
 from datetime import date
+import logging
 from pathlib import Path
 
 from sqlalchemy import func, select, update
@@ -7,6 +8,7 @@ from starlette.datastructures import UploadFile
 
 from app.core.config import settings
 from app.core.exceptions import (
+    AppException,
     BadRequestException,
     NotFoundException,
     UnprocessableEntityException,
@@ -14,11 +16,17 @@ from app.core.exceptions import (
 from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
+from app.services.document_ingestion_pipeline_service import (
+    DocumentIngestionPipelineService,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class GuidelineCommandService:
     ACTIVE_STATUSES: tuple[str, ...] = ("active", "dang_hieu_luc", "đang hiệu lực")
     INACTIVE_STATUS: str = "inactive"
+    PROCESSING_STATUS: str = "processing"
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -38,7 +46,7 @@ class GuidelineCommandService:
     ) -> tuple[Guideline, GuidelineVersion, Document]:
         self._validate_create_payload(title=title, upload_file=upload_file)
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
-        normalized_status = self._normalize_status(status)
+        target_status = self._normalize_status(status)
 
         guideline = Guideline(
             title=title.strip(),
@@ -48,13 +56,17 @@ class GuidelineCommandService:
         self.db.add(guideline)
         await self.db.flush()
 
+        resolved_version_label = await self._resolve_version_label(
+            guideline_id=guideline.guideline_id,
+            version_label=version_label,
+        )
         guideline_version = GuidelineVersion(
             guideline_id=guideline.guideline_id,
-            version_label=version_label.strip() if version_label else None,
+            version_label=resolved_version_label,
             release_date=release_date,
             effective_from=effective_from,
             effective_to=effective_to,
-            status=normalized_status,
+            status=self.PROCESSING_STATUS,
         )
         self.db.add(guideline_version)
         await self.db.flush()
@@ -80,8 +92,27 @@ class GuidelineCommandService:
             )
             self.db.add(document)
             await self.db.flush()
+
+            await self._run_ingestion_pipeline(
+                guideline_id=guideline.guideline_id,
+                guideline_version=guideline_version,
+                document=document,
+            )
+            guideline_version.status = target_status
+            await self.db.flush()
+        except AppException:
+            self._cleanup_file(storage_path)
+            logger.exception(
+                "Create guideline failed during pipeline | title=%s",
+                title,
+            )
+            raise
         except Exception as exc:
             self._cleanup_file(storage_path)
+            logger.exception(
+                "Create guideline failed with unexpected error | title=%s",
+                title,
+            )
             raise UnprocessableEntityException(
                 "Cannot persist uploaded guideline."
             ) from exc
@@ -96,57 +127,81 @@ class GuidelineCommandService:
         effective_from: date | None,
         effective_to: date | None,
         status: str | None,
-        upload_file: UploadFile | None = None,
+        upload_file: UploadFile,
         doc_type: str = "pdf",
-    ) -> tuple[Guideline, GuidelineVersion, Document | None, int]:
+    ) -> tuple[Guideline, GuidelineVersion, Document, int]:
+        self._validate_pdf_upload(upload_file)
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
-        normalized_status = self._normalize_status(status)
+        target_status = self._normalize_status(status)
 
         guideline = await self._get_guideline_for_update(guideline_id)
-
-        previous_active_versions_updated = 0
-        if self._is_active_status(normalized_status):
-            previous_active_versions_updated = await self._deactivate_active_versions(
-                guideline_id=guideline_id
-            )
+        resolved_version_label = await self._resolve_version_label(
+            guideline_id=guideline_id,
+            version_label=version_label,
+        )
 
         guideline_version = GuidelineVersion(
             guideline_id=guideline_id,
-            version_label=version_label.strip() if version_label else None,
+            version_label=resolved_version_label,
             release_date=release_date,
             effective_from=effective_from,
             effective_to=effective_to,
-            status=normalized_status,
+            status=self.PROCESSING_STATUS,
         )
         self.db.add(guideline_version)
         await self.db.flush()
 
-        document: Document | None = None
+        document: Document
         storage_path: Path | None = None
         try:
-            if self._has_upload_file(upload_file):
-                self._validate_pdf_upload(upload_file)
-                storage_path = self._build_storage_path(
-                    guideline_id=guideline.guideline_id,
-                    version_id=guideline_version.version_id,
-                    original_filename=upload_file.filename or "source.pdf",
+            storage_path = self._build_storage_path(
+                guideline_id=guideline.guideline_id,
+                version_id=guideline_version.version_id,
+                original_filename=upload_file.filename or "source.pdf",
+            )
+            await self._write_upload_file(
+                upload_file=upload_file,
+                destination=storage_path,
+            )
+            document = Document(
+                version_id=guideline_version.version_id,
+                doc_type=doc_type,
+                storage_uri=storage_path.as_posix(),
+                page_count=None,
+                image_uri=None,
+            )
+            self.db.add(document)
+            await self.db.flush()
+
+            await self._run_ingestion_pipeline(
+                guideline_id=guideline.guideline_id,
+                guideline_version=guideline_version,
+                document=document,
+            )
+
+            previous_active_versions_updated = 0
+            if self._is_active_status(target_status):
+                previous_active_versions_updated = await self._deactivate_active_versions(
+                    guideline_id=guideline_id,
+                    exclude_version_id=guideline_version.version_id,
                 )
-                await self._write_upload_file(
-                    upload_file=upload_file,
-                    destination=storage_path,
-                )
-                document = Document(
-                    version_id=guideline_version.version_id,
-                    doc_type=doc_type,
-                    storage_uri=storage_path.as_posix(),
-                    page_count=None,
-                    image_uri=None,
-                )
-                self.db.add(document)
-                await self.db.flush()
+            guideline_version.status = target_status
+            await self.db.flush()
+        except AppException:
+            if storage_path is not None:
+                self._cleanup_file(storage_path)
+            logger.exception(
+                "Create guideline version failed during pipeline | guideline_id=%s",
+                guideline_id,
+            )
+            raise
         except Exception as exc:
             if storage_path is not None:
                 self._cleanup_file(storage_path)
+            logger.exception(
+                "Create guideline version failed with unexpected error | guideline_id=%s",
+                guideline_id,
+            )
             raise UnprocessableEntityException(
                 "Cannot persist guideline version."
             ) from exc
@@ -195,8 +250,12 @@ class GuidelineCommandService:
             raise NotFoundException("Guideline", guideline_id)
         return guideline
 
-    async def _deactivate_active_versions(self, guideline_id: int) -> int:
-        result = await self.db.execute(
+    async def _deactivate_active_versions(
+        self,
+        guideline_id: int,
+        exclude_version_id: int | None = None,
+    ) -> int:
+        stmt = (
             update(GuidelineVersion)
             .where(GuidelineVersion.guideline_id == guideline_id)
             .where(
@@ -206,10 +265,41 @@ class GuidelineCommandService:
             )
             .values(status=self.INACTIVE_STATUS)
         )
+        if exclude_version_id is not None:
+            stmt = stmt.where(GuidelineVersion.version_id != exclude_version_id)
+        result = await self.db.execute(stmt)
         return int(result.rowcount or 0)
 
-    def _has_upload_file(self, upload_file: UploadFile | None) -> bool:
-        return upload_file is not None and bool((upload_file.filename or "").strip())
+    async def _resolve_version_label(
+        self,
+        guideline_id: int,
+        version_label: str | None,
+    ) -> str:
+        if version_label and version_label.strip():
+            return version_label.strip()
+        version_count = int(
+            (
+                await self.db.execute(
+                    select(func.count())
+                    .select_from(GuidelineVersion)
+                    .where(GuidelineVersion.guideline_id == guideline_id)
+                )
+            ).scalar_one()
+        )
+        return str(version_count + 1)
+
+    async def _run_ingestion_pipeline(
+        self,
+        guideline_id: int,
+        guideline_version: GuidelineVersion,
+        document: Document,
+    ) -> None:
+        pipeline_service = DocumentIngestionPipelineService(self.db)
+        await pipeline_service.process_document(
+            guideline_id=guideline_id,
+            version_id=guideline_version.version_id,
+            document=document,
+        )
 
     def _build_storage_path(
         self,

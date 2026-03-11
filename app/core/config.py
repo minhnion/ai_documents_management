@@ -28,12 +28,20 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     LOCAL_STORAGE_ROOT: str = "uploads"
+    SCORE_THRESHOLD: float = 0.65
 
     # API
     API_V1_PREFIX: str = "/api/v1"
     ALLOWED_ORIGINS: list[str] = ["*"]
 
-    # Core AI (placeholder – configure later)
+    # External AI services
+    LANDINGAI_API_KEY: str = ""
+    LANDINGAI_API_URL: str = "https://api.va.landing.ai/v1/ade/parse"
+    LANDINGAI_MODEL_NAME: str = ""
+    LANDINGAI_USE_SDK: bool = True
+    OPENAI_API_KEY: str = ""
+    OPENAI_API_URL: str = "https://api.openai.com/v1"
+    OPENAI_MODEL_NAME: str = ""
     CORE_AI_BASE_URL: str = ""
     CORE_AI_API_KEY: str = ""
 

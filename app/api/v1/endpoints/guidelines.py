@@ -104,12 +104,12 @@ async def create_guideline_version(
     guideline_id: int,
     db: DBSession,
     _: Annotated[object, Depends(require_roles("editor", "admin"))],
+    file: Annotated[UploadFile, File()],
     version_label: Annotated[str | None, Form(max_length=50)] = None,
     release_date: Annotated[date | None, Form()] = None,
     effective_from: Annotated[date | None, Form()] = None,
     effective_to: Annotated[date | None, Form()] = None,
     status: Annotated[str | None, Form(max_length=50)] = "active",
-    file: Annotated[UploadFile | None, File()] = None,
 ) -> CreateGuidelineVersionResponse:
     service = GuidelineCommandService(db)
     _, guideline_version, document, previous_active_versions_updated = (

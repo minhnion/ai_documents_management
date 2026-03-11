@@ -208,6 +208,13 @@ DEFAULT_ADMIN_EMAIL="admin@example.com"
 DEFAULT_ADMIN_PASSWORD="ChangeMe123!"
 DEFAULT_ADMIN_FULL_NAME="System Admin"
 LOCAL_STORAGE_ROOT=uploads
+SCORE_THRESHOLD=0.65
+LANDINGAI_API_KEY=
+LANDINGAI_API_URL="https://api.va.landing.ai/v1/ade/parse"
+LANDINGAI_MODEL_NAME="dpt-2-latest"
+OPENAI_API_KEY=
+OPENAI_API_URL="https://api.openai.com/v1"
+OPENAI_MODEL_NAME="gpt-4.1"
 ```
 
 ### Luồng sử dụng nhanh
@@ -257,18 +264,59 @@ Ví dụ login:
 - `title` (required)
 - `file` (required, PDF)
 - `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
+- API sẽ tự chạy pipeline nội bộ: OCR (LandingAI) -> TOC (OpenAI) -> chunking -> clean markdown -> ghi `sections`/`chunks`
 
 `POST /api/v1/guidelines/{guideline_id}/versions` dùng `multipart/form-data` với các field:
 
 - `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
-- `file` (optional, nếu gửi thì phải là PDF)
+- `file` (required, PDF)
 - Rule status: nếu version mới có `status` thuộc nhóm active (`active`, `dang_hieu_luc`, `đang hiệu lực`) thì các version active cũ của guideline đó sẽ tự chuyển sang `inactive`
+- API sẽ tự chạy pipeline nội bộ giống luồng tạo guideline mới
 
 `GET /api/v1/documents/{document_id}/file`:
 
 - Trả stream file theo `storage_uri` trong DB
 - Hỗ trợ header `Range` (ví dụ `Range: bytes=0-1023`) để PDF viewer tải mượt
 - Chỉ cho role `viewer/editor/admin`
+
+`GET /api/v1/versions/{version_id}/workspace`:
+
+- TOC node trả thêm `page_start`, `page_end`, `score`, `is_suspect` để FE điều hướng + highlight nghi ngờ
+- Trả thêm `suspect_score_threshold` và `suspect_section_count` ở cấp response
+- Có thể override ngưỡng qua query param `suspect_threshold` (0.0 < x < 1.0)
+
+### Pipeline Test (Upload/OCR/TOC)
+
+File test mới: `tests/test_upload_pipeline_flow.py`
+
+- Test preflight config (`LANDINGAI_API_KEY`, `OPENAI_API_KEY`, model name, threshold)
+- Test orchestration luồng pipeline bằng file mẫu trong `examples/`
+- Có test live tùy chọn với OCR/TOC thật (bật bằng env `RUN_LIVE_PIPELINE_TEST=1`)
+- Có test live kiểm tra API key + model dùng được thật (bật bằng env `RUN_LIVE_KEY_CHECK=1`)
+
+Chạy test:
+
+```bash
+DEBUG=true python -m unittest tests.test_upload_pipeline_flow -v
+```
+
+Chạy live test OCR/TOC thật:
+
+```bash
+DEBUG=true RUN_LIVE_PIPELINE_TEST=1 python -m unittest tests.test_upload_pipeline_flow.TestUploadPipelineFlow.test_live_pipeline_with_example_pdf_optional -v
+```
+
+Chạy check key/model/connectivity thật:
+
+```bash
+DEBUG=true RUN_LIVE_KEY_CHECK=1 python -m unittest tests.test_upload_pipeline_flow.TestUploadPipelineFlow.test_live_key_connectivity_optional -v
+```
+
+Chạy script chẩn đoán chi tiết (khuyến nghị để gửi log):
+
+```bash
+DEBUG=true PYTHONPATH=. python -m tests.check_pipeline_services
+```
 
 ## Database Schema (tóm tắt)
 

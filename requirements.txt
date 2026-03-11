@@ -18,6 +18,8 @@ email-validator==2.2.0
 
 # HTTP client (for Core AI integration)
 httpx==0.28.1
+openai>=1.61.0
+landingai-ade
 
 # Auth / security
 python-jose[cryptography]==3.3.0

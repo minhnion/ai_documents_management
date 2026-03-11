@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import (
     AsyncSessionLocal,
     init_db_schema,
+    migrate_sections_quality_schema,
     migrate_auth_schema_to_single_role,
 )
 
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     if settings.AUTO_CREATE_TABLES:
         await init_db_schema()
         await migrate_auth_schema_to_single_role()
+        await migrate_sections_quality_schema()
         logger.info("Database schema ready.")
 
     async with AsyncSessionLocal() as session:
