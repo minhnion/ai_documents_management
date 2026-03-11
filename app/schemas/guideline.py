@@ -107,6 +107,10 @@ class WorkspaceSectionNode(BaseModel):
     order_index: int | None = None
     start_char: int | None = None
     end_char: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    score: float | None = None
+    is_suspect: bool = False
     content: str | None = None
     children: list["WorkspaceSectionNode"] = Field(default_factory=list)
 
@@ -120,4 +124,6 @@ class VersionWorkspaceResponse(BaseModel):
     documents: list[WorkspaceDocumentInfo]
     toc: list[WorkspaceSectionNode]
     section_count: int
+    suspect_score_threshold: float
+    suspect_section_count: int
     full_text: str | None = None

@@ -90,3 +90,41 @@ async def migrate_auth_schema_to_single_role() -> None:
         )
         await conn.execute(text("DROP TABLE IF EXISTS user_roles"))
         await conn.execute(text("DROP TABLE IF EXISTS roles"))
+
+
+async def migrate_sections_quality_schema() -> None:
+    """Add minimal quality/page columns for section-level FE highlighting."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS page_start INTEGER
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS page_end INTEGER
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS match_score DOUBLE PRECISION
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS is_suspect BOOLEAN
+                NOT NULL DEFAULT FALSE
+                """
+            )
+        )

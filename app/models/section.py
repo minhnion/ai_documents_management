@@ -1,4 +1,13 @@
-from sqlalchemy import BigInteger, ForeignKey, Identity, Integer, SmallInteger, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Float,
+    ForeignKey,
+    Identity,
+    Integer,
+    SmallInteger,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -24,6 +33,12 @@ class Section(Base):
     )
     level: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     order_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    is_suspect: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Relationships
