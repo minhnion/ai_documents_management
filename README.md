@@ -287,6 +287,16 @@ Ví dụ login:
 
 ### Pipeline Test (Upload/OCR/TOC)
 
+Pipeline implementation (refactored):
+
+- Orchestrator: `app/services/document_ingestion_pipeline_service.py`
+- OCR adapter: `app/services/pipeline/ocr_service.py`
+- Markdown preprocess: `app/services/pipeline/markdown_service.py`
+- TOC builder: `app/services/pipeline/toc_service.py`
+- Fuzzy chunking: `app/services/pipeline/chunking_service.py`
+- DB/artifact persistence: `app/services/pipeline/persistence_service.py`
+- Prompt templates: `app/services/pipeline/prompts.py`
+
 File test mới: `tests/test_upload_pipeline_flow.py`
 
 - Test preflight config (`LANDINGAI_API_KEY`, `OPENAI_API_KEY`, model name, threshold)
