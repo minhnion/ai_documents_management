@@ -12,12 +12,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <BookOpen size={18} />
           <span>Quản lý tài liệu</span>
         </Link>
+        
+        <div className="navbar-spacer" />
         {user?.role === 'admin' && (
           <Link to="/admin/users" className="btn btn-ghost btn-sm">
             <Users size={15} /> Người dùng
           </Link>
         )}
-        <div className="navbar-spacer" />
         {isAuthenticated && (
           <div className="navbar-user">
             <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>

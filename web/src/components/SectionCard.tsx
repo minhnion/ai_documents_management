@@ -55,8 +55,8 @@ export default function SectionCard({
       className={`section-card${isActive ? ' section-card--active' : ''}${isEditing ? ' section-card--editing' : ''}`}
     >
       {/* Header */}
-      <div className="section-card-header" style={{ paddingLeft: indent }}>
-        <span className={`section-card-heading section-heading-level-${node.level ?? 1}`}>
+      <div className="section-card-header">
+        <span className={`section-card-heading section-heading-level-${node.level ?? 1}`} style={{ paddingLeft: indent }}>
           {headingLabel}
         </span>
         <div className="section-card-header-actions">
