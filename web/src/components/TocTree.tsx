@@ -1,3 +1,4 @@
+import { AlertTriangle } from 'lucide-react'
 import { type WorkspaceSectionNode } from '../lib/types'
 
 interface TocTreeProps {
@@ -13,12 +14,13 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
       {nodes.map((node) => (
         <div key={node.section_id}>
           <button
-            className={`toc-node${node.section_id === activeId ? ' active' : ''}`}
+            className={`toc-node${node.section_id === activeId ? ' active' : ''}${node.is_suspect ? ' toc-node-suspect' : ''}`}
             style={{ paddingLeft: `${10 + depth * 14}px` }}
             onClick={() => onSelect(node)}
             title={node.heading ?? ''}
           >
             <span className="toc-node-dot" />
+            {node.is_suspect && <AlertTriangle size={12} style={{ color: 'var(--warning)', flexShrink: 0 }} />}
             <span className="truncate" style={{ fontSize: depth === 0 ? '13px' : '12px' }}>
               {node.heading ?? `Section ${node.section_id}`}
             </span>

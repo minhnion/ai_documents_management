@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, AlertTriangle } from 'lucide-react'
 import { api } from '../lib/api'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
@@ -88,6 +88,11 @@ export default function ViewPage() {
           </span>
           {workspace.version.status === 'active' && (
             <span className="badge badge-active ml-2">Đang hiệu lực</span>
+          )}
+          {(workspace.suspect_section_count ?? 0) > 0 && (
+            <span className="badge badge-draft" title={`Ngưỡng: ${workspace.suspect_score_threshold}`}>
+              <AlertTriangle size={11} /> {workspace.suspect_section_count} mục cần kiểm tra
+            </span>
           )}
         </div>
         <TextContent

@@ -637,6 +637,15 @@ a:hover {
   font-weight: 500;
 }
 
+.toc-node-suspect {
+  color: var(--warning);
+}
+
+.toc-node-suspect:hover {
+  background: rgba(154, 103, 0, 0.08);
+  color: var(--warning);
+}
+
 .toc-node-dot {
   width: 6px;
   height: 6px;
