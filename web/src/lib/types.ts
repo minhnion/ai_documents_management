@@ -5,6 +5,8 @@ export interface UserResponse {
   full_name: string | null
   role: string
   is_active: boolean
+  created_at: string
+  updated_at: string
 }
 
 export interface LoginRequest {
@@ -98,6 +100,8 @@ export interface WorkspaceSectionNode {
   order_index: number | null
   start_char: number | null
   end_char: number | null
+  page_start: number | null
+  page_end: number | null
   content: string | null
   children: WorkspaceSectionNode[]
   score: number | null
@@ -132,7 +136,7 @@ export interface CreateGuidelineVersionResponse {
   storage_uri: string | null
 }
 
-// ── Admin / Auth ───────────────────────────────────────────────────
+// ── Admin ─────────────────────────────────────────────────────────
 export interface AvailableRoleResponse {
   name: string
   description: string
