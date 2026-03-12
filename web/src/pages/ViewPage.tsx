@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronLeft, AlertTriangle, Trash2, Check, X } from 'lucide-react'
+import { ChevronLeft, AlertTriangle, Check, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
-import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem, DeleteGuidelineVersionResponse } from '../lib/types'
+import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem } from '../lib/types'
 
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
@@ -18,7 +18,6 @@ export default function ViewPage() {
   const [versions, setVersions] = useState<GuidelineVersionItem[]>([])
   const [loading, setLoading] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSectionNode | null>(null)
-  const [deletingVersion, setDeletingVersion] = useState(false)
   const [sectionEdits, setSectionEdits] = useState<Record<number, { content: string }>>({})
   const [savingSections, setSavingSections] = useState<Record<number, boolean>>({})
   const [saving, setSaving] = useState(false)
@@ -47,26 +46,6 @@ export default function ViewPage() {
     }).catch(console.error)
       .finally(() => setLoading(false))
   }, [guidelineId, targetVersionId, navigate, versionId])
-
-  const handleDeleteVersion = async () => {
-    if (!workspace) return
-    const versionLabel = workspace.version.version_label || `v${workspace.version.version_id}`
-    if (!window.confirm(`Xóa phiên bản "${versionLabel}"? Thao tác này không thể hoàn tác.`)) return
-    setDeletingVersion(true)
-    try {
-      const res = await api.delete<DeleteGuidelineVersionResponse>(
-        `/versions/${workspace.version.version_id}`
-      )
-      if (res.data.remaining_version_count === 0 || res.data.promoted_version_id === null) {
-        navigate('/guidelines')
-      } else {
-        navigate(`/guidelines/${res.data.guideline_id}/versions/${res.data.promoted_version_id}`, { replace: true })
-      }
-    } catch (err: any) {
-      alert(err.response?.data?.detail || 'Không thể xóa phiên bản.')
-      setDeletingVersion(false)
-    }
-  }
 
   const handleSaveSection = async (sectionId: number) => {
     if (!workspace) return
@@ -176,16 +155,6 @@ export default function ViewPage() {
               </option>
             ))}
           </select>
-          {canEdit && (
-            <button
-              className="btn btn-danger btn-xs"
-              disabled={deletingVersion}
-              onClick={handleDeleteVersion}
-              title="Xóa phiên bản này"
-            >
-              {deletingVersion ? <span className="loading-spinner" style={{ width: 12, height: 12 }} /> : <Trash2 size={13} />}
-            </button>
-          )}
         </div>
         <div className="toc-body">
           {workspace.toc.length === 0 ? (
