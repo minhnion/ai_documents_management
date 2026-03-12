@@ -100,6 +100,8 @@ export interface WorkspaceSectionNode {
   end_char: number | null
   content: string | null
   children: WorkspaceSectionNode[]
+  score: number | null
+  is_suspect: boolean
 }
 
 export interface VersionWorkspaceResponse {
@@ -109,6 +111,8 @@ export interface VersionWorkspaceResponse {
   toc: WorkspaceSectionNode[]
   section_count: number
   full_text: string | null
+  suspect_score_threshold: number
+  suspect_section_count: number
 }
 
 // ── Mutations ─────────────────────────────────────────────────────
@@ -126,4 +130,60 @@ export interface CreateGuidelineVersionResponse {
   previous_active_versions_updated: number
   document_id: number | null
   storage_uri: string | null
+}
+
+// ── Admin / Auth ───────────────────────────────────────────────────
+export interface AvailableRoleResponse {
+  name: string
+  description: string
+}
+
+export interface UserListResponse {
+  items: UserResponse[]
+  total: number
+}
+
+export interface CreateUserRequest {
+  email: string
+  full_name: string | null
+  password: string
+  role: string
+  is_active: boolean
+}
+
+export interface UpdateUserRoleRequest {
+  role: string
+}
+
+// ── Delete responses ───────────────────────────────────────────────
+export interface DeleteGuidelineResponse {
+  guideline_id: number
+  deleted_version_count: number
+}
+
+export interface DeleteGuidelineVersionResponse {
+  guideline_id: number
+  deleted_version_id: number
+  promoted_version_id: number | null
+  remaining_version_count: number
+}
+
+// ── Bulk section update ────────────────────────────────────────────
+export interface SectionContentUpdateItem {
+  section_id: number
+  content: string | null
+  heading: string | null
+}
+
+export interface BulkSectionContentUpdateRequest {
+  updates: SectionContentUpdateItem[]
+}
+
+export interface BulkSectionContentUpdateResponse {
+  version_id: number
+  requested_count: number
+  updated_count: number
+  updated_section_ids: number[]
+  deleted_chunk_count: number
+  created_chunk_count: number
 }
