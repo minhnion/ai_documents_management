@@ -1,16 +1,36 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Search, Eye, Edit2 } from 'lucide-react'
+import { Plus, Search, Eye, Edit2, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import type { GuidelineListResponse } from '../lib/types'
+import { useAuth } from '../store/auth'
 
 export default function ListPage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [data, setData] = useState<GuidelineListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [chuyenKhoa, setChuyenKhoa] = useState('')
+  const [deletingId, setDeletingId] = useState<number | null>(null)
   // Optional: Add debounce for search, pagination states, etc.
+
+  const handleDelete = async (guidelineId: number, title: string) => {
+    if (!window.confirm(`Xóa "${title}" và tất cả phiên bản? Thao tác này không thể hoàn tác.`)) return
+    setDeletingId(guidelineId)
+    try {
+      await api.delete(`/guidelines/${guidelineId}`)
+      setData(prev => prev ? {
+        ...prev,
+        items: prev.items.filter(i => i.guideline_id !== guidelineId),
+        total: prev.total - 1
+      } : prev)
+    } catch (err: any) {
+      alert(err.response?.data?.detail || 'Không thể xóa văn bản.')
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   const fetchGuidelines = () => {
     setLoading(true)
@@ -125,6 +145,18 @@ export default function ListPage() {
                         >
                           <Edit2 size={14} /> Cập nhật
                         </Link>
+                        {user?.role === 'admin' && (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            title="Xóa guideline"
+                            disabled={deletingId === item.guideline_id}
+                            onClick={() => handleDelete(item.guideline_id, item.title)}
+                          >
+                            {deletingId === item.guideline_id
+                              ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                              : <Trash2 size={14} />}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

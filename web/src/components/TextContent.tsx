@@ -1,45 +1,62 @@
-import { useEffect, useRef, useState } from 'react'
+// web/src/components/TextContent.tsx
+import { useEffect, useRef, useCallback } from 'react'
 import { type WorkspaceSectionNode } from '../lib/types'
+import SectionCard from './SectionCard'
 
 interface TextContentProps {
-  fullText: string | null
-  activeSection: WorkspaceSectionNode | null
+  toc: WorkspaceSectionNode[]
+  canEdit: boolean
+  activeSectionId: number | null
+  sectionEdits: Record<number, { content: string }>
+  savingSections: Record<number, boolean>
+  onSectionEditStart: (sectionId: number, currentContent: string) => void
+  onSectionEditChange: (sectionId: number, value: string) => void
+  onSaveSection: (sectionId: number) => Promise<void>
+  onCancelSection: (sectionId: number) => void
 }
 
-export default function TextContent({ fullText, activeSection }: TextContentProps) {
-  const containerRef = useRef<HTMLDivElement>(null)
-  const [beforeText, setBeforeText] = useState('')
-  const [highlightText, setHighlightText] = useState('')
-  const [afterText, setAfterText] = useState('')
-  const highlightRef = useRef<HTMLSpanElement>(null)
+function flattenNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
+  const result: WorkspaceSectionNode[] = []
+  for (const node of nodes) {
+    result.push(node)
+    if (node.children.length > 0) {
+      result.push(...flattenNodes(node.children))
+    }
+  }
+  return result
+}
 
+export default function TextContent({
+  toc,
+  canEdit,
+  activeSectionId,
+  sectionEdits,
+  savingSections,
+  onSectionEditStart,
+  onSectionEditChange,
+  onSaveSection,
+  onCancelSection,
+}: TextContentProps) {
+  const sectionRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+
+  // Scroll to active section when TOC selection changes
   useEffect(() => {
-    if (!fullText) {
-      setBeforeText('')
-      setHighlightText('')
-      setAfterText('')
-      return
+    if (activeSectionId == null) return
+    const el = sectionRefs.current.get(activeSectionId)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
-    if (!activeSection || activeSection.start_char == null || activeSection.end_char == null) {
-      setBeforeText(fullText)
-      setHighlightText('')
-      setAfterText('')
-      return
-    }
-    const s = Math.max(0, activeSection.start_char)
-    const e = Math.min(fullText.length, activeSection.end_char)
-    setBeforeText(fullText.slice(0, s))
-    setHighlightText(fullText.slice(s, e))
-    setAfterText(fullText.slice(e))
-  }, [fullText, activeSection])
+  }, [activeSectionId])
 
-  useEffect(() => {
-    if (highlightRef.current) {
-      highlightRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const setRef = useCallback((sectionId: number) => (el: HTMLDivElement | null) => {
+    if (el) {
+      sectionRefs.current.set(sectionId, el)
+    } else {
+      sectionRefs.current.delete(sectionId)
     }
-  }, [highlightText])
+  }, [])
 
-  if (!fullText) {
+  if (!toc || toc.length === 0) {
     return (
       <div className="loading-center">
         <span className="text-muted">Không có nội dung văn bản.</span>
@@ -47,17 +64,29 @@ export default function TextContent({ fullText, activeSection }: TextContentProp
     )
   }
 
+  const flatNodes = flattenNodes(toc)
+
   return (
-    <div ref={containerRef} className="content-body">
-      <pre className="content-text">
-        <span>{beforeText}</span>
-        {highlightText && (
-          <span ref={highlightRef} className="content-highlight">
-            {highlightText}
-          </span>
-        )}
-        <span>{afterText}</span>
-      </pre>
+    <div className="content-body">
+      {flatNodes.map(node => (
+        <SectionCard
+          key={node.section_id}
+          node={node}
+          editValue={
+            node.section_id in sectionEdits
+              ? sectionEdits[node.section_id].content
+              : null
+          }
+          canEdit={canEdit}
+          isActive={node.section_id === activeSectionId}
+          refCallback={setRef(node.section_id)}
+          saving={savingSections[node.section_id] ?? false}
+          onEditStart={() => onSectionEditStart(node.section_id, node.content ?? '')}
+          onEditChange={value => onSectionEditChange(node.section_id, value)}
+          onSave={() => onSaveSection(node.section_id)}
+          onCancel={() => onCancelSection(node.section_id)}
+        />
+      ))}
     </div>
   )
 }

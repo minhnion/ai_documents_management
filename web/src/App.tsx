@@ -7,10 +7,19 @@ import ListPage from './pages/ListPage'
 import ViewPage from './pages/ViewPage'
 import InsertPage from './pages/InsertPage'
 import UpdatePage from './pages/UpdatePage'
+import AdminUsersPage from './pages/AdminUsersPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
+  return <Layout>{children}</Layout>
+}
+
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated } = useAuth()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (!user) return null
+  if (user.role !== 'admin') return <Navigate to="/guidelines" replace />
   return <Layout>{children}</Layout>
 }
 
@@ -28,6 +37,8 @@ export default function App() {
           <Route path="/guidelines/new" element={<ProtectedRoute><InsertPage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/update" element={<ProtectedRoute><UpdatePage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
+
+          <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />
         </Routes>

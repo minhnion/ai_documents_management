@@ -1,21 +1,30 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
+import { ChevronLeft, AlertTriangle, Trash2, Check, X } from 'lucide-react'
 import { api } from '../lib/api'
+import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
-import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem } from '../lib/types'
+import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem, DeleteGuidelineVersionResponse } from '../lib/types'
 
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
   const [versions, setVersions] = useState<GuidelineVersionItem[]>([])
   const [loading, setLoading] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSectionNode | null>(null)
+  const [deletingVersion, setDeletingVersion] = useState(false)
+  const [sectionEdits, setSectionEdits] = useState<Record<number, { content: string }>>({})
+  const [savingSections, setSavingSections] = useState<Record<number, boolean>>({})
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const canEdit = user?.role === 'editor' || user?.role === 'admin'
 
   useEffect(() => {
     setTargetVersionId(versionId)
@@ -24,6 +33,7 @@ export default function ViewPage() {
   useEffect(() => {
     if (!guidelineId || !targetVersionId) return
 
+    setSectionEdits({})
     setLoading(true)
     Promise.all([
       api.get<VersionWorkspaceResponse>(`/versions/${targetVersionId}/workspace`),
@@ -37,6 +47,106 @@ export default function ViewPage() {
     }).catch(console.error)
       .finally(() => setLoading(false))
   }, [guidelineId, targetVersionId, navigate, versionId])
+
+  const handleDeleteVersion = async () => {
+    if (!workspace) return
+    const versionLabel = workspace.version.version_label || `v${workspace.version.version_id}`
+    if (!window.confirm(`Xóa phiên bản "${versionLabel}"? Thao tác này không thể hoàn tác.`)) return
+    setDeletingVersion(true)
+    try {
+      const res = await api.delete<DeleteGuidelineVersionResponse>(
+        `/versions/${workspace.version.version_id}`
+      )
+      if (res.data.remaining_version_count === 0 || res.data.promoted_version_id === null) {
+        navigate('/guidelines')
+      } else {
+        navigate(`/guidelines/${res.data.guideline_id}/versions/${res.data.promoted_version_id}`, { replace: true })
+      }
+    } catch (err: any) {
+      alert(err.response?.data?.detail || 'Không thể xóa phiên bản.')
+      setDeletingVersion(false)
+    }
+  }
+
+  const handleSaveSection = async (sectionId: number) => {
+    if (!workspace) return
+    setSavingSections(prev => ({ ...prev, [sectionId]: true }))
+    setSaveError('')
+    try {
+      await api.patch(`/versions/${workspace.version.version_id}/sections/content`, {
+        updates: [{
+          section_id: sectionId,
+          content: sectionEdits[sectionId]?.content ?? null,
+          heading: null,
+        }]
+      })
+      const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
+      setWorkspace(wsRes.data)
+      setSectionEdits(prev => {
+        const next = { ...prev }
+        delete next[sectionId]
+        return next
+      })
+    } catch (err: any) {
+      setSaveError(err.response?.data?.detail || 'Lỗi khi lưu nội dung.')
+    } finally {
+      setSavingSections(prev => {
+        const next = { ...prev }
+        delete next[sectionId]
+        return next
+      })
+    }
+  }
+
+  const handleSaveAll = async () => {
+    if (!workspace) return
+    const updates = Object.entries(sectionEdits).map(([id, val]) => ({
+      section_id: Number(id),
+      content: val.content,
+      heading: null,
+    }))
+    if (updates.length === 0) return
+    setSaving(true)
+    setSaveError('')
+    try {
+      await api.patch(`/versions/${workspace.version.version_id}/sections/content`, { updates })
+      const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
+      setWorkspace(wsRes.data)
+      const submittedIds = new Set(updates.map(u => u.section_id))
+      setSectionEdits(prev => {
+        const next = { ...prev }
+        for (const id of submittedIds) delete next[id]
+        return next
+      })
+    } catch (err: any) {
+      setSaveError(err.response?.data?.detail || 'Lỗi khi lưu nội dung.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleSectionEditStart = (sectionId: number, currentContent: string) => {
+    setSectionEdits(prev => ({
+      ...prev,
+      [sectionId]: { content: currentContent },
+    }))
+  }
+
+  const handleSectionEditChange = (sectionId: number, value: string) => {
+    setSectionEdits(prev => ({
+      ...prev,
+      [sectionId]: { content: value },
+    }))
+  }
+
+  const handleCancelSection = (sectionId: number) => {
+    setSectionEdits(prev => {
+      const next = { ...prev }
+      delete next[sectionId]
+      return next
+    })
+    setSaveError('')
+  }
 
   const documentId = workspace?.documents[0]?.document_id ?? null
 
@@ -66,6 +176,16 @@ export default function ViewPage() {
               </option>
             ))}
           </select>
+          {canEdit && (
+            <button
+              className="btn btn-danger btn-xs"
+              disabled={deletingVersion}
+              onClick={handleDeleteVersion}
+              title="Xóa phiên bản này"
+            >
+              {deletingVersion ? <span className="loading-spinner" style={{ width: 12, height: 12 }} /> : <Trash2 size={13} />}
+            </button>
+          )}
         </div>
         <div className="toc-body">
           {workspace.toc.length === 0 ? (
@@ -87,12 +207,51 @@ export default function ViewPage() {
             {workspace.guideline.title}
           </span>
           {workspace.version.status === 'active' && (
-            <span className="badge badge-active ml-2">Đang hiệu lực</span>
+            <span className="badge badge-active" style={{ marginLeft: 8 }}>Active</span>
+          )}
+          {workspace.suspect_section_count > 0 && (
+            <span className="badge badge-draft" title={`Ngưỡng: ${workspace.suspect_score_threshold}`}>
+              <AlertTriangle size={11} /> {workspace.suspect_section_count} mục cần kiểm tra
+            </span>
+          )}
+          {Object.keys(sectionEdits).length > 0 && (
+            <>
+                <button
+                className="btn btn-primary btn-xs"
+                disabled={saving}
+                onClick={handleSaveAll}
+                style={{ marginLeft: 'auto' }}
+                >
+                {saving
+                  ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                  : <><Check size={12} /> Lưu tất cả ({Object.keys(sectionEdits).length})</>
+                }
+                </button>
+              <button
+                className="btn btn-secondary btn-xs"
+                disabled={saving}
+                onClick={() => { setSectionEdits({}); setSaveError('') }}
+              >
+                <X size={12} /> Hủy
+              </button>
+            </>
           )}
         </div>
+        {saveError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{saveError}</div>}
         <TextContent
-          fullText={workspace.full_text}
-          activeSection={activeSection}
+          toc={workspace.toc}
+          canEdit={canEdit}
+          activeSectionId={activeSection?.section_id ?? null}
+          sectionEdits={sectionEdits}
+          savingSections={
+            saving
+              ? Object.fromEntries(Object.keys(sectionEdits).map(id => [id, true]))
+              : savingSections
+          }
+          onSectionEditStart={handleSectionEditStart}
+          onSectionEditChange={handleSectionEditChange}
+          onSaveSection={handleSaveSection}
+          onCancelSection={handleCancelSection}
         />
       </div>
 
