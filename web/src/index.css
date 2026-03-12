@@ -1030,9 +1030,9 @@ a:hover {
 
 .modal-container {
   background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
   width: 100%;
   max-width: 640px;
   max-height: 80vh;
@@ -1046,7 +1046,7 @@ a:hover {
   align-items: center;
   gap: 8px;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
@@ -1074,13 +1074,19 @@ a:hover {
   cursor: pointer;
   color: var(--text-muted);
   padding: 4px;
-  border-radius: var(--radius-sm);
+  border-radius: var(--r-sm);
   flex-shrink: 0;
+  transition: background var(--t), color var(--t);
 }
 
 .modal-close-btn:hover {
-  background: var(--bg-hover);
+  background: rgba(0, 0, 0, 0.06);
   color: var(--text-primary);
+}
+
+.modal-close-btn:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }
 
 .modal-body {
@@ -1095,6 +1101,13 @@ a:hover {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 20px;
-  border-top: 1px solid var(--border-color);
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .modal-container {
+    max-height: 90vh;
+    margin: 0 12px;
+  }
 }
