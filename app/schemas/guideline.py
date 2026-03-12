@@ -127,3 +127,22 @@ class VersionWorkspaceResponse(BaseModel):
     suspect_score_threshold: float
     suspect_section_count: int
     full_text: str | None = None
+
+
+class SectionContentUpdateItem(BaseModel):
+    section_id: int = Field(gt=0)
+    content: str | None = None
+    heading: str | None = None
+
+
+class BulkSectionContentUpdateRequest(BaseModel):
+    updates: list[SectionContentUpdateItem] = Field(min_length=1)
+
+
+class BulkSectionContentUpdateResponse(BaseModel):
+    version_id: int
+    requested_count: int
+    updated_count: int
+    updated_section_ids: list[int]
+    deleted_chunk_count: int
+    created_chunk_count: int

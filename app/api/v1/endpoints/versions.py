@@ -1,14 +1,20 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from app.api.deps import ActiveUser, DBSession
+from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
+    BulkSectionContentUpdateRequest,
+    BulkSectionContentUpdateResponse,
     VersionWorkspaceResponse,
     WorkspaceDocumentInfo,
     WorkspaceGuidelineInfo,
     WorkspaceSectionNode,
     WorkspaceVersionInfo,
+)
+from app.services.guideline_edit_service import (
+    GuidelineEditService,
+    SectionContentUpdate,
 )
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
 
@@ -51,3 +57,29 @@ async def get_version_workspace(
         suspect_section_count=int(workspace_data["suspect_section_count"]),
         full_text=workspace_data["full_text"],
     )
+
+
+@router.patch(
+    "/{version_id}/sections/content",
+    response_model=BulkSectionContentUpdateResponse,
+    summary="Bulk Update Section Content and Heading",
+)
+async def bulk_update_section_content(
+    version_id: int,
+    payload: BulkSectionContentUpdateRequest,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+) -> BulkSectionContentUpdateResponse:
+    service = GuidelineEditService(db)
+    result = await service.bulk_update_section_content(
+        version_id=version_id,
+        updates=[
+            SectionContentUpdate(
+                section_id=item.section_id,
+                content=item.content,
+                heading=item.heading,
+            )
+            for item in payload.updates
+        ],
+    )
+    return BulkSectionContentUpdateResponse(**result)

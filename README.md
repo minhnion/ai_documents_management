@@ -257,6 +257,7 @@ Ví dụ login:
 | `POST` | `/api/v1/guidelines` | `editor/admin` |
 | `POST` | `/api/v1/guidelines/{guideline_id}/versions` | `editor/admin` |
 | `GET` | `/api/v1/versions/{version_id}/workspace` | `viewer/editor/admin` |
+| `PATCH` | `/api/v1/versions/{version_id}/sections/content` | `editor/admin` |
 | `GET` | `/api/v1/documents/{document_id}/file` | `viewer/editor/admin` |
 
 `POST /api/v1/guidelines` dùng `multipart/form-data` với các field:
@@ -278,6 +279,26 @@ Ví dụ login:
 - Trả stream file theo `storage_uri` trong DB
 - Hỗ trợ header `Range` (ví dụ `Range: bytes=0-1023`) để PDF viewer tải mượt
 - Chỉ cho role `viewer/editor/admin`
+
+`PATCH /api/v1/versions/{version_id}/sections/content`:
+
+- Sửa đồng thời nhiều section của cùng một version (save một lần từ FE)
+- Cho phép sửa `content`, `heading`, hoặc cả hai trong mỗi phần tử `updates`
+- Input JSON:
+
+```json
+{
+  "updates": [
+    { "section_id": 101, "content": "Nội dung mới A" },
+    { "section_id": 102, "heading": "Mục tiêu điều trị" },
+    { "section_id": 103, "heading": "Chẩn đoán", "content": "Nội dung mới C" }
+  ]
+}
+```
+
+- BE cập nhật trực tiếp `sections.content`/`sections.heading`
+- Chỉ xóa/rebuild `chunks` cho những section có thay đổi `content`
+- Không tạo lịch sử edit và không xử lý `chunk_embeddings` ở bước này
 
 `GET /api/v1/versions/{version_id}/workspace`:
 
