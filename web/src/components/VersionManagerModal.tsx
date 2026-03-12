@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { X, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
-import type { GuidelineVersionItem, DeleteGuidelineVersionResponse } from '../lib/types'
+import type { GuidelineVersionItem, DeleteGuidelineVersionResponse, GuidelineVersionListResponse } from '../lib/types'
 
 interface Props {
   guidelineId: number
@@ -19,7 +19,7 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
   const fetchVersions = useCallback(() => {
     setLoading(true)
     setError('')
-    api.get<{ items: GuidelineVersionItem[] }>(`/guidelines/${guidelineId}/versions`)
+    api.get<GuidelineVersionListResponse>(`/guidelines/${guidelineId}/versions`)
       .then(res => setVersions(res.data.items))
       .catch(() => setError('Không thể tải danh sách phiên bản.'))
       .finally(() => setLoading(false))
@@ -28,6 +28,12 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
   useEffect(() => {
     fetchVersions()
   }, [fetchVersions])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
 
   const handleDelete = async (version: GuidelineVersionItem) => {
     const label = version.version_label || `v${version.version_id}`

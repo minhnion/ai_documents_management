@@ -155,6 +155,7 @@ export default function ListPage() {
                           <button
                             className="btn btn-secondary btn-sm"
                             title="Quản lý phiên bản"
+                            aria-label={`Quản lý phiên bản: ${item.title}`}
                             onClick={() => setVersionModalGuideline({ id: item.guideline_id, title: item.title })}
                           >
                             <Layers size={14} /> Phiên bản
