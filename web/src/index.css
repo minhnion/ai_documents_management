@@ -728,22 +728,6 @@ a:hover {
   scroll-behavior: smooth;
 }
 
-.content-text {
-  font-size: 16px;
-  line-height: 1.8;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-primary);
-  max-width: 800px;
-  margin: 0 auto;
-}
-
-.content-highlight {
-  background: #fff8c5;
-  outline: 2px solid #e3b341;
-  border-radius: 2px;
-}
-
 /* ── Section Cards (content area) ──────────────────────────────── */
 .section-card {
   border: 1px solid var(--border);
