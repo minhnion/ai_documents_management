@@ -52,9 +52,20 @@ export default function TextContent({ fullText, activeSection, editMode, section
   }
 
   if (editMode && toc) {
+    function flattenNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
+      const result: WorkspaceSectionNode[] = []
+      for (const node of nodes) {
+        result.push(node)
+        if (node.children.length > 0) {
+          result.push(...flattenNodes(node.children))
+        }
+      }
+      return result
+    }
+
     return (
       <div ref={containerRef} className="content-body">
-        {toc.map(node => (
+        {flattenNodes(toc).map(node => (
           <div key={node.section_id} style={{ marginBottom: 16 }}>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
               {node.heading || `Mục ${node.section_id}`}

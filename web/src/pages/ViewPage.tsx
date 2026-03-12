@@ -6,7 +6,7 @@ import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
-import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem } from '../lib/types'
+import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem, DeleteGuidelineVersionResponse } from '../lib/types'
 
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
@@ -24,6 +24,8 @@ export default function ViewPage() {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
+  const canEdit = user?.role === 'editor' || user?.role === 'admin'
+
   useEffect(() => {
     setTargetVersionId(versionId)
   }, [versionId])
@@ -31,6 +33,8 @@ export default function ViewPage() {
   useEffect(() => {
     if (!guidelineId || !targetVersionId) return
 
+    setEditMode(false)
+    setSectionEdits({})
     setLoading(true)
     Promise.all([
       api.get<VersionWorkspaceResponse>(`/versions/${targetVersionId}/workspace`),
@@ -51,7 +55,7 @@ export default function ViewPage() {
     if (!window.confirm(`Xóa phiên bản "${versionLabel}"? Thao tác này không thể hoàn tác.`)) return
     setDeletingVersion(true)
     try {
-      const res = await api.delete<{ guideline_id: number; promoted_version_id: number | null; remaining_version_count: number }>(
+      const res = await api.delete<DeleteGuidelineVersionResponse>(
         `/versions/${workspace.version.version_id}`
       )
       if (res.data.remaining_version_count === 0 || res.data.promoted_version_id === null) {
@@ -70,7 +74,7 @@ export default function ViewPage() {
     const updates = Object.entries(sectionEdits).map(([id, val]) => ({
       section_id: Number(id),
       content: val.content,
-      heading: val.heading,
+      heading: null,
     }))
     if (updates.length === 0) { setEditMode(false); return }
     setSaving(true)
@@ -117,7 +121,7 @@ export default function ViewPage() {
               </option>
             ))}
           </select>
-          {(user?.role === 'editor' || user?.role === 'admin') && (
+          {canEdit && (
             <button
               className="btn btn-danger btn-xs"
               disabled={deletingVersion}
@@ -155,7 +159,7 @@ export default function ViewPage() {
               <AlertTriangle size={11} /> {workspace.suspect_section_count} mục cần kiểm tra
             </span>
           )}
-          {(user?.role === 'editor' || user?.role === 'admin') && !editMode && (
+          {canEdit && !editMode && (
             <button className="btn btn-secondary btn-xs" onClick={() => setEditMode(true)}>
               <Edit3 size={12} /> Chỉnh sửa
             </button>
@@ -165,7 +169,7 @@ export default function ViewPage() {
               <button className="btn btn-primary btn-xs" disabled={saving} onClick={handleSaveSectionEdits}>
                 {saving ? <span className="loading-spinner" style={{ width: 12, height: 12 }} /> : <><Check size={12} /> Lưu thay đổi</>}
               </button>
-              <button className="btn btn-secondary btn-xs" disabled={saving} onClick={() => { setEditMode(false); setSectionEdits({}) }}>
+              <button className="btn btn-secondary btn-xs" disabled={saving} onClick={() => { setEditMode(false); setSectionEdits({}); setSaveError('') }}>
                 <X size={12} /> Hủy
               </button>
             </>
