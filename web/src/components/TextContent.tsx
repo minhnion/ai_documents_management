@@ -10,6 +10,17 @@ interface TextContentProps {
   toc?: WorkspaceSectionNode[]
 }
 
+function flattenNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
+  const result: WorkspaceSectionNode[] = []
+  for (const node of nodes) {
+    result.push(node)
+    if (node.children.length > 0) {
+      result.push(...flattenNodes(node.children))
+    }
+  }
+  return result
+}
+
 export default function TextContent({ fullText, activeSection, editMode, sectionEdits, onSectionEdit, toc }: TextContentProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [beforeText, setBeforeText] = useState('')
@@ -52,17 +63,6 @@ export default function TextContent({ fullText, activeSection, editMode, section
   }
 
   if (editMode && toc) {
-    function flattenNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
-      const result: WorkspaceSectionNode[] = []
-      for (const node of nodes) {
-        result.push(node)
-        if (node.children.length > 0) {
-          result.push(...flattenNodes(node.children))
-        }
-      }
-      return result
-    }
-
     return (
       <div ref={containerRef} className="content-body">
         {flattenNodes(toc).map(node => (
