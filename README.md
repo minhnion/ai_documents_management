@@ -255,9 +255,11 @@ Ví dụ login:
 | `GET` | `/api/v1/guidelines` | `viewer/editor/admin` |
 | `GET` | `/api/v1/guidelines/{guideline_id}/versions` | `viewer/editor/admin` |
 | `POST` | `/api/v1/guidelines` | `editor/admin` |
+| `DELETE` | `/api/v1/guidelines/{guideline_id}` | `admin` |
 | `POST` | `/api/v1/guidelines/{guideline_id}/versions` | `editor/admin` |
 | `GET` | `/api/v1/versions/{version_id}/workspace` | `viewer/editor/admin` |
 | `PATCH` | `/api/v1/versions/{version_id}/sections/content` | `editor/admin` |
+| `DELETE` | `/api/v1/versions/{version_id}` | `editor/admin` |
 | `GET` | `/api/v1/documents/{document_id}/file` | `viewer/editor/admin` |
 
 `POST /api/v1/guidelines` dùng `multipart/form-data` với các field:
@@ -299,6 +301,18 @@ Ví dụ login:
 - BE cập nhật trực tiếp `sections.content`/`sections.heading`
 - Chỉ xóa/rebuild `chunks` cho những section có thay đổi `content`
 - Không tạo lịch sử edit và không xử lý `chunk_embeddings` ở bước này
+
+`DELETE /api/v1/versions/{version_id}`:
+
+- Xóa một version và dữ liệu liên quan (documents/sections/chunks)
+- Xóa luôn thư mục local storage của version: `uploads/guidelines/{guideline_id}/{version_id}`
+- Nếu version bị xóa đang `active`, hệ thống tự promote version gần nhất còn lại lên `active`
+
+`DELETE /api/v1/guidelines/{guideline_id}`:
+
+- Xóa toàn bộ guideline cùng tất cả versions liên quan
+- Xóa luôn thư mục local storage: `uploads/guidelines/{guideline_id}`
+- Chỉ `admin` được phép gọi
 
 `GET /api/v1/versions/{version_id}/workspace`:
 

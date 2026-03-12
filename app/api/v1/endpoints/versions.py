@@ -6,12 +6,14 @@ from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
     BulkSectionContentUpdateRequest,
     BulkSectionContentUpdateResponse,
+    DeleteGuidelineVersionResponse,
     VersionWorkspaceResponse,
     WorkspaceDocumentInfo,
     WorkspaceGuidelineInfo,
     WorkspaceSectionNode,
     WorkspaceVersionInfo,
 )
+from app.services.guideline_delete_service import GuidelineDeleteService
 from app.services.guideline_edit_service import (
     GuidelineEditService,
     SectionContentUpdate,
@@ -83,3 +85,18 @@ async def bulk_update_section_content(
         ],
     )
     return BulkSectionContentUpdateResponse(**result)
+
+
+@router.delete(
+    "/{version_id}",
+    response_model=DeleteGuidelineVersionResponse,
+    summary="Delete Guideline Version",
+)
+async def delete_guideline_version(
+    version_id: int,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+) -> DeleteGuidelineVersionResponse:
+    service = GuidelineDeleteService(db)
+    result = await service.delete_version(version_id)
+    return DeleteGuidelineVersionResponse(**result)

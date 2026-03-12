@@ -65,6 +65,18 @@ class CreateGuidelineVersionResponse(BaseModel):
     storage_uri: str | None = None
 
 
+class DeleteGuidelineResponse(BaseModel):
+    guideline_id: int
+    deleted_version_count: int
+
+
+class DeleteGuidelineVersionResponse(BaseModel):
+    guideline_id: int
+    deleted_version_id: int
+    promoted_version_id: int | None = None
+    remaining_version_count: int
+
+
 class WorkspaceGuidelineInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

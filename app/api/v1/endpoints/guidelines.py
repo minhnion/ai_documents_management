@@ -7,6 +7,7 @@ from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
     CreateGuidelineResponse,
     CreateGuidelineVersionResponse,
+    DeleteGuidelineResponse,
     GuidelineListItem,
     GuidelineListResponse,
     GuidelineVersionItem,
@@ -14,6 +15,7 @@ from app.schemas.guideline import (
     GuidelineVersionSummary,
 )
 from app.services.guideline_command_service import GuidelineCommandService
+from app.services.guideline_delete_service import GuidelineDeleteService
 from app.services.guideline_query_service import GuidelineQueryService
 
 router = APIRouter(prefix="/guidelines", tags=["Guidelines"])
@@ -93,6 +95,21 @@ async def create_guideline(
         document_id=document.document_id,
         storage_uri=document.storage_uri,
     )
+
+
+@router.delete(
+    "/{guideline_id}",
+    response_model=DeleteGuidelineResponse,
+    summary="Delete Guideline",
+)
+async def delete_guideline(
+    guideline_id: int,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("admin"))],
+) -> DeleteGuidelineResponse:
+    service = GuidelineDeleteService(db)
+    result = await service.delete_guideline(guideline_id)
+    return DeleteGuidelineResponse(**result)
 
 
 @router.post(
