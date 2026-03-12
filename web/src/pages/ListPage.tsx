@@ -138,25 +138,25 @@ export default function ListPage() {
                             <Eye size={14} /> Xem
                           </button>
                         )}
-                         <Link
-                           to={`/guidelines/${item.guideline_id}/update`}
-                           className="btn btn-secondary btn-sm"
-                           title="Cập nhật phiên bản mới"
-                         >
-                           <Edit2 size={14} /> Cập nhật
-                         </Link>
-                         {user?.role === 'admin' && (
-                           <button
-                             className="btn btn-danger btn-sm"
-                             title="Xóa guideline"
-                             disabled={deletingId === item.guideline_id}
-                             onClick={() => handleDelete(item.guideline_id, item.title)}
-                           >
-                             {deletingId === item.guideline_id
-                               ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
-                               : <Trash2 size={14} />}
-                           </button>
-                         )}
+                        <Link
+                          to={`/guidelines/${item.guideline_id}/update`}
+                          className="btn btn-secondary btn-sm"
+                          title="Cập nhật phiên bản mới"
+                        >
+                          <Edit2 size={14} /> Cập nhật
+                        </Link>
+                        {user?.role === 'admin' && (
+                          <button
+                            className="btn btn-danger btn-sm"
+                            title="Xóa guideline"
+                            disabled={deletingId === item.guideline_id}
+                            onClick={() => handleDelete(item.guideline_id, item.title)}
+                          >
+                            {deletingId === item.guideline_id
+                              ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                              : <Trash2 size={14} />}
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
