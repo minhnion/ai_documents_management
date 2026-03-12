@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-// @ts-ignore -- RefreshCw kept for future use
-import { UserPlus, RefreshCw } from 'lucide-react'
+import { UserPlus } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import type {
