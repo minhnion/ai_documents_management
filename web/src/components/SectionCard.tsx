@@ -30,25 +30,24 @@ export default function SectionCard({
 }: SectionCardProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
+  const isEditing = editValue !== null
+
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
-    if (editValue !== null && textareaRef.current) {
+    if (isEditing && textareaRef.current) {
       textareaRef.current.focus()
     }
-  }, [editValue !== null]) // only when entering/leaving edit
+  }, [isEditing]) // only when entering/leaving edit
 
   // Auto-resize textarea height to content
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto'
-      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
-    }
-  }, [editValue])
+    if (!isEditing || !textareaRef.current) return
+    textareaRef.current.style.height = 'auto'
+    textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
+  }, [editValue, isEditing])
 
   const headingLabel = node.heading || `Mục ${node.section_id}`
   const indent = Math.max(0, (node.level ?? 1) - 1) * 16
-
-  const isEditing = editValue !== null
 
   return (
     <div
