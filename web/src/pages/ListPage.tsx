@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus, Search, Eye, Edit2, Trash2 } from 'lucide-react'
+import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
 import type { GuidelineListResponse } from '../lib/types'
 import { useAuth } from '../store/auth'
+import VersionManagerModal from '../components/VersionManagerModal'
 
 export default function ListPage() {
   const navigate = useNavigate()
@@ -13,6 +14,7 @@ export default function ListPage() {
   const [search, setSearch] = useState('')
   const [chuyenKhoa, setChuyenKhoa] = useState('')
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
   // Optional: Add debounce for search, pagination states, etc.
 
   const handleDelete = async (guidelineId: number, title: string) => {
@@ -47,6 +49,8 @@ export default function ListPage() {
   useEffect(() => {
     fetchGuidelines()
   }, [search, chuyenKhoa])
+
+  const canEdit = user?.role === 'editor' || user?.role === 'admin'
 
   return (
     <div className="list-page h-full flex-col">
@@ -145,6 +149,15 @@ export default function ListPage() {
                         >
                           <Edit2 size={14} /> Cập nhật
                         </Link>
+                        {canEdit && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            title="Quản lý phiên bản"
+                            onClick={() => setVersionModalGuideline({ id: item.guideline_id, title: item.title })}
+                          >
+                            <Layers size={14} /> Phiên bản
+                          </button>
+                        )}
                         {user?.role === 'admin' && (
                           <button
                             className="btn btn-danger btn-sm"
@@ -166,6 +179,14 @@ export default function ListPage() {
           )}
         </div>
       </div>
+      {versionModalGuideline && (
+        <VersionManagerModal
+          guidelineId={versionModalGuideline.id}
+          guidelineTitle={versionModalGuideline.title}
+          onClose={() => setVersionModalGuideline(null)}
+          onVersionsChanged={fetchGuidelines}
+        />
+      )}
     </div>
   )
 }
