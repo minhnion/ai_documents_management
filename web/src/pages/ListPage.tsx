@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
@@ -34,7 +34,7 @@ export default function ListPage() {
     }
   }
 
-  const fetchGuidelines = () => {
+  const fetchGuidelines = useCallback(() => {
     setLoading(true)
     const params = new URLSearchParams()
     if (search) params.set('search', search)
@@ -44,11 +44,11 @@ export default function ListPage() {
       .then(res => setData(res.data))
       .catch(console.error)
       .finally(() => setLoading(false))
-  }
+  }, [search, chuyenKhoa])
 
   useEffect(() => {
     fetchGuidelines()
-  }, [search, chuyenKhoa])
+  }, [fetchGuidelines])
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
 
@@ -142,13 +142,15 @@ export default function ListPage() {
                             <Eye size={14} /> Xem
                           </button>
                         )}
-                        <Link
-                          to={`/guidelines/${item.guideline_id}/update`}
-                          className="btn btn-secondary btn-sm"
-                          title="Cập nhật phiên bản mới"
-                        >
-                          <Edit2 size={14} /> Cập nhật
-                        </Link>
+                        {canEdit && (
+                          <Link
+                            to={`/guidelines/${item.guideline_id}/update`}
+                            className="btn btn-secondary btn-sm"
+                            title="Cập nhật phiên bản mới"
+                          >
+                            <Edit2 size={14} /> Cập nhật
+                          </Link>
+                        )}
                         {canEdit && (
                           <button
                             className="btn btn-secondary btn-sm"
