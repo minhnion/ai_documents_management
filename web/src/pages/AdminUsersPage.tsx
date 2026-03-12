@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { UserPlus } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
@@ -12,7 +11,6 @@ import type {
 
 export default function AdminUsersPage() {
   const { user: currentUser } = useAuth()
-  const navigate = useNavigate()
 
   const [users, setUsers] = useState<UserResponse[]>([])
   const [roles, setRoles] = useState<AvailableRoleResponse[]>([])
@@ -33,12 +31,9 @@ export default function AdminUsersPage() {
 
   // Role update
   const [updatingRoleFor, setUpdatingRoleFor] = useState<number | null>(null)
+  const [roleError, setRoleError] = useState('')
 
   useEffect(() => {
-    if (currentUser?.role !== 'admin') {
-      navigate('/guidelines', { replace: true })
-      return
-    }
     Promise.all([
       api.get<UserListResponse>('/auth/users'),
       api.get<AvailableRoleResponse[]>('/auth/roles'),
@@ -47,7 +42,7 @@ export default function AdminUsersPage() {
       setRoles(rRes.data)
     }).catch(() => setError('Không thể tải dữ liệu.'))
       .finally(() => setLoading(false))
-  }, [currentUser, navigate])
+  }, [])
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -67,11 +62,12 @@ export default function AdminUsersPage() {
 
   const handleRoleChange = async (userId: number, newRole: string) => {
     setUpdatingRoleFor(userId)
+    setRoleError('')
     try {
       const res = await api.patch<UserResponse>(`/auth/users/${userId}/role`, { role: newRole })
       setUsers(prev => prev.map(u => u.user_id === userId ? res.data : u))
     } catch (err: any) {
-      alert(err.response?.data?.detail || 'Không thể đổi role.')
+      setRoleError(err.response?.data?.detail || 'Không thể đổi role.')
     } finally {
       setUpdatingRoleFor(null)
     }
@@ -140,6 +136,7 @@ export default function AdminUsersPage() {
       )}
 
       <div className="table-wrapper">
+        {roleError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{roleError}</div>}
         {loading ? (
           <div className="loading-center"><span className="loading-spinner" /></div>
         ) : (
@@ -154,6 +151,9 @@ export default function AdminUsersPage() {
               </tr>
             </thead>
             <tbody>
+              {users.length === 0 && (
+                <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Không có người dùng nào.</td></tr>
+              )}
               {users.map(u => (
                 <tr key={u.user_id}>
                   <td className="font-medium">{u.email}</td>

@@ -15,6 +15,14 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated } = useAuth()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (!user) return null
+  if (user.role !== 'admin') return <Navigate to="/guidelines" replace />
+  return <Layout>{children}</Layout>
+}
+
 // Global default export wrapped with providers
 export default function App() {
   return (
@@ -30,7 +38,7 @@ export default function App() {
           <Route path="/guidelines/:guidelineId/update" element={<ProtectedRoute><UpdatePage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
 
-          <Route path="/admin/users" element={<ProtectedRoute><AdminUsersPage /></ProtectedRoute>} />
+          <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />
         </Routes>
