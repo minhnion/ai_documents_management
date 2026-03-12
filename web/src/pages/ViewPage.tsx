@@ -207,7 +207,7 @@ export default function ViewPage() {
             {workspace.guideline.title}
           </span>
           {workspace.version.status === 'active' && (
-            <span className="badge badge-active" style={{ marginLeft: 8 }}>Đang hiệu lực</span>
+            <span className="badge badge-active" style={{ marginLeft: 8 }}>Active</span>
           )}
           {workspace.suspect_section_count > 0 && (
             <span className="badge badge-draft" title={`Ngưỡng: ${workspace.suspect_score_threshold}`}>
@@ -216,22 +216,23 @@ export default function ViewPage() {
           )}
           {Object.keys(sectionEdits).length > 0 && (
             <>
-              <button
+                <button
                 className="btn btn-primary btn-xs"
                 disabled={saving}
                 onClick={handleSaveAll}
-              >
+                style={{ marginLeft: 'auto' }}
+                >
                 {saving
                   ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
                   : <><Check size={12} /> Lưu tất cả ({Object.keys(sectionEdits).length})</>
                 }
-              </button>
+                </button>
               <button
                 className="btn btn-secondary btn-xs"
                 disabled={saving}
                 onClick={() => { setSectionEdits({}); setSaveError('') }}
               >
-                <X size={12} /> Hủy tất cả
+                <X size={12} /> Hủy
               </button>
             </>
           )}
