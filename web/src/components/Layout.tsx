@@ -1,4 +1,4 @@
-import { BookOpen, LogOut } from 'lucide-react'
+import { BookOpen, LogOut, Users } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 
@@ -12,6 +12,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <BookOpen size={18} />
           <span>Quản lý tài liệu</span>
         </Link>
+        {user?.role === 'admin' && (
+          <Link to="/admin/users" className="btn btn-ghost btn-sm">
+            <Users size={15} /> Người dùng
+          </Link>
+        )}
         <div className="navbar-spacer" />
         {isAuthenticated && (
           <div className="navbar-user">

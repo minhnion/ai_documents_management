@@ -7,6 +7,7 @@ import ListPage from './pages/ListPage'
 import ViewPage from './pages/ViewPage'
 import InsertPage from './pages/InsertPage'
 import UpdatePage from './pages/UpdatePage'
+import AdminUsersPage from './pages/AdminUsersPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated } = useAuth()
@@ -28,6 +29,8 @@ export default function App() {
           <Route path="/guidelines/new" element={<ProtectedRoute><InsertPage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/update" element={<ProtectedRoute><UpdatePage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
+
+          <Route path="/admin/users" element={<ProtectedRoute><AdminUsersPage /></ProtectedRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />
         </Routes>
