@@ -102,10 +102,10 @@ export interface WorkspaceSectionNode {
   end_char: number | null
   page_start: number | null
   page_end: number | null
-  content: string | null
-  children: WorkspaceSectionNode[]
   score: number | null
   is_suspect: boolean
+  content: string | null
+  children: WorkspaceSectionNode[]
 }
 
 export interface VersionWorkspaceResponse {
