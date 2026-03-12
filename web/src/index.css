@@ -615,7 +615,6 @@ a:hover {
   padding: 6px 12px;
   cursor: pointer;
   border-radius: var(--r-sm);
-  margin: 2px 8px;
   transition: background var(--t), color var(--t);
   font-size: 14px;
   line-height: 1.5;
@@ -623,7 +622,8 @@ a:hover {
   border: none;
   background: none;
   text-align: left;
-  width: calc(100% - 16px);
+  flex: 1;
+  min-width: 0;
 }
 
 .toc-node:hover {
@@ -651,17 +651,52 @@ a:hover {
   background: rgba(154, 103, 0, 0.08);
 }
 
-.toc-node-dot {
+.toc-row {
+  display: flex;
+  align-items: center;
+  margin: 2px 8px;
+}
+
+.toc-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: var(--text-muted);
+  transition: color var(--t), background var(--t);
+  border-radius: 3px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.toc-chevron:hover {
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.toc-chevron-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toc-chevron-placeholder::after {
+  content: '';
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-  flex-shrink: 0;
-  margin-top: 6px;
-  opacity: 0.5;
+  opacity: 0.4;
 }
 
-.toc-node.active .toc-node-dot {
+.toc-row:has(.toc-node.active) .toc-chevron-placeholder::after {
   opacity: 1;
 }
 
