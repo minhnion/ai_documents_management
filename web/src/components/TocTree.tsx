@@ -20,7 +20,7 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
             title={node.heading ?? ''}
           >
             <span className="toc-node-dot" />
-            {node.is_suspect && <AlertTriangle size={12} style={{ color: 'var(--warning)', flexShrink: 0 }} />}
+            {node.is_suspect && <AlertTriangle size={12} style={{ flexShrink: 0 }} />}
             <span className="truncate" style={{ fontSize: depth === 0 ? '13px' : '12px' }}>
               {node.heading ?? `Section ${node.section_id}`}
             </span>

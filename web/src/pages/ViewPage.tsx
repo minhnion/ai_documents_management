@@ -87,9 +87,9 @@ export default function ViewPage() {
             {workspace.guideline.title}
           </span>
           {workspace.version.status === 'active' && (
-            <span className="badge badge-active ml-2">Đang hiệu lực</span>
+            <span className="badge badge-active" style={{ marginLeft: 8 }}>Đang hiệu lực</span>
           )}
-          {(workspace.suspect_section_count ?? 0) > 0 && (
+          {workspace.suspect_section_count > 0 && (
             <span className="badge badge-draft" title={`Ngưỡng: ${workspace.suspect_score_threshold}`}>
               <AlertTriangle size={11} /> {workspace.suspect_section_count} mục cần kiểm tra
             </span>

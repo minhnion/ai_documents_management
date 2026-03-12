@@ -646,6 +646,11 @@ a:hover {
   color: var(--warning);
 }
 
+.toc-node.active.toc-node-suspect {
+  color: var(--warning);
+  background: rgba(154, 103, 0, 0.08);
+}
+
 .toc-node-dot {
   width: 6px;
   height: 6px;
