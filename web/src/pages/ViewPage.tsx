@@ -112,7 +112,12 @@ export default function ViewPage() {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, { updates })
       const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
       setWorkspace(wsRes.data)
-      setSectionEdits({})
+      const submittedIds = new Set(updates.map(u => u.section_id))
+      setSectionEdits(prev => {
+        const next = { ...prev }
+        for (const id of submittedIds) delete next[id]
+        return next
+      })
     } catch (err: any) {
       setSaveError(err.response?.data?.detail || 'Lỗi khi lưu nội dung.')
     } finally {
@@ -237,7 +242,11 @@ export default function ViewPage() {
           canEdit={canEdit}
           activeSectionId={activeSection?.section_id ?? null}
           sectionEdits={sectionEdits}
-          savingSections={savingSections}
+          savingSections={
+            saving
+              ? Object.fromEntries(Object.keys(sectionEdits).map(id => [id, true]))
+              : savingSections
+          }
           onSectionEditStart={handleSectionEditStart}
           onSectionEditChange={handleSectionEditChange}
           onSaveSection={handleSaveSection}
