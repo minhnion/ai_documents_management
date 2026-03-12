@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { X, Trash2 } from 'lucide-react'
 import { api } from '../lib/api'
 import type { GuidelineVersionItem, DeleteGuidelineVersionResponse } from '../lib/types'
@@ -16,18 +16,18 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [error, setError] = useState('')
 
-  const fetchVersions = () => {
+  const fetchVersions = useCallback(() => {
     setLoading(true)
     setError('')
     api.get<{ items: GuidelineVersionItem[] }>(`/guidelines/${guidelineId}/versions`)
       .then(res => setVersions(res.data.items))
       .catch(() => setError('Không thể tải danh sách phiên bản.'))
       .finally(() => setLoading(false))
-  }
+  }, [guidelineId])
 
   useEffect(() => {
     fetchVersions()
-  }, [guidelineId])
+  }, [fetchVersions])
 
   const handleDelete = async (version: GuidelineVersionItem) => {
     const label = version.version_label || `v${version.version_id}`
@@ -92,7 +92,7 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
                         <button
                           className="btn btn-danger btn-sm"
                           title="Xóa phiên bản"
-                          disabled={deletingId === v.version_id}
+                          disabled={deletingId !== null}
                           onClick={() => handleDelete(v)}
                         >
                           {deletingId === v.version_id
