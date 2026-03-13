@@ -1,9 +1,12 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1.router import api_router
 from app.core.bootstrap import bootstrap_auth_data
@@ -15,11 +18,34 @@ from app.core.database import (
     migrate_auth_schema_to_single_role,
 )
 
+FRONTEND_DIST = Path(__file__).parent.parent / "web" / "dist"
+
+print(f"###Frontend dist path: {FRONTEND_DIST}")
+
 logging.basicConfig(
     level=logging.DEBUG if settings.DEBUG else logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+class SPAStaticFiles(StaticFiles):
+    """
+    Custom StaticFiles class to serve an SPA fallback index.html
+    and prevent returning HTML for missing API routes.
+    """
+    async def get_response(self, path: str, scope):
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as ex:
+            if ex.status_code == 404:
+                # Don't serve index.html for missing API endpoints
+                api_prefix = settings.API_V1_PREFIX.strip("/")
+                if path.startswith(api_prefix):
+                    raise ex
+                # Fallback to serving the SPA's entry point
+                return await super().get_response("index.html", scope)
+            raise ex
 
 
 @asynccontextmanager
@@ -69,6 +95,12 @@ def create_application() -> FastAPI:
 
     application.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
+    if FRONTEND_DIST.exists():
+        # Mount the custom SPA static files handler at root
+        application.mount(
+            "/", SPAStaticFiles(directory=str(FRONTEND_DIST), html=True), name="spa"
+        )
+
     return application
 
 
@@ -80,7 +112,6 @@ if __name__ == "__main__":
         "app.main:app",
         host=settings.HOST,
         port=settings.PORT,
-        # reload=settings.DEBUG,
         reload=False,
         log_level="debug" if settings.DEBUG else "info",
     )
