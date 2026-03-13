@@ -15,3 +15,5 @@ uploads
 docs
 tests
 README.md
+web/node_modules
+web/dist
