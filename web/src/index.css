@@ -615,6 +615,7 @@ a:hover {
   padding: 6px 12px;
   cursor: pointer;
   border-radius: var(--r-sm);
+  margin: 2px 8px;
   transition: background var(--t), color var(--t);
   font-size: 14px;
   line-height: 1.5;
@@ -622,8 +623,7 @@ a:hover {
   border: none;
   background: none;
   text-align: left;
-  flex: 1;
-  min-width: 0;
+  width: calc(100% - 16px);
 }
 
 .toc-node:hover {
@@ -651,52 +651,17 @@ a:hover {
   background: rgba(154, 103, 0, 0.08);
 }
 
-.toc-row {
-  display: flex;
-  align-items: center;
-  margin: 2px 8px;
-}
-
-.toc-chevron {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 20px;
-  height: 20px;
-  color: var(--text-muted);
-  transition: color var(--t), background var(--t);
-  border-radius: 3px;
-  border: none;
-  background: none;
-  cursor: pointer;
-  padding: 0;
-}
-
-.toc-chevron:hover {
-  color: var(--text-primary);
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.toc-chevron-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
-
-.toc-chevron-placeholder::after {
-  content: '';
+.toc-node-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-  opacity: 0.4;
+  flex-shrink: 0;
+  margin-top: 6px;
+  opacity: 0.5;
 }
 
-.toc-row:has(.toc-node.active) .toc-chevron-placeholder::after {
+.toc-node.active .toc-node-dot {
   opacity: 1;
 }
 
@@ -728,127 +693,20 @@ a:hover {
   scroll-behavior: smooth;
 }
 
-/* ── Section Cards (content area) ──────────────────────────────── */
-.section-card {
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  background: var(--bg-surface);
-  margin-bottom: 16px;
-  transition: border-color var(--t), box-shadow var(--t);
-}
-
-.section-card--active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-light);
-}
-
-.section-card--editing {
-  border-color: var(--accent);
-}
-
-.section-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
-  border-radius: var(--r-md) var(--r-md) 0 0;
-}
-
-.section-card--editing .section-card-header {
-  background: var(--accent-light);
-  border-bottom-color: var(--accent);
-}
-
-.section-card-heading {
-  font-weight: 600;
-  color: var(--text-primary);
-  flex: 1;
-  min-width: 0;
-  word-break: break-word;
-}
-
-.section-heading-level-1 { font-size: 16px; }
-.section-heading-level-2 { font-size: 15px; }
-.section-heading-level-3 { font-size: 14px; font-weight: 500; }
-.section-heading-level-4,
-.section-heading-level-5,
-.section-heading-level-6 { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
-
-.section-card-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
-.section-suspect-badge {
-  display: flex;
-  align-items: center;
-  color: var(--warning);
-}
-
-.section-edit-btn {
-  opacity: 0;
-  transition: opacity var(--t);
-}
-
-.section-card:hover .section-edit-btn {
-  opacity: 1;
-}
-
-.section-card-body {
-  padding: 16px 20px;
-}
-
-.section-card-content {
-  font-size: 15px;
+.content-text {
+  font-size: 16px;
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--text-primary);
-  font-family: inherit;
-  margin: 0;
+  max-width: 800px;
+  margin: 0 auto;
 }
 
-.section-card-textarea {
-  width: 100%;
-  min-height: 120px;
-  padding: 10px 12px;
-  font-size: 15px;
-  font-family: inherit;
-  line-height: 1.8;
-  color: var(--text-primary);
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  resize: none;
-  overflow: hidden;
-  transition: border-color var(--t);
-  outline: none;
-}
-
-.section-card-textarea:focus {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px var(--accent-light);
-}
-
-.section-card-textarea:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.section-card-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-  border-radius: 0 0 var(--r-md) var(--r-md);
+.content-highlight {
+  background: #fff8c5;
+  outline: 2px solid #e3b341;
+  border-radius: 2px;
 }
 
 /* RIGHT – PDF viewer */
@@ -1015,99 +873,4 @@ a:hover {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-muted);
-}
-
-/* ── Modal / Popup ────────────────────────────────────────────── */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal-container {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--shadow-md);
-  width: 100%;
-  max-width: 640px;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-.modal-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.modal-subtitle {
-  font-size: 13px;
-  color: var(--text-secondary);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.modal-close-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 4px;
-  border-radius: var(--r-sm);
-  flex-shrink: 0;
-  transition: background var(--t), color var(--t);
-}
-
-.modal-close-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: var(--text-primary);
-}
-
-.modal-close-btn:focus-visible {
-  outline: 2px solid var(--border-focus);
-  outline-offset: 2px;
-}
-
-.modal-body {
-  padding: 16px 20px;
-  overflow-y: auto;
-  flex: 1;
-}
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 20px;
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
-}
-
-@media (max-width: 640px) {
-  .modal-container {
-    max-height: 90vh;
-    margin: 0 12px;
-  }
 }
