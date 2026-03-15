@@ -879,6 +879,128 @@ a:hover {
   background: #f6f8fa;
 }
 
+/* PDF.js continuous scroll viewer */
+.pdf-viewer-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.pdf-viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.pdf-tb-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background var(--t), color var(--t);
+}
+
+.pdf-tb-btn:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+.pdf-tb-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pdf-tb-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.pdf-tb-page {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pdf-tb-page-input {
+  width: 40px;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: center;
+  outline: none;
+}
+
+.pdf-tb-page-input:focus {
+  border-color: var(--border-focus);
+}
+
+.pdf-tb-page-total {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.pdf-tb-zoom-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+  min-width: 38px;
+  text-align: center;
+}
+
+.pdf-scroll-container {
+  flex: 1;
+  overflow-y: auto;
+  background: #525659;
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.pdf-page-wrapper {
+  position: relative;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  background: #fff;
+  width: calc(100% - 32px);
+  max-width: 900px;
+}
+
+.pdf-page-wrapper canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.pdf-page-label {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  user-select: none;
+}
+
 /* Version select bar */
 .version-bar {
   display: flex;
@@ -1110,4 +1232,8 @@ a:hover {
     max-height: 90vh;
     margin: 0 12px;
   }
+}
+
+.hidden {
+  display: none;
 }

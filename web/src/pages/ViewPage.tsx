@@ -226,10 +226,7 @@ export default function ViewPage() {
 
       {/* RIGHT PANE: PDF */}
       <div className="pdf-pane">
-        <div className="pdf-toolbar">
-          <span>Tài liệu gốc (PDF)</span>
-        </div>
-        <PdfViewer documentId={documentId} />
+        <PdfViewer documentId={documentId} page={activeSection?.page_start ?? undefined} />
       </div>
     </div>
   )
