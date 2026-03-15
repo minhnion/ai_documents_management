@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 TOC_SCAN_PAGES = 40
-MIN_SECTIONS_THRESHOLD = 3
+MIN_SECTIONS_THRESHOLD = 2
 
 TOC_METADATA_KEYS = [
     "title",
