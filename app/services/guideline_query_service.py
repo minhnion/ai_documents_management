@@ -18,12 +18,14 @@ class GuidelineQueryService:
         page_size: int,
         search: str | None = None,
         title: str | None = None,
+        ten_benh: str | None = None,
         publisher: str | None = None,
         chuyen_khoa: str | None = None,
     ) -> tuple[list[Guideline], dict[int, dict[str, object]], int]:
         filters = self._build_guideline_filters(
             search=search,
             title=title,
+            ten_benh=ten_benh,
             publisher=publisher,
             chuyen_khoa=chuyen_khoa,
         )
@@ -96,6 +98,7 @@ class GuidelineQueryService:
         self,
         search: str | None,
         title: str | None,
+        ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
     ) -> list[object]:
@@ -106,11 +109,14 @@ class GuidelineQueryService:
             filters.append(
                 or_(
                     Guideline.title.ilike(keyword),
+                    Guideline.ten_benh.ilike(keyword),
                     Guideline.publisher.ilike(keyword),
                 )
             )
         if title and title.strip():
             filters.append(Guideline.title.ilike(f"%{title.strip()}%"))
+        if ten_benh and ten_benh.strip():
+            filters.append(Guideline.ten_benh.ilike(f"%{ten_benh.strip()}%"))
         if publisher and publisher.strip():
             filters.append(Guideline.publisher.ilike(f"%{publisher.strip()}%"))
         if chuyen_khoa and chuyen_khoa.strip():

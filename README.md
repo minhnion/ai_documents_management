@@ -266,7 +266,7 @@ Ví dụ login:
 
 - `title` (required)
 - `file` (required, PDF)
-- `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
+- `ten_benh`, `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
 - API sẽ tự chạy pipeline nội bộ: OCR (LandingAI) -> TOC (OpenAI) -> chunking -> clean markdown -> ghi `sections`/`chunks`
 
 `POST /api/v1/guidelines/{guideline_id}/versions` dùng `multipart/form-data` với các field:
@@ -366,7 +366,7 @@ DEBUG=true PYTHONPATH=. python -m tests.check_pipeline_services
 ## Database Schema (tóm tắt)
 
 ```
-guidelines          — metadata guideline (title, publisher, chuyen_khoa)
+guidelines          — metadata guideline (title, ten_benh, publisher, chuyen_khoa)
 guideline_versions  — các phiên bản của guideline (version_label, status, ...)
 documents           — file PDF gốc gắn với version (storage_uri, ...)
 sections            — cây mục lục TOC (heading, level, parent_id, ...)

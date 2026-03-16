@@ -29,6 +29,7 @@ async def list_guidelines(
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
     search: Annotated[str | None, Query(max_length=255)] = None,
     title: Annotated[str | None, Query(max_length=255)] = None,
+    ten_benh: Annotated[str | None, Query(max_length=255)] = None,
     publisher: Annotated[str | None, Query(max_length=255)] = None,
     chuyen_khoa: Annotated[str | None, Query(max_length=255)] = None,
 ) -> GuidelineListResponse:
@@ -38,6 +39,7 @@ async def list_guidelines(
         page_size=page_size,
         search=search,
         title=title,
+        ten_benh=ten_benh,
         publisher=publisher,
         chuyen_khoa=chuyen_khoa,
     )
@@ -68,6 +70,7 @@ async def create_guideline(
     _: Annotated[object, Depends(require_roles("editor", "admin"))],
     title: Annotated[str, Form(min_length=1, max_length=1000)],
     file: Annotated[UploadFile, File()],
+    ten_benh: Annotated[str | None, Form(max_length=500)] = None,
     publisher: Annotated[str | None, Form(max_length=500)] = None,
     chuyen_khoa: Annotated[str | None, Form(max_length=255)] = None,
     version_label: Annotated[str | None, Form(max_length=50)] = None,
@@ -79,6 +82,7 @@ async def create_guideline(
     service = GuidelineCommandService(db)
     guideline, guideline_version, document = await service.create_guideline(
         title=title,
+        ten_benh=ten_benh,
         publisher=publisher,
         chuyen_khoa=chuyen_khoa,
         version_label=version_label,

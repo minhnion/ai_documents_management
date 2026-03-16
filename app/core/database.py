@@ -128,3 +128,16 @@ async def migrate_sections_quality_schema() -> None:
                 """
             )
         )
+
+
+async def migrate_guidelines_ten_benh_schema() -> None:
+    """Add optional disease-name column for guideline metadata."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE guidelines
+                ADD COLUMN IF NOT EXISTS ten_benh TEXT
+                """
+            )
+        )

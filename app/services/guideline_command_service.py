@@ -34,6 +34,7 @@ class GuidelineCommandService:
     async def create_guideline(
         self,
         title: str,
+        ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
         version_label: str | None,
@@ -50,6 +51,7 @@ class GuidelineCommandService:
 
         guideline = Guideline(
             title=title.strip(),
+            ten_benh=ten_benh.strip() if ten_benh else None,
             publisher=publisher.strip() if publisher else None,
             chuyen_khoa=chuyen_khoa.strip() if chuyen_khoa else None,
         )

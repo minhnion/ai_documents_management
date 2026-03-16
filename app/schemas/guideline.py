@@ -17,6 +17,7 @@ class GuidelineListItem(BaseModel):
 
     guideline_id: int
     title: str
+    ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
     active_version: GuidelineVersionSummary | None = None
@@ -82,6 +83,7 @@ class WorkspaceGuidelineInfo(BaseModel):
 
     guideline_id: int
     title: str
+    ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
 

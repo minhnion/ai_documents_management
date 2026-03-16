@@ -11,6 +11,7 @@ class Guideline(Base):
         BigInteger, Identity(), primary_key=True
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
+    ten_benh: Mapped[str | None] = mapped_column(Text, nullable=True)
     publisher: Mapped[str | None] = mapped_column(Text, nullable=True)
     chuyen_khoa: Mapped[str | None] = mapped_column(Text, nullable=True)
 
