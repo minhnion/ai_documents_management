@@ -2,6 +2,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import NotFoundException
+from app.core.text_normalization import (
+    VIETNAMESE_TRANSLATION_SOURCE,
+    VIETNAMESE_TRANSLATION_TARGET,
+    normalize_search_text,
+)
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
 
@@ -104,25 +109,62 @@ class GuidelineQueryService:
     ) -> list[object]:
         filters: list[object] = []
 
-        if search and search.strip():
-            keyword = f"%{search.strip()}%"
+        normalized_search = normalize_search_text(search)
+        if normalized_search:
+            keyword = f"%{normalized_search}%"
             filters.append(
                 or_(
-                    Guideline.title.ilike(keyword),
-                    Guideline.ten_benh.ilike(keyword),
-                    Guideline.publisher.ilike(keyword),
+                    self._normalized_text_expr(Guideline.title).like(keyword),
+                    self._normalized_text_expr(Guideline.ten_benh).like(keyword),
+                    self._normalized_text_expr(Guideline.publisher).like(keyword),
+                    self._normalized_text_expr(Guideline.chuyen_khoa).like(keyword),
                 )
             )
-        if title and title.strip():
-            filters.append(Guideline.title.ilike(f"%{title.strip()}%"))
-        if ten_benh and ten_benh.strip():
-            filters.append(Guideline.ten_benh.ilike(f"%{ten_benh.strip()}%"))
-        if publisher and publisher.strip():
-            filters.append(Guideline.publisher.ilike(f"%{publisher.strip()}%"))
-        if chuyen_khoa and chuyen_khoa.strip():
-            filters.append(Guideline.chuyen_khoa.ilike(f"%{chuyen_khoa.strip()}%"))
+        self._append_normalized_contains_filter(
+            filters=filters,
+            column=Guideline.title,
+            value=title,
+        )
+        self._append_normalized_contains_filter(
+            filters=filters,
+            column=Guideline.ten_benh,
+            value=ten_benh,
+        )
+        self._append_normalized_contains_filter(
+            filters=filters,
+            column=Guideline.publisher,
+            value=publisher,
+        )
+        self._append_normalized_contains_filter(
+            filters=filters,
+            column=Guideline.chuyen_khoa,
+            value=chuyen_khoa,
+        )
 
         return filters
+
+    def _append_normalized_contains_filter(
+        self,
+        *,
+        filters: list[object],
+        column,
+        value: str | None,
+    ) -> None:
+        normalized_value = normalize_search_text(value)
+        if not normalized_value:
+            return
+        filters.append(
+            self._normalized_text_expr(column).like(f"%{normalized_value}%")
+        )
+
+    def _normalized_text_expr(self, column):
+        lowered = func.lower(func.coalesce(column, ""))
+        translated = func.translate(
+            lowered,
+            VIETNAMESE_TRANSLATION_SOURCE,
+            VIETNAMESE_TRANSLATION_TARGET,
+        )
+        return func.regexp_replace(translated, r"[^a-z0-9]+", "", "g")
 
     async def _get_active_versions(
         self,
