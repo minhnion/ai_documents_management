@@ -33,6 +33,7 @@ export interface GuidelineVersionSummary {
 export interface GuidelineListItem {
   guideline_id: number
   title: string
+  ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
   active_version: GuidelineVersionSummary | null
@@ -67,6 +68,7 @@ export interface GuidelineVersionListResponse {
 export interface WorkspaceGuidelineInfo {
   guideline_id: number
   title: string
+  ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
 }

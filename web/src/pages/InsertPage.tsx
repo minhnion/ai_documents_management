@@ -2,12 +2,14 @@ import { useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ChevronLeft, Save } from 'lucide-react'
 import { api } from '../lib/api'
+import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import type { CreateGuidelineResponse } from '../lib/types'
 
 export default function InsertPage() {
   const navigate = useNavigate()
 
   const [title, setTitle] = useState('')
+  const [tenBenh, setTenBenh] = useState('')
   const [publisher, setPublisher] = useState('')
   const [chuyenKhoa, setChuyenKhoa] = useState('')
   const [versionLabel, setVersionLabel] = useState('')
@@ -31,6 +33,7 @@ export default function InsertPage() {
       const formData = new FormData()
       formData.append('title', title)
       formData.append('file', file)
+      if (tenBenh) formData.append('ten_benh', tenBenh)
       if (publisher) formData.append('publisher', publisher)
       if (chuyenKhoa) formData.append('chuyen_khoa', chuyenKhoa)
       if (versionLabel) formData.append('version_label', versionLabel)
@@ -81,6 +84,16 @@ export default function InsertPage() {
                 />
               </div>
               <div className="form-group">
+                <label className="form-label">Tên bệnh</label>
+                <input
+                  type="text"
+                  className="form-input"
+                  value={tenBenh}
+                  onChange={e => setTenBenh(e.target.value)}
+                  placeholder="Ví dụ: Tăng huyết áp"
+                />
+              </div>
+              <div className="form-group">
                 <label className="form-label">Đơn vị ban hành</label>
                 <input
                   type="text"
@@ -94,11 +107,11 @@ export default function InsertPage() {
                 <label className="form-label">Chuyên khoa</label>
                 <select className="form-select" value={chuyenKhoa} onChange={e => setChuyenKhoa(e.target.value)}>
                   <option value="">-- Chọn chuyên khoa --</option>
-                  <option value="Nội khoa">Nội khoa</option>
-                  <option value="Ngoại khoa">Ngoại khoa</option>
-                  <option value="Nhi khoa">Nhi khoa</option>
-                  <option value="Sản khoa">Sản khoa</option>
-                  <option value="Tim mạch">Tim mạch</option>
+                  {SPECIALTY_OPTIONS.map(option => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>

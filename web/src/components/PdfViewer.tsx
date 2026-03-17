@@ -18,9 +18,10 @@ const DEFAULT_SCALE = 1.5
 interface PdfViewerProps {
   documentId: number | null
   page?: number
+  pageJumpKey?: number | null
 }
 
-export default function PdfViewer({ documentId, page }: PdfViewerProps) {
+export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerProps) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -175,9 +176,11 @@ export default function PdfViewer({ documentId, page }: PdfViewerProps) {
   // Scroll to page from TOC prop
   useEffect(() => {
     if (!page || page < 1) return
+    setCurrentPage(page)
+    setPageInputValue(String(page))
     const el = pageRefs.current[page - 1]
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }, [page, renderedPages])
+  }, [page, pageJumpKey, renderedPages])
 
   // ── Toolbar handlers ──────────────────────────────────────────
 
@@ -235,6 +238,8 @@ export default function PdfViewer({ documentId, page }: PdfViewerProps) {
 
   const goToPage = (pg: number) => {
     const clamped = Math.max(1, Math.min(numPages, pg))
+    setCurrentPage(clamped)
+    setPageInputValue(String(clamped))
     const el = pageRefs.current[clamped - 1]
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }

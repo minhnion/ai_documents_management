@@ -226,7 +226,11 @@ export default function ViewPage() {
 
       {/* RIGHT PANE: PDF */}
       <div className="pdf-pane">
-        <PdfViewer documentId={documentId} page={activeSection?.page_start ?? undefined} />
+        <PdfViewer
+          documentId={documentId}
+          page={activeSection?.page_start ?? undefined}
+          pageJumpKey={activeSection?.section_id ?? null}
+        />
       </div>
     </div>
   )

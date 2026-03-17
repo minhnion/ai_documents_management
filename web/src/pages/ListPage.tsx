@@ -1,50 +1,59 @@
 import { useEffect, useState, useCallback } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
+import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import type { GuidelineListResponse } from '../lib/types'
 import { useAuth } from '../store/auth'
 import VersionManagerModal from '../components/VersionManagerModal'
 
+const DEFAULT_PAGE_SIZE = 10
+
 export default function ListPage() {
-  const navigate = useNavigate()
   const { user } = useAuth()
   const [data, setData] = useState<GuidelineListResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [chuyenKhoa, setChuyenKhoa] = useState('')
+  const [page, setPage] = useState(1)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
-  // Optional: Add debounce for search, pagination states, etc.
+
+  const fetchGuidelines = useCallback(async () => {
+    setLoading(true)
+    const params = new URLSearchParams()
+    params.set('page', String(page))
+    params.set('page_size', String(DEFAULT_PAGE_SIZE))
+    if (search) params.set('search', search)
+    if (chuyenKhoa) params.set('chuyen_khoa', chuyenKhoa)
+
+    try {
+      const res = await api.get<GuidelineListResponse>(`/guidelines?${params.toString()}`)
+      setData(res.data)
+    } catch (err) {
+      console.error(err)
+    } finally {
+      setLoading(false)
+    }
+  }, [chuyenKhoa, page, search])
 
   const handleDelete = async (guidelineId: number, title: string) => {
     if (!window.confirm(`Xóa "${title}" và tất cả phiên bản? Thao tác này không thể hoàn tác.`)) return
     setDeletingId(guidelineId)
     try {
       await api.delete(`/guidelines/${guidelineId}`)
-      setData(prev => prev ? {
-        ...prev,
-        items: prev.items.filter(i => i.guideline_id !== guidelineId),
-        total: prev.total - 1
-      } : prev)
+      const isLastItemOnPage = (data?.items.length ?? 0) === 1
+      if (page > 1 && isLastItemOnPage) {
+        setPage(prev => prev - 1)
+      } else {
+        await fetchGuidelines()
+      }
     } catch (err: any) {
       alert(err.response?.data?.detail || 'Không thể xóa văn bản.')
     } finally {
       setDeletingId(null)
     }
   }
-
-  const fetchGuidelines = useCallback(() => {
-    setLoading(true)
-    const params = new URLSearchParams()
-    if (search) params.set('search', search)
-    if (chuyenKhoa) params.set('chuyen_khoa', chuyenKhoa)
-
-    api.get<GuidelineListResponse>(`/guidelines?${params.toString()}`)
-      .then(res => setData(res.data))
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }, [search, chuyenKhoa])
 
   useEffect(() => {
     fetchGuidelines()
@@ -72,25 +81,31 @@ export default function ListPage() {
               <input
                 type="text"
                 className="form-input"
-                placeholder="Tìm kiếm theo tiêu đề hoặc nhà xuất bản..."
+                placeholder="Tìm theo tiêu đề, tên bệnh, nhà xuất bản..."
                 style={{ paddingLeft: 36, maxWidth: '100%' }}
                 value={search}
-                onChange={e => setSearch(e.target.value)}
+                onChange={e => {
+                  setSearch(e.target.value)
+                  setPage(1)
+                }}
               />
             </div>
           </div>
-          <div className="form-group" style={{ width: 200 }}>
+          <div className="form-group" style={{ width: 320, maxWidth: '100%' }}>
             <select
               className="form-select"
               value={chuyenKhoa}
-              onChange={e => setChuyenKhoa(e.target.value)}
+              onChange={e => {
+                setChuyenKhoa(e.target.value)
+                setPage(1)
+              }}
             >
               <option value="">Tất cả chuyên khoa</option>
-              <option value="Nội khoa">Nội khoa</option>
-              <option value="Ngoại khoa">Ngoại khoa</option>
-              <option value="Nhi khoa">Nhi khoa</option>
-              <option value="Sản khoa">Sản khoa</option>
-              <option value="Tim mạch">Tim mạch</option>
+              {SPECIALTY_OPTIONS.map(option => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
             </select>
           </div>
         </div>
@@ -105,6 +120,7 @@ export default function ListPage() {
               <thead>
                 <tr>
                   <th>Tên văn bản</th>
+                  <th>Tên bệnh</th>
                   <th>Đơn vị ban hành</th>
                   <th>Chuyên khoa</th>
                   <th>Phiên bản hiện hành</th>
@@ -115,6 +131,7 @@ export default function ListPage() {
                 {data?.items.map(item => (
                   <tr key={item.guideline_id}>
                     <td className="font-medium">{item.title}</td>
+                    <td>{item.ten_benh || '-'}</td>
                     <td>{item.publisher || '-'}</td>
                     <td>{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
                     <td>
@@ -181,6 +198,30 @@ export default function ListPage() {
             </table>
           )}
         </div>
+        {!loading && data && data.total > 0 && (
+          <div className="pagination">
+            <span>
+              Trang {data.page} / {Math.max(1, Math.ceil(data.total / data.page_size))}
+            </span>
+            <span>
+              ({data.total} bản ghi)
+            </span>
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={data.page <= 1}
+              onClick={() => setPage(prev => Math.max(1, prev - 1))}
+            >
+              Trang trước
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={data.page >= Math.max(1, Math.ceil(data.total / data.page_size))}
+              onClick={() => setPage(prev => prev + 1)}
+            >
+              Trang sau
+            </button>
+          </div>
+        )}
       </div>
       {versionModalGuideline && (
         <VersionManagerModal
