@@ -27,7 +27,7 @@ const BOLD_RE = /\*\*(.+?)\*\*/g
 const ARROW_ONLY_RE = /^(?:↓|⬇|->|=>|→)+$/
 
 export default function SectionContentRenderer({ content }: SectionContentRendererProps) {
-  const normalized = normalizeContent(content)
+  const normalized = normalizeSectionContent(content)
 
   if (!normalized) {
     return <span className="section-rich-empty">Không có nội dung.</span>
@@ -50,7 +50,7 @@ export default function SectionContentRenderer({ content }: SectionContentRender
   )
 }
 
-function normalizeContent(content: string | null): string {
+export function normalizeSectionContent(content: string | null): string {
   if (!content) return ''
 
   return content

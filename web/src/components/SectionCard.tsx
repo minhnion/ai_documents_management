@@ -2,7 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { Edit3, Check, X, AlertTriangle } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
-import SectionContentRenderer from './SectionContentRenderer'
+import SectionContentRenderer, { normalizeSectionContent } from './SectionContentRenderer'
 
 interface SectionCardProps {
   node: WorkspaceSectionNode
@@ -32,6 +32,8 @@ export default function SectionCard({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   const isEditing = editValue !== null
+  const hasRenderableContent = normalizeSectionContent(node.content).length > 0
+  const hideEmptyBody = !isEditing && node.children.length > 0 && !hasRenderableContent
 
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
@@ -53,7 +55,7 @@ export default function SectionCard({
   return (
     <div
       ref={refCallback}
-      className={`section-card${isActive ? ' section-card--active' : ''}${isEditing ? ' section-card--editing' : ''}`}
+      className={`section-card${isActive ? ' section-card--active' : ''}${isEditing ? ' section-card--editing' : ''}${hideEmptyBody ? ' section-card--compact' : ''}`}
     >
       {/* Header */}
       <div className="section-card-header">
@@ -79,21 +81,23 @@ export default function SectionCard({
       </div>
 
       {/* Body */}
-      <div className="section-card-body">
-        {isEditing ? (
-          <textarea
-            ref={textareaRef}
-            className="section-card-textarea"
-            value={editValue}
-            onChange={e => onEditChange(e.target.value)}
-            disabled={saving}
-          />
-        ) : (
-          <div className="section-card-content">
-            <SectionContentRenderer content={node.content} />
-          </div>
-        )}
-      </div>
+      {!hideEmptyBody && (
+        <div className="section-card-body">
+          {isEditing ? (
+            <textarea
+              ref={textareaRef}
+              className="section-card-textarea"
+              value={editValue}
+              onChange={e => onEditChange(e.target.value)}
+              disabled={saving}
+            />
+          ) : (
+            <div className="section-card-content">
+              <SectionContentRenderer content={node.content} />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Footer (edit mode only) */}
       {isEditing && (
