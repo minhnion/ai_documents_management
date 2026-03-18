@@ -8,7 +8,7 @@ FastAPI backend cho hệ thống quản lý hướng dẫn y tế (Guideline Man
 |---|---|
 | Framework | FastAPI 0.115 |
 | ORM | SQLAlchemy 2.0 (async) |
-| Database driver | asyncpg (async), psycopg2 (Alembic) |
+| Database driver | asyncpg (async), psycopg2 (Alembic), pgvector |
 | Migrations | Alembic |
 | Validation | Pydantic v2 |
 | AuthN/AuthZ | JWT Bearer + RBAC (roles: admin/editor/viewer) |
@@ -40,7 +40,6 @@ chatbot-document/
 │   │   ├── document.py
 │   │   ├── section.py
 │   │   ├── chunk.py
-│   │   ├── chunk_embedding.py
 │   │   └── user.py
 │   ├── schemas/                    # Pydantic schemas (request/response)
 │       ├── base.py
@@ -82,6 +81,10 @@ source .venv/bin/activate
 ```bash
 pip install -r requirements.txt
 ```
+
+Lưu ý:
+- Nếu dùng schema có cột `chunks.embedding halfvec(3072)`, PostgreSQL cần có extension/vector type tương ứng trước khi app startup với `AUTO_CREATE_TABLES=true`.
+- Backend hiện mới map đúng schema `chunks`, nhưng chưa đọc/ghi dữ liệu embedding trong luồng nghiệp vụ.
 
 ### 3. Cấu hình biến môi trường
 
@@ -267,7 +270,8 @@ Ví dụ login:
 - `title` (required)
 - `file` (required, PDF)
 - `ten_benh`, `publisher`, `chuyen_khoa`, `version_label`, `release_date`, `effective_from`, `effective_to`, `status` (optional)
-- API sẽ tự chạy pipeline nội bộ: OCR (LandingAI) -> TOC (OpenAI) -> chunking -> clean markdown -> ghi `sections`/`chunks`
+- API sẽ tự chạy pipeline nội bộ: OCR (LandingAI) -> TOC (OpenAI) -> chunking -> clean markdown -> ghi `sections`
+- Artifact debug như `chunks.json` vẫn được lưu ở local storage, nhưng hiện tại chưa ghi dữ liệu vào bảng `chunks`
 
 `POST /api/v1/guidelines/{guideline_id}/versions` dùng `multipart/form-data` với các field:
 
@@ -299,12 +303,13 @@ Ví dụ login:
 ```
 
 - BE cập nhật trực tiếp `sections.content`/`sections.heading`
-- Chỉ xóa/rebuild `chunks` cho những section có thay đổi `content`
-- Không tạo lịch sử edit và không xử lý `chunk_embeddings` ở bước này
+- Không tạo lịch sử edit
+- Không re-index lại `start_char/end_char/page/score`
+- Không xử lý bảng `chunks` ở bước này
 
 `DELETE /api/v1/versions/{version_id}`:
 
-- Xóa một version và dữ liệu liên quan (documents/sections/chunks)
+- Xóa một version và dữ liệu liên quan
 - Xóa luôn thư mục local storage của version: `uploads/guidelines/{guideline_id}/{version_id}`
 - Nếu version bị xóa đang `active`, hệ thống tự promote version gần nhất còn lại lên `active`
 
@@ -370,7 +375,6 @@ guidelines          — metadata guideline (title, ten_benh, publisher, chuyen_k
 guideline_versions  — các phiên bản của guideline (version_label, status, ...)
 documents           — file PDF gốc gắn với version (storage_uri, ...)
 sections            — cây mục lục TOC (heading, level, parent_id, ...)
-chunks              — đoạn văn bản đã chia nhỏ cho AI retrieval
-chunk_embeddings    — vector embedding cho mỗi chunk
+chunks              — bảng để dành cho phase sau của AI retrieval, hiện backend chưa ghi/đọc trong luồng chính
 users               — tài khoản đăng nhập CMS + cột role (admin/editor/viewer)
 ```

@@ -23,6 +23,10 @@ _RE_TOC_HEADER = re.compile(
     r"^\s*(?:MUC\s*LUC|TABLE\s+OF\s+CONTENTS|CONTENTS)\s*$",
     flags=re.IGNORECASE,
 )
+_RE_TOC_PAGE = re.compile(
+    r"MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS",
+    flags=re.IGNORECASE,
+)
 
 
 class MarkdownProcessingService:
@@ -37,6 +41,10 @@ class MarkdownProcessingService:
         if len(parts) <= 1:
             return text[:120000]
         return PAGE_BREAK_MARKER.join(parts[:max_pages])
+
+    def has_toc_page(self, text: str, max_pages: int) -> bool:
+        scan = self.extract_first_pages(text, max_pages=max_pages)
+        return bool(_RE_TOC_PAGE.search(scan))
 
     def find_body_start(self, text: str) -> int:
         cursor = 0
@@ -61,11 +69,9 @@ class MarkdownProcessingService:
         return 0
 
     def extract_heading_outline(self, text: str) -> str:
-        body_start = self.find_body_start(text)
         lines: list[str] = []
-        seen: set[str] = set()
 
-        for raw in text[body_start:].splitlines():
+        for raw in text.splitlines():
             stripped = raw.strip()
             if not stripped or stripped == PAGE_BREAK_MARKER or _RE_PURE_NUM.match(stripped):
                 continue
@@ -73,16 +79,22 @@ class MarkdownProcessingService:
             if not plain:
                 continue
 
-            if (
-                _RE_MD_HEADING.match(stripped)
-                or _RE_NUMBERED.match(plain)
-                or _RE_ROMAN_HEADING.match(plain)
-                or _RE_CHAPTER_PREFIX.match(plain)
-                or (len(plain) <= 120 and plain == plain.upper() and len(plain) > 4)
-            ):
-                key = plain.lower()
-                if key not in seen:
-                    seen.add(key)
+            if _RE_MD_HEADING.match(stripped):
+                lines.append(stripped)
+            elif _RE_NUMBERED.match(plain):
+                lines.append(plain)
+            elif _RE_ROMAN_HEADING.match(plain):
+                lines.append(plain)
+            elif _RE_CHAPTER_PREFIX.match(plain):
+                lines.append(plain)
+            elif len(plain) <= 120 and plain == plain.upper() and len(plain) > 4:
+                if not re.fullmatch(r"[\-\=\*\s]+", plain):
                     lines.append(plain)
 
-        return "\n".join(lines)
+        deduped: list[str] = []
+        previous: str | None = None
+        for line in lines:
+            if line != previous:
+                deduped.append(line)
+                previous = line
+        return "\n".join(deduped)

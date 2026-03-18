@@ -26,6 +26,10 @@ class TocBuilderService:
 
     async def build_toc(self, clean_text: str, source_file: str) -> dict[str, Any]:
         phase1_input = self._markdown_service.extract_first_pages(clean_text, max_pages=TOC_SCAN_PAGES)
+        found_toc_page = self._markdown_service.has_toc_page(
+            clean_text,
+            max_pages=TOC_SCAN_PAGES,
+        )
         phase1_prompt = build_phase1_user_prompt(
             text=phase1_input,
             source_file=source_file,
@@ -37,7 +41,7 @@ class TocBuilderService:
         )
         toc = self.ensure_toc_schema(phase1_result, source_file=source_file)
 
-        if self.toc_is_shallow(toc):
+        if (not found_toc_page) or self.toc_is_shallow(toc):
             outline = self._markdown_service.extract_heading_outline(clean_text)
             phase2_prompt = build_phase2_user_prompt(
                 metadata=toc,

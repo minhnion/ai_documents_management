@@ -1,6 +1,7 @@
-from sqlalchemy import BigInteger, ForeignKey, Identity, Integer, Text
+from sqlalchemy import BigInteger, ForeignKey, Identity, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.sql_types import HALFVEC
 from app.models.base import Base
 
 
@@ -21,9 +22,7 @@ class Chunk(Base):
         nullable=True,
     )
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    token_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    embedding: Mapped[object | None] = mapped_column(HALFVEC(3072), nullable=True)
 
     # Relationships
     version: Mapped["GuidelineVersion"] = relationship(
@@ -31,9 +30,6 @@ class Chunk(Base):
     )
     section: Mapped["Section | None"] = relationship(
         "Section", back_populates="chunks"
-    )
-    embedding: Mapped["ChunkEmbedding | None"] = relationship(
-        "ChunkEmbedding", back_populates="chunk", uselist=False
     )
 
     def __repr__(self) -> str:

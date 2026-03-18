@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 TOC_SCAN_PAGES = 40
-MIN_SECTIONS_THRESHOLD = 2
+MIN_SECTIONS_THRESHOLD = 3
 
 TOC_METADATA_KEYS = [
     "title",
@@ -35,11 +35,12 @@ CẤU TRÚC PHÂN CẤP (lồng nhau):
   chapters -> sections -> subsections -> subsubsections -> subsubsubsections
   Mỗi node chỉ có "title" và key mảng con tương ứng. Mảng con rỗng thì để [].
 
-NHẬN DIỆN TIÊU ĐỀ:
+NHẬN DIỆN TIÊU ĐỀ (Tiếng Việt):
   - Cấp 1 (chapters): "Phần X", "Chương X", các mục lớn không có cha.
   - Cấp 2 (sections): "Bước X", "Mục X", "I, II, III", tiêu đề in đậm dưới chapter.
   - Cấp 3+ (subsections…): đánh số thập phân (2.1, 2.1.1…).
-  - Loại bỏ: số trang, dòng chân trang, đoạn văn bản nội dung."""
+  - Phụ lục có số -> lồng dưới chapter tương ứng. Phụ lục không số -> chapter riêng.
+  - Loại bỏ: số trang, dòng chân trang, tên tác giả, đoạn văn bản nội dung."""
 
 PHASE1_SYSTEM_PROMPT = f"""\
 Bạn là hệ thống trích xuất cấu trúc tài liệu y tế.
@@ -74,12 +75,20 @@ OUTPUT SCHEMA:
 METADATA - trích xuất từ văn bản, không tìm thấy -> null:
 {_METADATA_SCHEMA}
 
-MỤC LỤC (key "chapters"):
-- Ưu tiên dùng phần MỤC LỤC/TABLE OF CONTENTS nếu có trong văn bản.
-- Nếu không có MỤC LỤC rõ ràng, suy luận từ các tiêu đề lớn trong phần đầu.
-- KHÔNG mở rộng mục con từ nội dung chi tiết nếu MỤC LỤC đã có đủ.
-{_STRUCTURE_RULES}
-"""
+MỤC LỤC (key "chapters") - HAI TRƯỜNG HỢP:
+
+TRƯỜNG HỢP 1 - TÌM THẤY PHẦN MỤC LỤC/TABLE OF CONTENTS:
+  - CHỈ dùng các dòng/hàng nằm BÊN TRONG phần MỤC LỤC đó.
+  - TUYỆT ĐỐI KHÔNG suy luận thêm mục con từ nội dung chương, tiêu đề body, hay bất kỳ phần nào khác của văn bản.
+  - TUYỆT ĐỐI KHÔNG thêm bất kỳ mục nào không xuất hiện trong MỤC LỤC.
+  - Nếu MỤC LỤC chỉ có 2 cấp -> chỉ trả về 2 cấp, không tự thêm cấp 3.
+  - Kết quả nông (ít sections) là ĐÚNG nếu MỤC LỤC gốc nông - hệ thống sẽ tự bổ sung ở bước tiếp theo.
+
+TRƯỜNG HỢP 2 - KHÔNG TÌM THẤY MỤC LỤC:
+  - Suy luận từ các tiêu đề lớn trong phần văn bản đã cung cấp.
+  - Áp dụng quy tắc nhận diện tiêu đề bên dưới.
+
+{_STRUCTURE_RULES}"""
 
 PHASE2_SYSTEM_PROMPT = f"""\
 Bạn là hệ thống xây dựng cây TOC tài liệu y tế từ danh sách tiêu đề.
@@ -96,7 +105,8 @@ XÁC ĐỊNH CẤP DỰA TRÊN SỐ THẬP PHÂN:
   "2.1." hoặc "2.1 Tiêu đề" -> section cấp 2
   "2.1.1." -> subsection cấp 3
   "2.1.1.1." -> subsubsection cấp 4
-"""
+  Dòng in hoa không số -> chapter. Markdown ## -> cấp theo số dấu #.
+  Giữ nguyên tiêu đề gốc. KHÔNG thêm mục không có trong outline."""
 
 
 def build_phase1_user_prompt(text: str, source_file: str, pages: int = TOC_SCAN_PAGES) -> str:

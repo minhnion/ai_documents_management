@@ -72,7 +72,7 @@ class DocumentIngestionPipelineService:
             clean_text=clean_md,
         )
         logger.info(
-            "Pipeline done | guideline_id=%s version_id=%s sections=%s chunks=%s artifacts=%s",
+            "Pipeline done | guideline_id=%s version_id=%s sections=%s persisted_chunks=%s artifacts=%s",
             guideline_id,
             version_id,
             persist_stats.get("section_count"),

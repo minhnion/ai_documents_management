@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestException, NotFoundException
-from app.models.chunk import Chunk
 from app.models.guideline_version import GuidelineVersion
 from app.models.section import Section
 
@@ -44,39 +43,13 @@ class GuidelineEditService:
                 section_map[item.section_id].heading = item.heading.strip() or None
         await self.db.flush()
 
-        content_updated_section_ids = [
-            item.section_id for item in normalized_updates if item.content is not None
-        ]
-        if not content_updated_section_ids:
-            return {
-                "version_id": version_id,
-                "requested_count": len(normalized_updates),
-                "updated_count": len(normalized_updates),
-                "updated_section_ids": section_ids,
-                "deleted_chunk_count": 0,
-                "created_chunk_count": 0,
-            }
-
-        deleted_chunk_count = await self._delete_section_chunks(
-            version_id=version_id,
-            section_ids=content_updated_section_ids,
-        )
-        created_chunk_count = self._rebuild_section_chunks(
-            version_id=version_id,
-            sections=[
-                section_map[section_id]
-                for section_id in content_updated_section_ids
-            ],
-        )
-        await self.db.flush()
-
         return {
             "version_id": version_id,
             "requested_count": len(normalized_updates),
             "updated_count": len(normalized_updates),
             "updated_section_ids": section_ids,
-            "deleted_chunk_count": deleted_chunk_count,
-            "created_chunk_count": created_chunk_count,
+            "deleted_chunk_count": 0,
+            "created_chunk_count": 0,
         }
 
     def _normalize_updates(
@@ -142,40 +115,3 @@ class GuidelineEditService:
             raise NotFoundException("Section", missing_value)
 
         return section_map
-
-    async def _delete_section_chunks(
-        self,
-        *,
-        version_id: int,
-        section_ids: list[int],
-    ) -> int:
-        delete_result = await self.db.execute(
-            delete(Chunk)
-            .where(Chunk.version_id == version_id)
-            .where(Chunk.section_id.in_(section_ids))
-        )
-        return int(delete_result.rowcount or 0)
-
-    def _rebuild_section_chunks(
-        self,
-        *,
-        version_id: int,
-        sections: list[Section],
-    ) -> int:
-        created_count = 0
-        for section in sections:
-            section_text = section.content
-            if not isinstance(section_text, str) or not section_text.strip():
-                continue
-            self.db.add(
-                Chunk(
-                    version_id=version_id,
-                    section_id=section.section_id,
-                    text=section_text,
-                    token_count=len(section_text.split()),
-                    page_start=section.page_start,
-                    page_end=section.page_end,
-                )
-            )
-            created_count += 1
-        return created_count

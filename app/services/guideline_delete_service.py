@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import NotFoundException
 from app.models.chunk import Chunk
-from app.models.chunk_embedding import ChunkEmbedding
 from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
@@ -137,14 +136,6 @@ class GuidelineDeleteService:
         return int(promoted.version_id)
 
     async def _delete_version_graph(self, version_id: int) -> None:
-        chunk_ids_subquery = select(Chunk.chunk_id).where(
-            Chunk.version_id == version_id
-        )
-        await self.db.execute(
-            delete(ChunkEmbedding).where(
-                ChunkEmbedding.chunk_id.in_(chunk_ids_subquery)
-            )
-        )
         await self.db.execute(delete(Chunk).where(Chunk.version_id == version_id))
         await self.db.execute(delete(Section).where(Section.version_id == version_id))
         await self.db.execute(delete(Document).where(Document.version_id == version_id))
@@ -155,15 +146,6 @@ class GuidelineDeleteService:
     async def _delete_guideline_graph(self, guideline_id: int) -> None:
         version_ids_subquery = select(GuidelineVersion.version_id).where(
             GuidelineVersion.guideline_id == guideline_id
-        )
-        chunk_ids_subquery = select(Chunk.chunk_id).where(
-            Chunk.version_id.in_(version_ids_subquery)
-        )
-
-        await self.db.execute(
-            delete(ChunkEmbedding).where(
-                ChunkEmbedding.chunk_id.in_(chunk_ids_subquery)
-            )
         )
         await self.db.execute(
             delete(Chunk).where(Chunk.version_id.in_(version_ids_subquery))

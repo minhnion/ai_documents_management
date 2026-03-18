@@ -7,7 +7,6 @@ from typing import Any
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.section import Section
 from app.services.pipeline.markdown_service import PAGE_BREAK_MARKER
@@ -30,14 +29,14 @@ class PipelinePersistenceService:
         chunk_payload: dict[str, Any],
         clean_text: str,
     ) -> dict[str, int]:
-        await self.db.execute(delete(Chunk).where(Chunk.version_id == version_id))
+        # The chunking output still drives section extraction and local artifacts,
+        # but DB-level `chunks` persistence is intentionally deferred for now.
         await self.db.execute(delete(Section).where(Section.version_id == version_id))
         await self.db.flush()
 
         section_count = 0
-        chunk_count = 0
         for idx, chapter in enumerate(chunk_payload.get("chapters", []), start=1):
-            inserted_sections, inserted_chunks = await self._persist_section_tree(
+            inserted_sections = await self._persist_section_tree(
                 version_id=version_id,
                 node=chapter,
                 parent_id=None,
@@ -46,10 +45,9 @@ class PipelinePersistenceService:
                 section_path=str(idx),
             )
             section_count += inserted_sections
-            chunk_count += inserted_chunks
 
         document.page_count = self._estimate_page_count(clean_text)
-        return {"section_count": section_count, "chunk_count": chunk_count}
+        return {"section_count": section_count, "chunk_count": 0}
 
     async def _persist_section_tree(
         self,
@@ -60,7 +58,7 @@ class PipelinePersistenceService:
         level: int,
         order_index: int,
         section_path: str,
-    ) -> tuple[int, int]:
+    ) -> int:
         section = Section(
             version_id=version_id,
             parent_id=parent_id,
@@ -79,24 +77,10 @@ class PipelinePersistenceService:
         self.db.add(section)
         await self.db.flush()
 
-        chunk_count = 0
-        section_text = node.get("content")
-        if isinstance(section_text, str) and section_text.strip():
-            chunk = Chunk(
-                version_id=version_id,
-                section_id=section.section_id,
-                text=section_text,
-                token_count=len(section_text.split()),
-                page_start=node.get("page_start"),
-                page_end=node.get("page_end"),
-            )
-            self.db.add(chunk)
-            chunk_count = 1
-
         section_count = 1
         for idx, child in enumerate(node.get("sections", []), start=1):
             child_path = f"{section_path}.{idx}"
-            child_sections, child_chunks = await self._persist_section_tree(
+            child_sections = await self._persist_section_tree(
                 version_id=version_id,
                 node=child,
                 parent_id=section.section_id,
@@ -105,9 +89,8 @@ class PipelinePersistenceService:
                 section_path=child_path,
             )
             section_count += child_sections
-            chunk_count += child_chunks
 
-        return section_count, chunk_count
+        return section_count
 
     def write_artifacts(
         self,
