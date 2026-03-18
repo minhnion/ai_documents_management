@@ -7,14 +7,24 @@ from typing import Any
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.document import Document
 from app.models.section import Section
-from app.services.pipeline.markdown_service import PAGE_BREAK_MARKER
+from app.services.pipeline.clean_markdown_service import PAGE_BREAK_MARKER
 
 OCR_MD_FILENAME = "extraction.md"
 CLEAN_MD_FILENAME = "extraction_clean.md"
 TOC_FILENAME = "toc_structure.json"
 CHUNKS_FILENAME = "chunks.json"
+
+_CHILD_KEYS = (
+    "chapters",
+    "sections",
+    "subsections",
+    "subsubsections",
+    "subsubsubsections",
+    "children",
+)
 
 
 class PipelinePersistenceService:
@@ -29,22 +39,20 @@ class PipelinePersistenceService:
         chunk_payload: dict[str, Any],
         clean_text: str,
     ) -> dict[str, int]:
-        # The chunking output still drives section extraction and local artifacts,
-        # but DB-level `chunks` persistence is intentionally deferred for now.
         await self.db.execute(delete(Section).where(Section.version_id == version_id))
         await self.db.flush()
 
         section_count = 0
-        for idx, chapter in enumerate(chunk_payload.get("chapters", []), start=1):
-            inserted_sections = await self._persist_section_tree(
+        for index, chapter in enumerate(self._extract_children(chunk_payload), start=1):
+            inserted = await self._persist_section_tree(
                 version_id=version_id,
                 node=chapter,
                 parent_id=None,
                 level=1,
-                order_index=idx,
-                section_path=str(idx),
+                order_index=index,
+                section_path=str(index),
             )
-            section_count += inserted_sections
+            section_count += inserted
 
         document.page_count = self._estimate_page_count(clean_text)
         return {"section_count": section_count, "chunk_count": 0}
@@ -59,6 +67,14 @@ class PipelinePersistenceService:
         order_index: int,
         section_path: str,
     ) -> int:
+        score = node.get("match_score")
+        is_suspect = False
+        try:
+            if score is not None:
+                is_suspect = float(score) < float(settings.SCORE_THRESHOLD)
+        except Exception:
+            is_suspect = False
+
         section = Section(
             version_id=version_id,
             parent_id=parent_id,
@@ -70,26 +86,25 @@ class PipelinePersistenceService:
             end_char=node.get("end_char"),
             page_start=node.get("page_start"),
             page_end=node.get("page_end"),
-            match_score=node.get("match_score"),
-            is_suspect=bool(node.get("is_suspect", False)),
+            match_score=score,
+            is_suspect=is_suspect,
             content=node.get("content"),
         )
         self.db.add(section)
         await self.db.flush()
 
         section_count = 1
-        for idx, child in enumerate(node.get("sections", []), start=1):
-            child_path = f"{section_path}.{idx}"
-            child_sections = await self._persist_section_tree(
+        for index, child in enumerate(self._extract_children(node), start=1):
+            child_path = f"{section_path}.{index}"
+            inserted = await self._persist_section_tree(
                 version_id=version_id,
                 node=child,
                 parent_id=section.section_id,
                 level=level + 1,
-                order_index=idx,
+                order_index=index,
                 section_path=child_path,
             )
-            section_count += child_sections
-
+            section_count += inserted
         return section_count
 
     def write_artifacts(
@@ -111,6 +126,17 @@ class PipelinePersistenceService:
             json.dumps(chunk_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _extract_children(self, node: dict[str, Any]) -> list[dict[str, Any]]:
+        children: list[dict[str, Any]] = []
+        for key in _CHILD_KEYS:
+            value = node.get(key)
+            if not isinstance(value, list):
+                continue
+            for child in value:
+                if isinstance(child, dict) and child.get("title"):
+                    children.append(child)
+        return children
 
     def _estimate_page_count(self, clean_text: str) -> int:
         return clean_text.count(PAGE_BREAK_MARKER) + 1

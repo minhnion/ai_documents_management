@@ -1,636 +1,615 @@
-from __future__ import annotations
+from pathlib import Path
+import bisect
+import re, json, sys, unicodedata
+from typing import Any, Dict, List, Optional, Tuple
+import logging
 
-import html
-import re
-import unicodedata
-from bisect import bisect_right
-from dataclasses import dataclass
-from difflib import SequenceMatcher
-from typing import Any
+from app.core.exceptions import UnprocessableEntityException
 
-from app.services.pipeline.markdown_service import MarkdownProcessingService, PAGE_BREAK_MARKER
-from app.services.pipeline.prompts import TOC_METADATA_KEYS
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-_RE_MD_HEADING = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
-_RE_NUMBERED = re.compile(
-    r"^\s*(?:(?:\d+(?:\.\d+){0,5})|(?:[IVXLCM]{1,8})|(?:[A-Z]))[.)]?\s+.+$",
-    flags=re.IGNORECASE,
+# ==============================================================================
+# CẤU HÌNH ĐẦU VÀO / ĐẦU RA 
+# ==============================================================================
+
+# 1. ĐẦU VÀO: 
+#   - Thư mục chứa các file Markdown OCR (Tạo từ Bước 1)
+MD_INPUT_DIR  = Path("./data/02_ocr_markdown")
+#   - Thư mục chứa JSON Cấu trúc Mục lục (Tạo từ Bước 2)
+TOC_INPUT_DIR = Path("./data/03_toc_json")
+
+# 2. ĐẦU RA: Thư mục lưu kết quả Chunking JSON (File _chunks.json)
+OUTPUT_DIR    = Path("./data/04_chunked_json")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# Danh sách các cặp file cần chạy (Để rỗng [] nếu muốn tự động nối file dựa trên tên)
+FILE_PAIRS: List[Tuple[str, str, str]] = []
+
+def get_file_pairs():
+    if FILE_PAIRS:
+        return FILE_PAIRS
+    
+    pairs = []
+    if not MD_INPUT_DIR.exists() or not TOC_INPUT_DIR.exists():
+        MD_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        TOC_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        logging.info(f"[*] Đã tạo thư mục đầu vào. Copy Markdown vào {MD_INPUT_DIR} và JSON vào {TOC_INPUT_DIR}")
+        return pairs
+
+    # Tự động match file markdown với file json dựa trên tiền tố tên
+    for md_file in MD_INPUT_DIR.glob("*.md"):
+        stem = md_file.stem
+        if stem.endswith(".extraction"):
+            stem = stem[:-len(".extraction")]
+        if stem.endswith("_ocr"):
+            stem = stem[:-len("_ocr")]
+            
+        toc_file = TOC_INPUT_DIR / f"{stem}_toc_structure.json"
+        
+        # Thử một pattern tên khác nếu không tìm thấy
+        if not toc_file.exists():
+             toc_file = TOC_INPUT_DIR / f"{md_file.stem}_toc_structure.json"
+             
+        if toc_file.exists():
+            out_name = f"{stem}_chunks.json"
+            pairs.append((md_file.name, toc_file.name, out_name))
+        else:
+            logging.warning(f"Không tìm thấy file TOC tương ứng cho {md_file.name}")
+            
+    return pairs
+
+MIN_MATCH_SCORE:  float = 0.65
+MAX_HEADING_LEN:  int   = 250
+DEBUG_MATCH_INFO: bool  = False
+
+try:
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PATTERNS
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RE_ANCHOR     = re.compile(r"<a\s[^>]*></a>", re.IGNORECASE)
+_RE_PAGE_BREAK = re.compile(r"<!--\s*PAGE\s*BREAK\s*-->", re.IGNORECASE)
+_RE_HTML_CMT   = re.compile(r"<!--.*?-->", re.DOTALL)
+_RE_TOC_HEADER = re.compile(
+    r"^\s*(?:M\u1ee4C\s*L\u1ee4C|MUC\s*LUC|TABLE\s+OF\s+CONTENTS|CONTENTS)\s*$",
+    re.IGNORECASE,
 )
-_RE_CHAPTER_PREFIX = re.compile(
-    r"^\s*(?:chuong|phan|buoc|muc|dieu|phu\s+luc)\s+[\w.-]+",
-    flags=re.IGNORECASE,
-)
-_RE_SPLIT_LINES = re.compile(r".*(?:\n|$)")
-_RE_HTML_TAG = re.compile(r"<[^>]+>")
-_RE_TABLE_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", flags=re.IGNORECASE | re.DOTALL)
-_RE_INLINE_BOLD_HEADING = re.compile(r"^\s*\*\*(.+?)\*\*")
-_RE_MULTI_SPACE = re.compile(r"\s+")
-_RE_PREFIX_WORDS = re.compile(
-    r"^\s*(?:chuong|phan|buoc|muc|dieu|phu\s+luc)\s*[:.\-\divxlcm]*\s*",
-    flags=re.IGNORECASE,
-)
-_RE_LEADING_NUMBERING = re.compile(r"^\s*[\divxlcm]+(?:\.[\divxlcm]+)*[.)]?\s*")
-_RE_PAGE_LABEL = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdm]{1,8})\s*$", flags=re.IGNORECASE)
-_RE_SECTION_SIGNATURE = re.compile(
-    r"^\s*(?:(phu\s+luc|chuong|phan|buoc|muc|dieu)\s+([a-z0-9ivxlcdm.]+)|([a-z0-9ivxlcdm]+(?:\.[a-z0-9ivxlcdm]+)*))[.)]?\b",
-    flags=re.IGNORECASE,
+_RE_PURE_NUM   = re.compile(r"^\s*[\d\s,\.\-/]+\s*$")
+_RE_LIST_ITEM  = re.compile(r"^\s*[-+\u2022\u2192>|]")
+_RE_MD_HDG     = re.compile(r"^#{1,6}\s+(.*)")
+_RE_TD_TEXT    = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.DOTALL | re.IGNORECASE)
+_RE_HTML_TAG   = re.compile(r"<[^>]+>")
+_RE_BOLD_STRIP = re.compile(r"^\*{1,2}|^\_{1,2}|\*{1,2}$|\_{1,2}$")
+
+_RE_HTML_NON_TABLE = re.compile(
+    r"<(?!/?(?:table|tr|td|th)\b)(?!::)[^>]*>",
+    re.IGNORECASE,
 )
 
-_TITLE_CONNECTOR_WORDS = {
-    "va",
-    "và",
-    "ve",
-    "về",
-    "cua",
-    "của",
-    "cho",
-    "theo",
-    "tai",
-    "tại",
-    "o",
-    "ở",
-    "duoi",
-    "dưới",
-    "tren",
-    "trên",
-}
+_CHILD_KEYS = (
+    "chapters", "sections", "subsections",
+    "subsubsections", "subsubsubsections", "children",
+)
 
-_GENERIC_TITLE_TOKENS = {
-    "huong",
-    "dan",
-    "chan",
-    "doan",
-    "dieu",
-    "tri",
-    "quan",
-    "ly",
-    "tai",
-    "tram",
-    "y",
-    "te",
-    "xa",
-    "nguoi",
-    "lon",
-    "doi",
-    "tuong",
-    "ap",
-    "dung",
-    "kham",
-    "lam",
-    "sang",
-    "xet",
-    "nghiem",
-    "va",
-    "buoc",
-    "phan",
-    "chuong",
-    "muc",
-    "dieu",
-    "phu",
-    "luc",
-    "quy",
-    "trinh",
-    "so",
-    "do",
-    "cac",
-    "nguye",
-    "nguyen",
-    "tac",
-    "cho",
-    "tuyen",
-    "tren",
-    "ve",
-}
+# ──────────────────────────────────────────────────────────────────────────────
+# CONTENT CLEANUP
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _clean_content(content: Optional[str]) -> Optional[str]:
+    if content is None:
+        return None
+    content = _RE_HTML_NON_TABLE.sub("", content)
+    content = content.replace("<!-- PAGE_BREAK -->", "")
+    content = re.sub(r"\n{3,}", "\n\n", content)
+    return content.strip() or None
 
 
-@dataclass
-class HeadingCandidate:
-    start: int
-    end: int
-    text: str
+# ──────────────────────────────────────────────────────────────────────────────
+# PAGE MAP
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_page_map(clean_text: str, *_args, **_kwargs) -> List[int]:
+    """Trả về danh sách vị trí sentinel PAGE_BREAK đã sắp xếp."""
+    sentinel  = "<!-- PAGE_BREAK -->"
+    positions: List[int] = []
+    pos = 0
+    while True:
+        idx = clean_text.find(sentinel, pos)
+        if idx == -1:
+            break
+        positions.append(idx)
+        pos = idx + 1
+    logging.info("Page map: %d sentinels → %d pages total", len(positions), len(positions) + 1)
+    return positions
 
 
-@dataclass
-class AssignedNode:
-    title: str
-    children: list["AssignedNode"]
-    match_candidate_index: int | None = None
-    match_start: int | None = None
-    heading_end: int | None = None
-    match_score: float | None = None
-    start_char: int | None = None
-    end_char: int | None = None
-    page_start: int | None = None
-    page_end: int | None = None
-    is_suspect: bool = False
-    content: str | None = None
+def _page_at(sentinel_positions: List[int], char_pos: Optional[int]) -> Optional[int]:
+    if char_pos is None:
+        return None
+    return bisect.bisect_right(sentinel_positions, char_pos) + 1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# PREPROCESSING
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _preprocess(text: str) -> str:
+    text = _RE_ANCHOR.sub("", text)
+    text = re.sub(r"<!--(?!\s*PAGE\s*BREAK\s*-->).*?-->", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = _RE_PAGE_BREAK.sub("<!-- PAGE_BREAK -->", text)
+    return text
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BODY-START DETECTION
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _find_body_start(text: str) -> int:
+    """Bỏ qua phần mục lục đầu file để tránh match nhầm vào bảng TOC."""
+    sentinel = "<!-- PAGE_BREAK -->"
+    pos      = 0
+    in_toc   = False
+
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not in_toc:
+            plain = _RE_HTML_TAG.sub("", stripped).strip()
+            if _RE_TOC_HEADER.match(stripped) or _RE_TOC_HEADER.match(plain):
+                in_toc = True
+            pos += len(line)
+            continue
+        if (not stripped or stripped == sentinel
+                or stripped.startswith("<") or _RE_PURE_NUM.match(stripped)):
+            pos += len(line)
+            continue
+        return pos
+    return 0
+
+# ──────────────────────────────────────────────────────────────────────────────
+# FUZZY MATCHING LOGIC
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _normalize(title: str) -> str:
+    """Chuẩn hóa để so khớp: không dấu, viết thường, loại bỏ nhãn 'Bước/Phần'."""
+    s = title.strip()
+    s = re.sub(
+        r"^(?:ph[a\u1ea7n]|phan|b[\u01b0\u01a1\u01b0\u01a1c]+|buoc|"
+        r"ch[\u01b0\u01a1\u01a1u]ng|chuong)\s+\S+\s*[\.\:\-\)]?\s*",
+        "", s, flags=re.IGNORECASE,
+    )
+    s = re.sub(r"^[0-9]+(?:\.[0-9]+)*[\.\:\)\-]?\s*", "", s)
+    s = re.sub(r"^[A-Za-z][\.\)\-]\s*", "", s)
+    s = re.sub(r"\s*\(.*", "", s)
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+    s = s.lower()
+    s = re.sub(r"[^\w\s]", " ", s)
+    return " ".join(s.split())
+
+def _word_set(text: str) -> set:
+    return {w for w in _normalize(text).split() if len(w) > 2}
+
+def _effective_inter(toc_word_list: List[str], cand_words: set) -> int:
+    """
+    Đếm số toc_words được cover bởi cand_words, kể cả chữ viết tắt y tế.
+    Chỉ dùng kết quả acronym expansion khi nó cover TẤT CẢ toc_words.
+    """
+    toc_set     = set(toc_word_list)
+    direct      = toc_set & cand_words
+    direct_cnt  = len(direct)
+
+    matched   = set(direct)
+    unmatched = [w for w in toc_word_list if w not in matched]
+
+    for cw in cand_words:
+        if cw in toc_set or len(cw) < 2:
+            continue
+        for start in range(len(unmatched)):
+            for length in range(2, len(unmatched) - start + 1):
+                subseq = unmatched[start : start + length]
+                if (len(cw) == length
+                        and all(cw[i] == subseq[i][0] for i in range(length))):
+                    matched.update(subseq)
+                    for w in subseq:
+                        try: unmatched.remove(w)
+                        except ValueError: pass
+                    break
+
+    expanded_cnt = len(matched)
+
+    if expanded_cnt == len(toc_word_list):
+        return expanded_cnt
+    return direct_cnt
+
+
+def _match_score(toc_title: str, candidate: str) -> float:
+    toc_norm   = _normalize(toc_title)
+    cand_norm  = _normalize(candidate)
+    toc_list   = [w for w in toc_norm.split()  if len(w) > 2]
+    cand_words = {w for w in cand_norm.split() if len(w) > 2}
+    if not toc_list or not cand_words:
+        return 0.0
+
+    eff_inter = _effective_inter(toc_list, cand_words)
+    forward   = eff_inter / len(toc_list)
+
+    if len(toc_list) <= 3:
+        backward = min(1.0, eff_inter / len(cand_words))
+        if backward < 0.30:
+            if cand_norm.startswith(toc_norm):
+                return forward
+            return forward * backward
+        return forward
+
+    backward = min(1.0, eff_inter / len(cand_words))
+    if forward + backward == 0:
+        return 0.0
+    f1 = 2 * forward * backward / (forward + backward)
+    return (f1 + forward) / 2 if forward == 1.0 else f1
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HEADING CANDIDATE EXTRACTION
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _clean_candidate(raw: str) -> Optional[str]:
+    s = raw.strip()
+    if not s or _RE_PURE_NUM.match(s) or _RE_LIST_ITEM.match(s):
+        return None
+    if re.search(r"\.{3,}", s):
+        return None
+    s = re.sub(r"\s+\d+\s*$", "", s).strip()
+    s = _RE_BOLD_STRIP.sub("", s).strip()
+    if not s or len(s) > MAX_HEADING_LEN:
+        return None
+    return s
+
+def _extract_candidates(text: str, body_start: int) -> List[Tuple[int, int, str]]:
+    """Trích xuất các vị trí nghi ngờ là tiêu đề từ text và bảng HTML."""
+    seen:       set = set()
+    candidates: List[Tuple[int, int, str]] = []
+
+    def _add(s: int, e: int, t: str, key=None) -> None:
+        k = key if key is not None else s
+        if k not in seen:
+            seen.add(k)
+            candidates.append((s, e, t))
+
+    # Nguồn 1: Các dòng text đơn lẻ
+    pos = body_start
+    for raw in text[body_start:].splitlines(keepends=True):
+        line_start = pos
+        pos += len(raw)
+        stripped = raw.strip()
+        if not stripped or stripped == "<!-- PAGE_BREAK -->" or stripped.startswith("<"):
+            continue
+        md_m = _RE_MD_HDG.match(stripped)
+        txt  = md_m.group(1).strip() if md_m else stripped
+        cleaned = _clean_candidate(txt)
+        if cleaned:
+            _add(line_start, pos, cleaned)
+
+    # Nguồn 2: Text bên trong các ô bảng HTML
+    body_text = text[body_start:]
+    base      = body_start
+    _RE_SUBLABEL_SEP     = re.compile(r'[\.\-\:]\s+[A-Z]\.\s')
+    _RE_CELL_HEADING_END = re.compile(r"\s+\d+\.\s")
+
+    for cell_m in _RE_TD_TEXT.finditer(body_text):
+        cstart = base + cell_m.start()
+        cend   = base + cell_m.end()
+        cell_t = _RE_HTML_TAG.sub("", cell_m.group(1)).replace("\n", " ")
+
+        cleaned = _clean_candidate(cell_t)
+        if cleaned:
+            _add(cstart, cend, cleaned)
+        elif len(cell_t.strip()) > MAX_HEADING_LEN:
+            split_m = _RE_CELL_HEADING_END.search(cell_t)
+            if split_m:
+                head_part = cell_t[:split_m.start()].strip()
+                cleaned_head = _clean_candidate(head_part)
+                if cleaned_head:
+                    _add(cstart, cstart + split_m.start(), cleaned_head,
+                         key=(cstart, "cellhead"))
+
+        m_split = _RE_SUBLABEL_SEP.search(cell_t)
+        if m_split:
+            prefix = cell_t[:m_split.start() + 1].strip()
+            cleaned_prefix = _clean_candidate(prefix)
+            if cleaned_prefix:
+                _add(cstart, cstart + m_split.start() + 1, cleaned_prefix, key=(cstart, "prefix"))
+
+            suffix = cell_t[m_split.start() + 1:].strip()
+            cleaned_suffix = _clean_candidate(suffix)
+            if cleaned_suffix:
+                _add(cstart + m_split.start() + 1, cend, cleaned_suffix, key=(cstart, "suffix"))
+
+    # Nguồn 3: Tiêu đề bị ngắt dòng do Page Break → merge 2 dòng liền kề
+    line_list: List[Tuple[int, int, str]] = []
+    pos2 = body_start
+    for raw in text[body_start:].splitlines(keepends=True):
+        stripped = raw.strip()
+        if stripped and not stripped.startswith("<") and stripped != "<!-- PAGE_BREAK -->":
+            md_m = _RE_MD_HDG.match(stripped)
+            txt  = md_m.group(1).strip() if md_m else stripped
+            cleaned = _clean_candidate(txt)
+            if cleaned:
+                line_list.append((pos2, pos2 + len(raw), cleaned))
+        pos2 += len(raw)
+
+    for i in range(len(line_list) - 1):
+        s1, e1, t1 = line_list[i]
+        s2, e2, t2 = line_list[i + 1]
+        if len(t1) < 90 and len(t2) < 90:
+            merged = t1 + " " + t2
+            if len(merged) <= MAX_HEADING_LEN:
+                _add(s1, e2, merged, key=(s1, e2))
+
+    candidates.sort(key=lambda x: x[0])
+    return candidates
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HIERARCHICAL MATCHING
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _match_unordered(nodes: List[Dict], candidates: List[Tuple[int, int, str]], r_start: int, r_end: int) -> None:
+    """Matching không thứ tự cho cấp cao nhất (Chapter)."""
+    in_range = [(s, e, t) for s, e, t in candidates if r_start <= s < r_end]
+    pairs = []
+    for node in nodes:
+        title = node.get("title", "")
+        for cand in in_range:
+            score = _match_score(title, cand[2])
+            if score >= MIN_MATCH_SCORE:
+                pairs.append((score, cand[0], node, cand))
+    pairs.sort(key=lambda x: (-x[0], x[1]))
+    assigned_nodes, assigned_cands = set(), set()
+    for score, _cpos, node, cand in pairs:
+        if id(node) not in assigned_nodes and cand[0] not in assigned_cands:
+            node["_match_start"]   = cand[0]
+            node["_match_end"]     = cand[1]
+            node["_match_heading"] = cand[2]
+            node["_match_score"]   = round(score, 3)
+            assigned_nodes.add(id(node))
+            assigned_cands.add(cand[0])
+    for node in nodes:
+        if "_match_start" not in node:
+            node["_match_start"] = node["_match_end"] = node["_match_heading"] = node["_match_score"] = None
+
+def _match_ordered(nodes: List[Dict], candidates: List[Tuple[int, int, str]], r_start: int, r_end: int) -> None:
+    """Matching có thứ tự (Monotonic) cho các cấp bên dưới."""
+    in_range    = [(s, e, t) for s, e, t in candidates if r_start <= s < r_end]
+    search_from = r_start
+    for node in nodes:
+        title, best_score, best_cand = node.get("title", ""), 0.0, None
+        for cand in in_range:
+            if cand[0] < search_from:
+                continue
+            score = _match_score(title, cand[2])
+            if score > best_score:
+                best_score = score
+                best_cand  = cand
+        if best_score >= MIN_MATCH_SCORE and best_cand:
+            node["_match_start"]   = best_cand[0]
+            node["_match_end"]     = best_cand[1]
+            node["_match_heading"] = best_cand[2]
+            node["_match_score"]   = round(best_score, 3)
+            search_from = best_cand[1]
+        else:
+            node["_match_start"] = node["_match_end"] = node["_match_heading"] = node["_match_score"] = None
+
+def _compute_sibling_ends(nodes: List[Dict], parent_end: int) -> None:
+    matched = sorted(
+        [(n["_match_start"], n) for n in nodes if n.get("_match_start") is not None],
+        key=lambda x: x[0],
+    )
+    for i, (start, node) in enumerate(matched):
+        node["_end_char"] = matched[i + 1][0] if i + 1 < len(matched) else parent_end
+    for node in nodes:
+        if node.get("_match_start") is None:
+            node["_end_char"] = None
+
+def _infer_from_children(node: Dict) -> None:
+    """Nếu tiêu đề cha không tìm thấy, lấy dải char dựa trên các tiêu đề con."""
+    if node.get("_match_start") is not None:
+        return
+    child_starts, child_ends = [], []
+    for key in _CHILD_KEYS:
+        for child in node.get(key, []):
+            _infer_from_children(child)
+            if child.get("_match_start") is not None:
+                child_starts.append(child["_match_start"])
+            if child.get("_end_char") is not None:
+                child_ends.append(child["_end_char"])
+    node["_match_start"] = min(child_starts) if child_starts else None
+    node["_end_char"]    = max(child_ends)   if child_ends   else None
+
+def _process_level(nodes: List[Dict], candidates: List, p_start: int, p_end: int, ordered: bool) -> None:
+    if ordered:
+        _match_ordered(nodes, candidates, p_start, p_end)
+    else:
+        _match_unordered(nodes, candidates, p_start, p_end)
+    _compute_sibling_ends(nodes, p_end)
+    for node in nodes:
+        nstart, nend = node.get("_match_start"), node.get("_end_char")
+        if nstart is None or nend is None:
+            continue
+        child_nodes = []
+        for key in _CHILD_KEYS:
+            child_nodes.extend(node.get(key, []))
+        if child_nodes:
+            _process_level(child_nodes, candidates, nstart, nend, ordered=True)
+
+def _assign_all(toc_root: Dict, candidates: List, text_len: int) -> None:
+    top_nodes = []
+    for key in _CHILD_KEYS:
+        top_nodes.extend(toc_root.get(key, []))
+    if not top_nodes:
+        return
+    _process_level(top_nodes, candidates, 0, text_len, ordered=False)
+    for node in top_nodes:
+        _infer_from_children(node)
+        for key in _CHILD_KEYS:
+            for child in node.get(key, []):
+                _infer_from_children(child)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CHUNK TREE BUILDER
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_chunk_node(toc_node: Dict, text: str, page_map: List[int]) -> Dict:
+    start     = toc_node.get("_match_start")
+    match_end = toc_node.get("_match_end")
+    node_end  = toc_node.get("_end_char")
+
+    child_nodes_all = []
+    for key in _CHILD_KEYS:
+        child_nodes_all.extend(toc_node.get(key, []))
+
+    if start is not None and node_end is not None:
+        content_start = match_end if match_end is not None else start
+        child_starts  = [c["_match_start"] for c in child_nodes_all if c.get("_match_start") is not None]
+        content_end   = min(child_starts) if child_starts else node_end
+        raw_content   = text[content_start:content_end].strip()
+    else:
+        raw_content = None
+
+    cleaned_content = _clean_content(raw_content)
+
+    chunk: Dict = {
+        "title":       toc_node["title"],
+        "start_char":  start,
+        "end_char":    node_end,
+        "page_start":  _page_at(page_map, start),
+        "page_end":    _page_at(page_map, (node_end - 1) if node_end else node_end),
+        "content":     cleaned_content,
+        "match_score": toc_node.get("_match_score"),
+    }
+
+    for key in _CHILD_KEYS:
+        if key not in toc_node:
+            continue
+        children = toc_node[key]
+        if children:
+            chunk[key] = [_build_chunk_node(child, text, page_map) for child in children if child.get("title")]
+        else:
+            chunk[key] = []
+
+    return chunk
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CORE ENGINE
+# ──────────────────────────────────────────────────────────────────────────────
+
+def process_pair(md_path: Path, toc_path: Path, out_path: Path) -> None:
+    if not md_path.exists() or not toc_path.exists():
+        logging.warning("MD/TOC file missing for: %s", md_path.name)
+        return
+
+    raw_text = md_path.read_text(encoding="utf-8", errors="ignore")
+    toc_data = json.loads(toc_path.read_text(encoding="utf-8", errors="ignore"))
+
+    clean_text = _preprocess(raw_text)
+
+    body_start = _find_body_start(clean_text)
+    logging.info("Body starts at char %d in %s", body_start, md_path.name)
+
+    candidates = _extract_candidates(clean_text, body_start)
+    logging.info("Extracted %d heading candidates", len(candidates))
+
+    _assign_all(toc_data, candidates, len(clean_text))
+
+    page_map = _build_page_map(clean_text)
+
+    top_chunks = []
+    for key in _CHILD_KEYS:
+        for child in toc_data.get(key, []):
+            if child.get("title"):
+                top_chunks.append(_build_chunk_node(child, clean_text, page_map))
+
+    result: Dict = {
+        "title":           toc_data.get("title",           None),
+        "publisher":       toc_data.get("publisher",       None),
+        "decision_number": toc_data.get("decision_number", None),
+        "specialty":       toc_data.get("specialty",       None),
+        "date":            toc_data.get("date",            None),
+        "isbn_electronic": toc_data.get("isbn_electronic", None),
+        "isbn_print":      toc_data.get("isbn_print",      None),
+        "total_pages":     toc_data.get("total_pages",     None),
+        "source_file":     toc_data.get("source_file",     md_path.name),
+        "chapters":        top_chunks,
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    logging.info("Wrote %d top-level chapters → %s", len(top_chunks), out_path.name)
+
+
+def build_chunk_payload_from_text(clean_text: str, toc_data: Dict[str, Any], min_match_score: float | None = None) -> Dict[str, Any]:
+    global MIN_MATCH_SCORE
+    previous_threshold = MIN_MATCH_SCORE
+    if min_match_score is not None:
+        MIN_MATCH_SCORE = float(min_match_score)
+
+    try:
+        toc_copy = json.loads(json.dumps(toc_data, ensure_ascii=False))
+        prepared_text = _preprocess(clean_text)
+        body_start = _find_body_start(prepared_text)
+        candidates = _extract_candidates(prepared_text, body_start)
+        _assign_all(toc_copy, candidates, len(prepared_text))
+        page_map = _build_page_map(prepared_text)
+
+        top_chunks = []
+        for key in _CHILD_KEYS:
+            for child in toc_copy.get(key, []):
+                if child.get("title"):
+                    top_chunks.append(_build_chunk_node(child, prepared_text, page_map))
+
+        return {
+            "title":           toc_copy.get("title", None),
+            "publisher":       toc_copy.get("publisher", None),
+            "decision_number": toc_copy.get("decision_number", None),
+            "specialty":       toc_copy.get("specialty", None),
+            "date":            toc_copy.get("date", None),
+            "isbn_electronic": toc_copy.get("isbn_electronic", None),
+            "isbn_print":      toc_copy.get("isbn_print", None),
+            "total_pages":     toc_copy.get("total_pages", None),
+            "source_file":     toc_copy.get("source_file", None),
+            "chapters":        top_chunks,
+        }
+    finally:
+        MIN_MATCH_SCORE = previous_threshold
 
 
 class FuzzyChunkingService:
-    def __init__(self, markdown_service: MarkdownProcessingService) -> None:
+    def __init__(self, markdown_service=None) -> None:
         self._markdown_service = markdown_service
 
     def build_chunk_payload(self, clean_text: str, toc: dict[str, Any], score_threshold: float) -> dict[str, Any]:
-        chapters = self._normalize_toc_nodes(toc.get("chapters", []))
-        body_start = self._markdown_service.find_body_start(clean_text)
-        if not chapters:
-            chapters = self._fallback_toc_from_text(clean_text, body_start=body_start)
-
-        assigned_roots = [self._to_assigned_node(node) for node in chapters]
-        candidates = self._extract_heading_candidates(clean_text, body_start=body_start)
-        self._assign_match_positions(assigned_roots, candidates, score_threshold=score_threshold)
-        self._infer_missing_positions(assigned_roots, text_len=len(clean_text))
-        self._populate_content_and_pages(assigned_roots, clean_text, score_threshold=score_threshold)
-
-        payload = {key: toc.get(key) for key in TOC_METADATA_KEYS}
-        payload["chapters"] = [self._assigned_node_to_json(node) for node in assigned_roots]
-        return payload
-
-    def _fallback_toc_from_text(self, clean_text: str, body_start: int = 0) -> list[dict[str, Any]]:
-        candidates = self._extract_heading_candidates(clean_text, body_start=body_start)
-        titles: list[str] = []
-        seen: set[str] = set()
-        for candidate in candidates:
-            key = candidate.text.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            titles.append(candidate.text)
-            if len(titles) >= 60:
-                break
-        return [{"title": title, "sections": []} for title in titles]
-
-    def _extract_heading_candidates(self, text: str, body_start: int = 0) -> list[HeadingCandidate]:
-        candidates: list[HeadingCandidate] = []
-        seen: set[tuple[int, int, str]] = set()
-        for match in _RE_SPLIT_LINES.finditer(text):
-            start, end = match.start(), match.end()
-            if start < body_start:
-                continue
-            raw_line = match.group().strip()
-            if not raw_line or raw_line == PAGE_BREAK_MARKER:
-                continue
-
-            table_cells = self._extract_table_cells(raw_line, line_start=start)
-            if table_cells:
-                if self._is_probable_toc_row(table_cells):
-                    continue
-                for cell_start, cell_end, cell_text in table_cells:
-                    cleaned = self._clean_heading_candidate(cell_text)
-                    if not cleaned or not (
-                        self._looks_like_heading(cleaned)
-                        or self._looks_like_table_cell_heading(cleaned)
-                    ):
-                        continue
-                    key = (cell_start, cell_end, cleaned)
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    candidates.append(
-                        HeadingCandidate(start=cell_start, end=cell_end, text=cleaned)
-                    )
-                continue
-
-            inline_bold = _RE_INLINE_BOLD_HEADING.match(raw_line)
-            if inline_bold:
-                cleaned = self._clean_heading_candidate(inline_bold.group(1))
-                if cleaned and (
-                    self._looks_like_heading(cleaned)
-                    or self._looks_like_table_cell_heading(cleaned)
-                ):
-                    key = (
-                        start + inline_bold.start(1),
-                        start + inline_bold.end(1),
-                        cleaned,
-                    )
-                    if key not in seen:
-                        seen.add(key)
-                        candidates.append(
-                            HeadingCandidate(
-                                start=start + inline_bold.start(1),
-                                end=start + inline_bold.end(1),
-                                text=cleaned,
-                            )
-                        )
-                    continue
-
-            cleaned = self._clean_heading_candidate(raw_line)
-            if not cleaned or not self._looks_like_heading(cleaned):
-                continue
-            key = (start, end, cleaned)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(HeadingCandidate(start=start, end=end, text=cleaned))
-        return self._augment_multiline_candidates(candidates, text)
-
-    def _clean_heading_candidate(self, line: str) -> str | None:
-        text = self._clean_text_fragment(line)
-        text = text.strip("*_# ")
-        text = _RE_MULTI_SPACE.sub(" ", text).strip()
-        if len(text) < 2:
-            return None
-        if re.fullmatch(r"[\d.,\-\s]+", text):
-            return None
-        if re.match(r"^\s*[-+•>|]", text):
-            return None
-        if re.search(r"\.{4,}", text):
-            return None
-        if len(text) > 250:
-            text = text[:250].strip()
-        return text
-
-    def _clean_text_fragment(self, value: str) -> str:
-        text = html.unescape(_RE_HTML_TAG.sub(" ", value))
-        return _RE_MULTI_SPACE.sub(" ", text).strip()
-
-    def _looks_like_heading(self, text: str) -> bool:
-        plain = self._clean_text_fragment(text)
-        normalized = self._remove_accents(plain).lower()
-        if _RE_MD_HEADING.match(text) or _RE_NUMBERED.match(plain) or _RE_CHAPTER_PREFIX.match(normalized):
-            return True
-        if self._is_short_title_phrase(plain):
-            return True
-        alpha_only = re.sub(r"[^A-Za-zÀ-ỹ]", "", plain)
-        return bool(2 <= len(plain) <= 120 and alpha_only and plain == plain.upper())
-
-    def _is_short_title_phrase(self, text: str) -> bool:
-        plain = text.strip()
-        if not plain or len(plain) > 120:
-            return False
-        if plain.count(",") > 1 or re.search(r"[;!?]", plain):
-            return False
-
-        words = [word.strip("()[]{}.,:;-") for word in plain.replace("/", " ").split()]
-        alpha_words = [word for word in words if re.search(r"[A-Za-zÀ-ỹ]", word)]
-        if not (2 <= len(alpha_words) <= 12):
-            return False
-
-        capitalized = 0
-        for word in alpha_words:
-            normalized = self._remove_accents(word).lower()
-            if normalized in _TITLE_CONNECTOR_WORDS:
-                capitalized += 1
-            elif word[:1].isupper() or word.upper() == word:
-                capitalized += 1
-        return capitalized / max(len(alpha_words), 1) >= 0.7
-
-    def _looks_like_table_cell_heading(self, text: str) -> bool:
-        plain = text.strip()
-        if not plain or len(plain) > 80:
-            return False
-        if plain.endswith(".") or plain.count(",") > 0 or re.search(r"[;!?]", plain):
-            return False
-
-        words = [word.strip("()[]{}.,:;-") for word in plain.split()]
-        alpha_words = [word for word in words if re.search(r"[A-Za-zÀ-ỹ]", word)]
-        if not (2 <= len(alpha_words) <= 8):
-            return False
-        if not (alpha_words[0][:1].isupper() or alpha_words[0].upper() == alpha_words[0]):
-            return False
-        return True
-
-    def _extract_table_cells(
-        self,
-        raw_line: str,
-        *,
-        line_start: int,
-    ) -> list[tuple[int, int, str]]:
-        cells: list[tuple[int, int, str]] = []
-        for cell_match in _RE_TABLE_CELL.finditer(raw_line):
-            cell_text = self._clean_text_fragment(cell_match.group(1))
-            if not cell_text:
-                continue
-            cells.append(
-                (
-                    line_start + cell_match.start(1),
-                    line_start + cell_match.end(1),
-                    cell_text,
-                )
+        try:
+            return build_chunk_payload_from_text(
+                clean_text=clean_text,
+                toc_data=toc,
+                min_match_score=score_threshold,
             )
-        return cells
+        except Exception as exc:
+            raise UnprocessableEntityException(f"Chunking failed: {exc}") from exc
 
-    def _is_probable_toc_row(
-        self,
-        cells: list[tuple[int, int, str]],
-    ) -> bool:
-        if len(cells) < 2:
-            return False
-        trailing_texts = [text for _, _, text in cells[1:] if text]
-        if not trailing_texts:
-            return False
-        return all(_RE_PAGE_LABEL.fullmatch(text) for text in trailing_texts)
+def main() -> None:
+    pairs = get_file_pairs()
+    if not pairs:
+        logging.info("Không có cặp file nào để xử lý.")
+        return
+        
+    for md_s, toc_s, out_s in pairs:
+        md_p  = MD_INPUT_DIR / md_s  if not Path(md_s).is_absolute()  else Path(md_s)
+        toc_p = TOC_INPUT_DIR / toc_s if not Path(toc_s).is_absolute() else Path(toc_s)
+        process_pair(md_p, toc_p, OUTPUT_DIR / out_s)
 
-    def _augment_multiline_candidates(
-        self,
-        candidates: list[HeadingCandidate],
-        text: str,
-    ) -> list[HeadingCandidate]:
-        sorted_candidates = sorted(candidates, key=lambda item: (item.start, item.end))
-        augmented = list(sorted_candidates)
-        seen = {(item.start, item.end, item.text) for item in sorted_candidates}
-
-        for index, candidate in enumerate(sorted_candidates):
-            merged = candidate
-            for next_index in range(index + 1, min(index + 3, len(sorted_candidates))):
-                next_candidate = sorted_candidates[next_index]
-                if not self._can_merge_candidates(merged, next_candidate, text):
-                    break
-                merged = HeadingCandidate(
-                    start=merged.start,
-                    end=next_candidate.end,
-                    text=f"{merged.text} {next_candidate.text}".strip(),
-                )
-                key = (merged.start, merged.end, merged.text)
-                if key not in seen:
-                    seen.add(key)
-                    augmented.append(merged)
-
-        augmented.sort(key=lambda item: (item.start, item.end, len(item.text)))
-        return augmented
-
-    def _can_merge_candidates(
-        self,
-        first: HeadingCandidate,
-        second: HeadingCandidate,
-        text: str,
-    ) -> bool:
-        gap = text[first.end:second.start]
-        if PAGE_BREAK_MARKER in gap:
-            return False
-        if gap.strip():
-            return False
-        if second.start - first.start > 260:
-            return False
-        if len(first.text) + len(second.text) > 260:
-            return False
-        return self._looks_like_heading(first.text) and self._looks_like_heading(second.text)
-
-    def _assign_match_positions(
-        self,
-        roots: list[AssignedNode],
-        candidates: list[HeadingCandidate],
-        score_threshold: float,
-    ) -> None:
-        self._assign_level_positions(
-            nodes=roots,
-            candidates=candidates,
-            start_idx=0,
-            end_idx=len(candidates),
-            score_threshold=score_threshold,
-        )
-
-    def _assign_level_positions(
-        self,
-        *,
-        nodes: list[AssignedNode],
-        candidates: list[HeadingCandidate],
-        start_idx: int,
-        end_idx: int,
-        score_threshold: float,
-    ) -> None:
-        search_idx = start_idx
-        for node in nodes:
-            best_idx = -1
-            best_score = 0.0
-            for idx in range(search_idx, end_idx):
-                candidate = candidates[idx]
-                score = self._match_score(node.title, candidate.text)
-                if score > best_score:
-                    best_score = score
-                    best_idx = idx
-            if best_idx >= 0 and best_score >= score_threshold:
-                chosen = candidates[best_idx]
-                node.match_candidate_index = best_idx
-                node.match_start = chosen.start
-                node.heading_end = chosen.end
-                node.match_score = round(best_score, 3)
-                search_idx = best_idx + 1
-
-        fallback_start = start_idx
-        for index, node in enumerate(nodes):
-            next_sibling_idx = self._find_next_matched_sibling_index(
-                nodes=nodes,
-                start_position=index + 1,
-            )
-            child_start = (
-                node.match_candidate_index + 1
-                if node.match_candidate_index is not None
-                else fallback_start
-            )
-            child_end = next_sibling_idx if next_sibling_idx is not None else end_idx
-            if node.children:
-                self._assign_level_positions(
-                    nodes=node.children,
-                    candidates=candidates,
-                    start_idx=child_start,
-                    end_idx=child_end,
-                    score_threshold=score_threshold,
-                )
-            if node.match_candidate_index is not None:
-                fallback_start = node.match_candidate_index + 1
-
-    def _find_next_matched_sibling_index(
-        self,
-        *,
-        nodes: list[AssignedNode],
-        start_position: int,
-    ) -> int | None:
-        for node in nodes[start_position:]:
-            if node.match_candidate_index is not None:
-                return node.match_candidate_index
-        return None
-
-    def _infer_missing_positions(self, roots: list[AssignedNode], text_len: int) -> None:
-        flat_nodes = self._flatten_nodes_preorder(roots)
-
-        for node in reversed(flat_nodes):
-            if node.match_start is None and node.children:
-                child_starts = [child.match_start for child in node.children if child.match_start is not None]
-                if child_starts:
-                    node.match_start = min(child_starts)
-                    node.heading_end = node.match_start
-        assigned_starts = sorted(
-            node.match_start for node in flat_nodes if node.match_start is not None
-        )
-
-        for node in flat_nodes:
-            if node.match_start is None:
-                continue
-            next_start = self._find_next_start(assigned_starts, node.match_start)
-            node.start_char = node.match_start
-            node.end_char = next_start if next_start is not None else text_len
-
-        for node in reversed(flat_nodes):
-            if node.start_char is None and node.children:
-                starts = [child.start_char for child in node.children if child.start_char is not None]
-                ends = [child.end_char for child in node.children if child.end_char is not None]
-                if starts:
-                    node.start_char = min(starts)
-                if ends:
-                    node.end_char = max(ends)
-
-    def _populate_content_and_pages(
-        self,
-        roots: list[AssignedNode],
-        clean_text: str,
-        score_threshold: float,
-    ) -> None:
-        marker_positions = [m.start() for m in re.finditer(re.escape(PAGE_BREAK_MARKER), clean_text)]
-
-        for node in self._flatten_nodes_preorder(roots):
-            if node.start_char is None or node.end_char is None:
-                node.content = None
-                node.page_start = None
-                node.page_end = None
-                node.is_suspect = False
-                continue
-
-            content_start = node.heading_end if node.heading_end is not None else node.start_char
-            content_start = max(content_start, node.start_char)
-            child_starts = [
-                child.start_char
-                for child in node.children
-                if child.start_char is not None and child.start_char >= content_start
-            ]
-            content_end = min(child_starts) if child_starts else node.end_char
-            content_end = max(min(content_end, node.end_char), content_start)
-
-            content = clean_text[content_start:content_end].strip()
-            node.content = content or None
-            node.page_start = self._char_to_page(node.start_char, marker_positions)
-            page_end_idx = max(content_end - 1, node.start_char)
-            node.page_end = self._char_to_page(page_end_idx, marker_positions)
-            node.is_suspect = bool(node.match_score is not None and node.match_score < score_threshold)
-
-    def _normalize_toc_nodes(self, nodes: Any) -> list[dict[str, Any]]:
-        if not isinstance(nodes, list):
-            return []
-        normalized: list[dict[str, Any]] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            title = node.get("title")
-            if not isinstance(title, str) or not title.strip():
-                continue
-            children = None
-            for key in ("sections", "subsections", "subsubsections", "subsubsubsections", "children"):
-                if isinstance(node.get(key), list):
-                    children = node.get(key)
-                    break
-            normalized.append(
-                {"title": title.strip(), "sections": self._normalize_toc_nodes(children or [])}
-            )
-        return normalized
-
-    def _to_assigned_node(self, node: dict[str, Any]) -> AssignedNode:
-        return AssignedNode(
-            title=node.get("title", "").strip(),
-            children=[self._to_assigned_node(child) for child in node.get("sections", [])],
-        )
-
-    def _assigned_node_to_json(self, node: AssignedNode) -> dict[str, Any]:
-        return {
-            "title": node.title,
-            "start_char": node.start_char,
-            "end_char": node.end_char,
-            "page_start": node.page_start,
-            "page_end": node.page_end,
-            "match_score": node.match_score,
-            "is_suspect": node.is_suspect,
-            "content": node.content,
-            "sections": [self._assigned_node_to_json(child) for child in node.children],
-        }
-
-    def _flatten_nodes_preorder(self, roots: list[AssignedNode]) -> list[AssignedNode]:
-        result: list[AssignedNode] = []
-        stack = list(reversed(roots))
-        while stack:
-            node = stack.pop()
-            result.append(node)
-            for child in reversed(node.children):
-                stack.append(child)
-        return result
-
-    def _find_next_start(self, starts: list[int], current_start: int) -> int | None:
-        idx = bisect_right(starts, current_start)
-        if idx >= len(starts):
-            return None
-        return starts[idx]
-
-    def _match_score(self, toc_title: str, candidate: str) -> float:
-        toc_tokens = self._normalize_for_match(toc_title)
-        cand_tokens = self._normalize_for_match(candidate)
-        if not toc_tokens or not cand_tokens:
-            return 0.0
-
-        toc_set = set(toc_tokens)
-        cand_set = set(cand_tokens)
-        inter = len(toc_set & cand_set)
-        if inter == 0:
-            return 0.0
-
-        recall = inter / len(toc_set)
-        precision = inter / len(cand_set)
-        f1 = 2 * recall * precision / (recall + precision) if (recall + precision) else 0.0
-
-        toc_norm = " ".join(toc_tokens)
-        cand_norm = " ".join(cand_tokens)
-        seq_ratio = SequenceMatcher(None, toc_norm, cand_norm).ratio()
-        score = max(f1, (0.65 * f1) + (0.35 * seq_ratio))
-        if cand_norm.startswith(toc_norm):
-            score = max(score, recall)
-
-        toc_core = self._core_tokens(toc_tokens)
-        cand_core = self._core_tokens(cand_tokens)
-        if toc_core:
-            core_overlap = len(set(toc_core) & set(cand_core)) / len(set(toc_core))
-            if core_overlap == 0:
-                score *= 0.3
-            elif core_overlap < 0.5:
-                score *= 0.7
-            elif core_overlap >= 0.8:
-                score = min(1.0, score + 0.05)
-
-        if len(toc_tokens) >= 6 and len(cand_tokens) < int(len(toc_tokens) * 0.55):
-            score *= 0.7
-
-        toc_signature = self._extract_signature(toc_title)
-        candidate_signature = self._extract_signature(candidate)
-        if toc_signature and candidate_signature and toc_signature[0] == candidate_signature[0]:
-            if toc_signature[1] == candidate_signature[1]:
-                score = min(1.0, score + 0.12)
-            else:
-                score *= 0.2
-
-        return min(max(score, 0.0), 1.0)
-
-    def _normalize_for_match(self, value: str) -> list[str]:
-        text = value.strip().lower()
-        text = self._remove_accents(text)
-        text = _RE_PREFIX_WORDS.sub("", text)
-        text = _RE_LEADING_NUMBERING.sub("", text)
-        text = re.sub(r"[^a-z0-9\s]", " ", text)
-        text = _RE_MULTI_SPACE.sub(" ", text).strip()
-        return [token for token in text.split(" ") if token]
-
-    def _remove_accents(self, text: str) -> str:
-        normalized = unicodedata.normalize("NFD", text)
-        return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
-
-    def _extract_signature(self, value: str) -> tuple[str, str] | None:
-        normalized = self._remove_accents(value).lower().strip()
-        match = _RE_SECTION_SIGNATURE.match(normalized)
-        if match is None:
-            return None
-        if match.group(1) and match.group(2):
-            return (match.group(1).replace(" ", "_"), match.group(2))
-        if match.group(3):
-            return ("number", match.group(3))
-        return None
-
-    def _core_tokens(self, tokens: list[str]) -> list[str]:
-        return [token for token in tokens if token not in _GENERIC_TITLE_TOKENS]
-
-    def _char_to_page(self, idx: int, marker_positions: list[int]) -> int:
-        return bisect_right(marker_positions, idx) + 1
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        logging.exception("Unhandled error: %s", e)
+        sys.exit(1)

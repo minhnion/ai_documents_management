@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,8 +56,8 @@ class DocumentIngestionPipelineService:
 
         raw_md = await self._ocr_markdown(pdf_path)
         clean_md = self._clean_markdown(raw_md)
-        toc = await self._build_toc(clean_md, source_file=pdf_path.name)
-        chunk_payload = self._chunk_with_fuzzy_matching(clean_md, toc)
+        toc = await self._build_toc(raw_md, source_file=pdf_path.name)
+        chunk_payload = self._chunk_with_fuzzy_matching(raw_md, toc)
 
         self._write_artifacts(
             artifact_dir=artifact_dir,
@@ -85,20 +86,24 @@ class DocumentIngestionPipelineService:
         }
 
     def _validate_pipeline_settings(self) -> None:
+        self._hydrate_core_pipeline_env()
         if not settings.LANDINGAI_API_KEY.strip():
             raise BadRequestException("LANDINGAI_API_KEY is required for OCR pipeline.")
         if not settings.OPENAI_API_KEY.strip():
             raise BadRequestException("OPENAI_API_KEY is required for TOC pipeline.")
-        if not settings.LANDINGAI_API_URL.strip():
-            raise BadRequestException("LANDINGAI_API_URL is required for OCR pipeline.")
-        if not settings.OPENAI_API_URL.strip():
-            raise BadRequestException("OPENAI_API_URL is required for TOC pipeline.")
-        if not settings.LANDINGAI_MODEL_NAME.strip():
-            raise BadRequestException("LANDINGAI_MODEL_NAME is required for OCR pipeline.")
-        if not settings.OPENAI_MODEL_NAME.strip():
-            raise BadRequestException("OPENAI_MODEL_NAME is required for TOC pipeline.")
         if not 0.0 < float(settings.SCORE_THRESHOLD) < 1.0:
             raise BadRequestException("SCORE_THRESHOLD must be > 0 and < 1.")
+
+    def _hydrate_core_pipeline_env(self) -> None:
+        if settings.LANDINGAI_API_KEY.strip():
+            os.environ.setdefault("LANDINGAI_API_KEY", settings.LANDINGAI_API_KEY.strip())
+            os.environ.setdefault("VISION_AGENT_API_KEY", settings.LANDINGAI_API_KEY.strip())
+        if settings.LANDINGAI_MODEL_NAME.strip():
+            os.environ.setdefault("LANDINGAI_MODEL_NAME", settings.LANDINGAI_MODEL_NAME.strip())
+        if settings.OPENAI_API_KEY.strip():
+            os.environ.setdefault("OPENAI_API_KEY", settings.OPENAI_API_KEY.strip())
+        if settings.OPENAI_MODEL_NAME.strip():
+            os.environ.setdefault("OPENAI_MODEL_NAME", settings.OPENAI_MODEL_NAME.strip())
 
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():

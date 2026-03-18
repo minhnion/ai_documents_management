@@ -116,7 +116,7 @@ class GuidelineCommandService:
                 title,
             )
             raise UnprocessableEntityException(
-                "Cannot persist uploaded guideline."
+                f"Cannot persist uploaded guideline: {exc}"
             ) from exc
 
         return guideline, guideline_version, document
@@ -205,7 +205,7 @@ class GuidelineCommandService:
                 guideline_id,
             )
             raise UnprocessableEntityException(
-                "Cannot persist guideline version."
+                f"Cannot persist guideline version: {exc}"
             ) from exc
 
         return guideline, guideline_version, document, previous_active_versions_updated
