@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from bisect import bisect_right
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 from app.services.pipeline.markdown_service import MarkdownProcessingService, PAGE_BREAK_MARKER
@@ -15,17 +17,90 @@ _RE_NUMBERED = re.compile(
     flags=re.IGNORECASE,
 )
 _RE_CHAPTER_PREFIX = re.compile(
-    r"^\s*(?:chuong|phan|buoc|muc|dieu)\s+[\w.-]+",
+    r"^\s*(?:chuong|phan|buoc|muc|dieu|phu\s+luc)\s+[\w.-]+",
     flags=re.IGNORECASE,
 )
 _RE_SPLIT_LINES = re.compile(r".*(?:\n|$)")
 _RE_HTML_TAG = re.compile(r"<[^>]+>")
+_RE_TABLE_CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", flags=re.IGNORECASE | re.DOTALL)
+_RE_INLINE_BOLD_HEADING = re.compile(r"^\s*\*\*(.+?)\*\*")
 _RE_MULTI_SPACE = re.compile(r"\s+")
 _RE_PREFIX_WORDS = re.compile(
-    r"^\s*(?:chuong|phan|buoc|muc|dieu)\s*[:.\-\divxlcm]*\s*",
+    r"^\s*(?:chuong|phan|buoc|muc|dieu|phu\s+luc)\s*[:.\-\divxlcm]*\s*",
     flags=re.IGNORECASE,
 )
 _RE_LEADING_NUMBERING = re.compile(r"^\s*[\divxlcm]+(?:\.[\divxlcm]+)*[.)]?\s*")
+_RE_PAGE_LABEL = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdm]{1,8})\s*$", flags=re.IGNORECASE)
+_RE_SECTION_SIGNATURE = re.compile(
+    r"^\s*(?:(phu\s+luc|chuong|phan|buoc|muc|dieu)\s+([a-z0-9ivxlcdm.]+)|([a-z0-9ivxlcdm]+(?:\.[a-z0-9ivxlcdm]+)*))[.)]?\b",
+    flags=re.IGNORECASE,
+)
+
+_TITLE_CONNECTOR_WORDS = {
+    "va",
+    "và",
+    "ve",
+    "về",
+    "cua",
+    "của",
+    "cho",
+    "theo",
+    "tai",
+    "tại",
+    "o",
+    "ở",
+    "duoi",
+    "dưới",
+    "tren",
+    "trên",
+}
+
+_GENERIC_TITLE_TOKENS = {
+    "huong",
+    "dan",
+    "chan",
+    "doan",
+    "dieu",
+    "tri",
+    "quan",
+    "ly",
+    "tai",
+    "tram",
+    "y",
+    "te",
+    "xa",
+    "nguoi",
+    "lon",
+    "doi",
+    "tuong",
+    "ap",
+    "dung",
+    "kham",
+    "lam",
+    "sang",
+    "xet",
+    "nghiem",
+    "va",
+    "buoc",
+    "phan",
+    "chuong",
+    "muc",
+    "dieu",
+    "phu",
+    "luc",
+    "quy",
+    "trinh",
+    "so",
+    "do",
+    "cac",
+    "nguye",
+    "nguyen",
+    "tac",
+    "cho",
+    "tuyen",
+    "tren",
+    "ve",
+}
 
 
 @dataclass
@@ -39,6 +114,7 @@ class HeadingCandidate:
 class AssignedNode:
     title: str
     children: list["AssignedNode"]
+    match_candidate_index: int | None = None
     match_start: int | None = None
     heading_end: int | None = None
     match_score: float | None = None
@@ -95,20 +171,61 @@ class FuzzyChunkingService:
             if not raw_line or raw_line == PAGE_BREAK_MARKER:
                 continue
 
-            cleaned = self._clean_heading_candidate(raw_line)
-            if not cleaned or not self._looks_like_heading(raw_line):
+            table_cells = self._extract_table_cells(raw_line, line_start=start)
+            if table_cells:
+                if self._is_probable_toc_row(table_cells):
+                    continue
+                for cell_start, cell_end, cell_text in table_cells:
+                    cleaned = self._clean_heading_candidate(cell_text)
+                    if not cleaned or not (
+                        self._looks_like_heading(cleaned)
+                        or self._looks_like_table_cell_heading(cleaned)
+                    ):
+                        continue
+                    key = (cell_start, cell_end, cleaned)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    candidates.append(
+                        HeadingCandidate(start=cell_start, end=cell_end, text=cleaned)
+                    )
                 continue
 
+            inline_bold = _RE_INLINE_BOLD_HEADING.match(raw_line)
+            if inline_bold:
+                cleaned = self._clean_heading_candidate(inline_bold.group(1))
+                if cleaned and (
+                    self._looks_like_heading(cleaned)
+                    or self._looks_like_table_cell_heading(cleaned)
+                ):
+                    key = (
+                        start + inline_bold.start(1),
+                        start + inline_bold.end(1),
+                        cleaned,
+                    )
+                    if key not in seen:
+                        seen.add(key)
+                        candidates.append(
+                            HeadingCandidate(
+                                start=start + inline_bold.start(1),
+                                end=start + inline_bold.end(1),
+                                text=cleaned,
+                            )
+                        )
+                    continue
+
+            cleaned = self._clean_heading_candidate(raw_line)
+            if not cleaned or not self._looks_like_heading(cleaned):
+                continue
             key = (start, end, cleaned)
             if key in seen:
                 continue
             seen.add(key)
             candidates.append(HeadingCandidate(start=start, end=end, text=cleaned))
-        candidates.sort(key=lambda item: (item.start, item.end))
-        return candidates
+        return self._augment_multiline_candidates(candidates, text)
 
     def _clean_heading_candidate(self, line: str) -> str | None:
-        text = _RE_HTML_TAG.sub(" ", line).strip()
+        text = self._clean_text_fragment(line)
         text = text.strip("*_# ")
         text = _RE_MULTI_SPACE.sub(" ", text).strip()
         if len(text) < 2:
@@ -123,12 +240,131 @@ class FuzzyChunkingService:
             text = text[:250].strip()
         return text
 
-    def _looks_like_heading(self, line: str) -> bool:
-        if _RE_MD_HEADING.match(line) or _RE_NUMBERED.match(line) or _RE_CHAPTER_PREFIX.match(line):
+    def _clean_text_fragment(self, value: str) -> str:
+        text = html.unescape(_RE_HTML_TAG.sub(" ", value))
+        return _RE_MULTI_SPACE.sub(" ", text).strip()
+
+    def _looks_like_heading(self, text: str) -> bool:
+        plain = self._clean_text_fragment(text)
+        normalized = self._remove_accents(plain).lower()
+        if _RE_MD_HEADING.match(text) or _RE_NUMBERED.match(plain) or _RE_CHAPTER_PREFIX.match(normalized):
             return True
-        stripped = _RE_HTML_TAG.sub(" ", line).strip()
-        alpha_only = re.sub(r"[^A-Za-zÀ-ỹ]", "", stripped)
-        return bool(2 <= len(stripped) <= 120 and alpha_only and stripped == stripped.upper())
+        if self._is_short_title_phrase(plain):
+            return True
+        alpha_only = re.sub(r"[^A-Za-zÀ-ỹ]", "", plain)
+        return bool(2 <= len(plain) <= 120 and alpha_only and plain == plain.upper())
+
+    def _is_short_title_phrase(self, text: str) -> bool:
+        plain = text.strip()
+        if not plain or len(plain) > 120:
+            return False
+        if plain.count(",") > 1 or re.search(r"[;!?]", plain):
+            return False
+
+        words = [word.strip("()[]{}.,:;-") for word in plain.replace("/", " ").split()]
+        alpha_words = [word for word in words if re.search(r"[A-Za-zÀ-ỹ]", word)]
+        if not (2 <= len(alpha_words) <= 12):
+            return False
+
+        capitalized = 0
+        for word in alpha_words:
+            normalized = self._remove_accents(word).lower()
+            if normalized in _TITLE_CONNECTOR_WORDS:
+                capitalized += 1
+            elif word[:1].isupper() or word.upper() == word:
+                capitalized += 1
+        return capitalized / max(len(alpha_words), 1) >= 0.7
+
+    def _looks_like_table_cell_heading(self, text: str) -> bool:
+        plain = text.strip()
+        if not plain or len(plain) > 80:
+            return False
+        if plain.endswith(".") or plain.count(",") > 0 or re.search(r"[;!?]", plain):
+            return False
+
+        words = [word.strip("()[]{}.,:;-") for word in plain.split()]
+        alpha_words = [word for word in words if re.search(r"[A-Za-zÀ-ỹ]", word)]
+        if not (2 <= len(alpha_words) <= 8):
+            return False
+        if not (alpha_words[0][:1].isupper() or alpha_words[0].upper() == alpha_words[0]):
+            return False
+        return True
+
+    def _extract_table_cells(
+        self,
+        raw_line: str,
+        *,
+        line_start: int,
+    ) -> list[tuple[int, int, str]]:
+        cells: list[tuple[int, int, str]] = []
+        for cell_match in _RE_TABLE_CELL.finditer(raw_line):
+            cell_text = self._clean_text_fragment(cell_match.group(1))
+            if not cell_text:
+                continue
+            cells.append(
+                (
+                    line_start + cell_match.start(1),
+                    line_start + cell_match.end(1),
+                    cell_text,
+                )
+            )
+        return cells
+
+    def _is_probable_toc_row(
+        self,
+        cells: list[tuple[int, int, str]],
+    ) -> bool:
+        if len(cells) < 2:
+            return False
+        trailing_texts = [text for _, _, text in cells[1:] if text]
+        if not trailing_texts:
+            return False
+        return all(_RE_PAGE_LABEL.fullmatch(text) for text in trailing_texts)
+
+    def _augment_multiline_candidates(
+        self,
+        candidates: list[HeadingCandidate],
+        text: str,
+    ) -> list[HeadingCandidate]:
+        sorted_candidates = sorted(candidates, key=lambda item: (item.start, item.end))
+        augmented = list(sorted_candidates)
+        seen = {(item.start, item.end, item.text) for item in sorted_candidates}
+
+        for index, candidate in enumerate(sorted_candidates):
+            merged = candidate
+            for next_index in range(index + 1, min(index + 3, len(sorted_candidates))):
+                next_candidate = sorted_candidates[next_index]
+                if not self._can_merge_candidates(merged, next_candidate, text):
+                    break
+                merged = HeadingCandidate(
+                    start=merged.start,
+                    end=next_candidate.end,
+                    text=f"{merged.text} {next_candidate.text}".strip(),
+                )
+                key = (merged.start, merged.end, merged.text)
+                if key not in seen:
+                    seen.add(key)
+                    augmented.append(merged)
+
+        augmented.sort(key=lambda item: (item.start, item.end, len(item.text)))
+        return augmented
+
+    def _can_merge_candidates(
+        self,
+        first: HeadingCandidate,
+        second: HeadingCandidate,
+        text: str,
+    ) -> bool:
+        gap = text[first.end:second.start]
+        if PAGE_BREAK_MARKER in gap:
+            return False
+        if gap.strip():
+            return False
+        if second.start - first.start > 260:
+            return False
+        if len(first.text) + len(second.text) > 260:
+            return False
+        return self._looks_like_heading(first.text) and self._looks_like_heading(second.text)
 
     def _assign_match_positions(
         self,
@@ -136,12 +372,28 @@ class FuzzyChunkingService:
         candidates: list[HeadingCandidate],
         score_threshold: float,
     ) -> None:
-        flat_nodes = self._flatten_nodes_preorder(roots)
-        next_candidate_idx = 0
-        for node in flat_nodes:
+        self._assign_level_positions(
+            nodes=roots,
+            candidates=candidates,
+            start_idx=0,
+            end_idx=len(candidates),
+            score_threshold=score_threshold,
+        )
+
+    def _assign_level_positions(
+        self,
+        *,
+        nodes: list[AssignedNode],
+        candidates: list[HeadingCandidate],
+        start_idx: int,
+        end_idx: int,
+        score_threshold: float,
+    ) -> None:
+        search_idx = start_idx
+        for node in nodes:
             best_idx = -1
             best_score = 0.0
-            for idx in range(next_candidate_idx, len(candidates)):
+            for idx in range(search_idx, end_idx):
                 candidate = candidates[idx]
                 score = self._match_score(node.title, candidate.text)
                 if score > best_score:
@@ -149,14 +401,48 @@ class FuzzyChunkingService:
                     best_idx = idx
             if best_idx >= 0 and best_score >= score_threshold:
                 chosen = candidates[best_idx]
+                node.match_candidate_index = best_idx
                 node.match_start = chosen.start
                 node.heading_end = chosen.end
                 node.match_score = round(best_score, 3)
-                next_candidate_idx = best_idx + 1
+                search_idx = best_idx + 1
+
+        fallback_start = start_idx
+        for index, node in enumerate(nodes):
+            next_sibling_idx = self._find_next_matched_sibling_index(
+                nodes=nodes,
+                start_position=index + 1,
+            )
+            child_start = (
+                node.match_candidate_index + 1
+                if node.match_candidate_index is not None
+                else fallback_start
+            )
+            child_end = next_sibling_idx if next_sibling_idx is not None else end_idx
+            if node.children:
+                self._assign_level_positions(
+                    nodes=node.children,
+                    candidates=candidates,
+                    start_idx=child_start,
+                    end_idx=child_end,
+                    score_threshold=score_threshold,
+                )
+            if node.match_candidate_index is not None:
+                fallback_start = node.match_candidate_index + 1
+
+    def _find_next_matched_sibling_index(
+        self,
+        *,
+        nodes: list[AssignedNode],
+        start_position: int,
+    ) -> int | None:
+        for node in nodes[start_position:]:
+            if node.match_candidate_index is not None:
+                return node.match_candidate_index
+        return None
 
     def _infer_missing_positions(self, roots: list[AssignedNode], text_len: int) -> None:
         flat_nodes = self._flatten_nodes_preorder(roots)
-        assigned_starts = sorted(node.match_start for node in flat_nodes if node.match_start is not None)
 
         for node in reversed(flat_nodes):
             if node.match_start is None and node.children:
@@ -164,6 +450,9 @@ class FuzzyChunkingService:
                 if child_starts:
                     node.match_start = min(child_starts)
                     node.heading_end = node.match_start
+        assigned_starts = sorted(
+            node.match_start for node in flat_nodes if node.match_start is not None
+        )
 
         for node in flat_nodes:
             if node.match_start is None:
@@ -199,10 +488,19 @@ class FuzzyChunkingService:
 
             content_start = node.heading_end if node.heading_end is not None else node.start_char
             content_start = max(content_start, node.start_char)
-            content_end = max(node.end_char, content_start)
-            node.content = clean_text[content_start:content_end].strip()
+            child_starts = [
+                child.start_char
+                for child in node.children
+                if child.start_char is not None and child.start_char >= content_start
+            ]
+            content_end = min(child_starts) if child_starts else node.end_char
+            content_end = max(min(content_end, node.end_char), content_start)
+
+            content = clean_text[content_start:content_end].strip()
+            node.content = content or None
             node.page_start = self._char_to_page(node.start_char, marker_positions)
-            node.page_end = self._char_to_page(max(node.end_char - 1, node.start_char), marker_positions)
+            page_end_idx = max(content_end - 1, node.start_char)
+            node.page_end = self._char_to_page(page_end_idx, marker_positions)
             node.is_suspect = bool(node.match_score is not None and node.match_score < score_threshold)
 
     def _normalize_toc_nodes(self, nodes: Any) -> list[dict[str, Any]]:
@@ -278,10 +576,34 @@ class FuzzyChunkingService:
 
         toc_norm = " ".join(toc_tokens)
         cand_norm = " ".join(cand_tokens)
+        seq_ratio = SequenceMatcher(None, toc_norm, cand_norm).ratio()
+        score = max(f1, (0.65 * f1) + (0.35 * seq_ratio))
         if cand_norm.startswith(toc_norm):
-            f1 = max(f1, recall)
+            score = max(score, recall)
 
-        return min(max(f1, 0.0), 1.0)
+        toc_core = self._core_tokens(toc_tokens)
+        cand_core = self._core_tokens(cand_tokens)
+        if toc_core:
+            core_overlap = len(set(toc_core) & set(cand_core)) / len(set(toc_core))
+            if core_overlap == 0:
+                score *= 0.3
+            elif core_overlap < 0.5:
+                score *= 0.7
+            elif core_overlap >= 0.8:
+                score = min(1.0, score + 0.05)
+
+        if len(toc_tokens) >= 6 and len(cand_tokens) < int(len(toc_tokens) * 0.55):
+            score *= 0.7
+
+        toc_signature = self._extract_signature(toc_title)
+        candidate_signature = self._extract_signature(candidate)
+        if toc_signature and candidate_signature and toc_signature[0] == candidate_signature[0]:
+            if toc_signature[1] == candidate_signature[1]:
+                score = min(1.0, score + 0.12)
+            else:
+                score *= 0.2
+
+        return min(max(score, 0.0), 1.0)
 
     def _normalize_for_match(self, value: str) -> list[str]:
         text = value.strip().lower()
@@ -295,6 +617,20 @@ class FuzzyChunkingService:
     def _remove_accents(self, text: str) -> str:
         normalized = unicodedata.normalize("NFD", text)
         return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
+
+    def _extract_signature(self, value: str) -> tuple[str, str] | None:
+        normalized = self._remove_accents(value).lower().strip()
+        match = _RE_SECTION_SIGNATURE.match(normalized)
+        if match is None:
+            return None
+        if match.group(1) and match.group(2):
+            return (match.group(1).replace(" ", "_"), match.group(2))
+        if match.group(3):
+            return ("number", match.group(3))
+        return None
+
+    def _core_tokens(self, tokens: list[str]) -> list[str]:
+        return [token for token in tokens if token not in _GENERIC_TITLE_TOKENS]
 
     def _char_to_page(self, idx: int, marker_positions: list[int]) -> int:
         return bisect_right(marker_positions, idx) + 1

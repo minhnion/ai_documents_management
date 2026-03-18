@@ -20,11 +20,11 @@ _RE_CHAPTER_PREFIX = re.compile(
 _RE_HTML_TAG = re.compile(r"<[^>]+>")
 _RE_PURE_NUM = re.compile(r"^\s*[\d\s,\.\-/]+\s*$")
 _RE_TOC_HEADER = re.compile(
-    r"^\s*(?:MUC\s*LUC|TABLE\s+OF\s+CONTENTS|CONTENTS)\s*$",
+    r"^\s*(?:MỤC\s*LỤC|MUC\s*LUC|TABLE\s+OF\s+CONTENTS|CONTENTS)\s*$",
     flags=re.IGNORECASE,
 )
 _RE_TOC_PAGE = re.compile(
-    r"MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS",
+    r"MỤC\s*LỤC|MUC\s*LUC|TABLE\s+OF\s+CONTENTS",
     flags=re.IGNORECASE,
 )
 
