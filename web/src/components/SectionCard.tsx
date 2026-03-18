@@ -2,6 +2,7 @@
 import { useEffect, useRef } from 'react'
 import { Edit3, Check, X, AlertTriangle } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
+import SectionContentRenderer from './SectionContentRenderer'
 
 interface SectionCardProps {
   node: WorkspaceSectionNode
@@ -88,9 +89,9 @@ export default function SectionCard({
             disabled={saving}
           />
         ) : (
-          <pre className="section-card-content">
-            {node.content || <span style={{ color: 'var(--text-muted)', fontStyle: 'italic' }}>Không có nội dung.</span>}
-          </pre>
+          <div className="section-card-content">
+            <SectionContentRenderer content={node.content} />
+          </div>
         )}
       </div>
 
