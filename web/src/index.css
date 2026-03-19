@@ -1106,6 +1106,12 @@ a:hover {
   white-space: nowrap;
 }
 
+.pdf-action-error {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--danger);
+}
+
 .pdf-tb-zoom-label {
   font-size: 13px;
   color: var(--text-secondary);
