@@ -808,6 +808,12 @@ a:hover {
   padding: 16px 20px;
 }
 
+.section-card-edit-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 .section-card-content {
   font-size: 15px;
   line-height: 1.8;
@@ -942,28 +948,40 @@ a:hover {
   font-weight: 700;
 }
 
+.section-card-heading-input,
 .section-card-textarea {
   width: 100%;
-  min-height: 120px;
   padding: 10px 12px;
   font-size: 15px;
   font-family: inherit;
-  line-height: 1.8;
   color: var(--text-primary);
   background: var(--bg-input);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  resize: none;
-  overflow: hidden;
   transition: border-color var(--t);
   outline: none;
 }
 
+.section-card-heading-input {
+  min-height: 44px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.section-card-textarea {
+  min-height: 120px;
+  line-height: 1.8;
+  resize: none;
+  overflow: hidden;
+}
+
+.section-card-heading-input:focus,
 .section-card-textarea:focus {
   border-color: var(--border-focus);
   box-shadow: 0 0 0 3px var(--accent-light);
 }
 
+.section-card-heading-input:disabled,
 .section-card-textarea:disabled {
   opacity: 0.6;
   cursor: not-allowed;

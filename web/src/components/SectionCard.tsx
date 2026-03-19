@@ -6,12 +6,12 @@ import SectionContentRenderer, { normalizeSectionContent } from './SectionConten
 
 interface SectionCardProps {
   node: WorkspaceSectionNode
-  editValue: string | null        // null = view mode, string = edit mode
+  editValue: { heading: string; content: string } | null
   canEdit: boolean
   isActive: boolean               // true when TOC-selected
   refCallback: (el: HTMLDivElement | null) => void
   onEditStart: () => void
-  onEditChange: (value: string) => void
+  onEditChange: (field: 'heading' | 'content', value: string) => void
   onSave: () => void
   onCancel: () => void
   saving?: boolean
@@ -49,7 +49,7 @@ export default function SectionCard({
     textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px'
   }, [editValue, isEditing])
 
-  const headingLabel = node.heading || `Mục ${node.section_id}`
+  const headingLabel = (isEditing ? editValue.heading : node.heading) || `Mục ${node.section_id}`
   const indent = Math.max(0, (node.level ?? 1) - 1) * 16
 
   return (
@@ -84,13 +84,22 @@ export default function SectionCard({
       {!hideEmptyBody && (
         <div className="section-card-body">
           {isEditing ? (
-            <textarea
-              ref={textareaRef}
-              className="section-card-textarea"
-              value={editValue}
-              onChange={e => onEditChange(e.target.value)}
-              disabled={saving}
-            />
+            <div className="section-card-edit-fields">
+              <input
+                className="section-card-heading-input"
+                value={editValue.heading}
+                onChange={e => onEditChange('heading', e.target.value)}
+                disabled={saving}
+                placeholder="Tiêu đề mục"
+              />
+              <textarea
+                ref={textareaRef}
+                className="section-card-textarea"
+                value={editValue.content}
+                onChange={e => onEditChange('content', e.target.value)}
+                disabled={saving}
+              />
+            </div>
           ) : (
             <div className="section-card-content">
               <SectionContentRenderer content={node.content} />

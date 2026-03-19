@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestException, NotFoundException
+from app.models.chunk import Chunk
 from app.models.guideline_version import GuidelineVersion
 from app.models.section import Section
+from app.services.chunk_generation_service import ChunkGenerationService
 
 
 @dataclass(slots=True)
@@ -43,13 +45,19 @@ class GuidelineEditService:
                 section_map[item.section_id].heading = item.heading.strip() or None
         await self.db.flush()
 
+        deleted_chunk_count = await self._count_chunks_for_version(version_id)
+        chunk_stats = await ChunkGenerationService(self.db).rebuild_chunks_for_version(
+            version_id
+        )
+        created_chunk_count = int(chunk_stats.get("chunk_count", 0))
+
         return {
             "version_id": version_id,
             "requested_count": len(normalized_updates),
             "updated_count": len(normalized_updates),
             "updated_section_ids": section_ids,
-            "deleted_chunk_count": 0,
-            "created_chunk_count": 0,
+            "deleted_chunk_count": deleted_chunk_count,
+            "created_chunk_count": created_chunk_count,
         }
 
     def _normalize_updates(
@@ -115,3 +123,13 @@ class GuidelineEditService:
             raise NotFoundException("Section", missing_value)
 
         return section_map
+
+    async def _count_chunks_for_version(self, version_id: int) -> int:
+        total = (
+            await self.db.execute(
+                select(func.count())
+                .select_from(Chunk)
+                .where(Chunk.version_id == version_id)
+            )
+        ).scalar_one()
+        return int(total or 0)

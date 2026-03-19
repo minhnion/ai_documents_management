@@ -7,10 +7,18 @@ interface TextContentProps {
   toc: WorkspaceSectionNode[]
   canEdit: boolean
   activeSectionId: number | null
-  sectionEdits: Record<number, { content: string }>
+  sectionEdits: Record<number, { heading: string; content: string }>
   savingSections: Record<number, boolean>
-  onSectionEditStart: (sectionId: number, currentContent: string) => void
-  onSectionEditChange: (sectionId: number, value: string) => void
+  onSectionEditStart: (
+    sectionId: number,
+    currentHeading: string,
+    currentContent: string,
+  ) => void
+  onSectionEditChange: (
+    sectionId: number,
+    field: 'heading' | 'content',
+    value: string,
+  ) => void
   onSaveSection: (sectionId: number) => Promise<void>
   onCancelSection: (sectionId: number) => void
 }
@@ -74,15 +82,19 @@ export default function TextContent({
           node={node}
           editValue={
             node.section_id in sectionEdits
-              ? sectionEdits[node.section_id].content
+              ? sectionEdits[node.section_id]
               : null
           }
           canEdit={canEdit}
           isActive={node.section_id === activeSectionId}
           refCallback={setRef(node.section_id)}
           saving={savingSections[node.section_id] ?? false}
-          onEditStart={() => onSectionEditStart(node.section_id, node.content ?? '')}
-          onEditChange={value => onSectionEditChange(node.section_id, value)}
+          onEditStart={() => onSectionEditStart(
+            node.section_id,
+            node.heading ?? '',
+            node.content ?? '',
+          )}
+          onEditChange={(field, value) => onSectionEditChange(node.section_id, field, value)}
           onSave={() => onSaveSection(node.section_id)}
           onCancel={() => onCancelSection(node.section_id)}
         />

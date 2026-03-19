@@ -8,6 +8,11 @@ import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
 import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem } from '../lib/types'
 
+type SectionEditDraft = {
+  heading: string
+  content: string
+}
+
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
@@ -18,7 +23,7 @@ export default function ViewPage() {
   const [versions, setVersions] = useState<GuidelineVersionItem[]>([])
   const [loading, setLoading] = useState(true)
   const [activeSection, setActiveSection] = useState<WorkspaceSectionNode | null>(null)
-  const [sectionEdits, setSectionEdits] = useState<Record<number, { content: string }>>({})
+  const [sectionEdits, setSectionEdits] = useState<Record<number, SectionEditDraft>>({})
   const [savingSections, setSavingSections] = useState<Record<number, boolean>>({})
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
@@ -49,14 +54,16 @@ export default function ViewPage() {
 
   const handleSaveSection = async (sectionId: number) => {
     if (!workspace) return
+    const draft = sectionEdits[sectionId]
+    if (!draft) return
     setSavingSections(prev => ({ ...prev, [sectionId]: true }))
     setSaveError('')
     try {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, {
         updates: [{
           section_id: sectionId,
-          content: sectionEdits[sectionId]?.content ?? null,
-          heading: null,
+          content: draft.content,
+          heading: draft.heading,
         }]
       })
       const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
@@ -82,7 +89,7 @@ export default function ViewPage() {
     const updates = Object.entries(sectionEdits).map(([id, val]) => ({
       section_id: Number(id),
       content: val.content,
-      heading: null,
+      heading: val.heading,
     }))
     if (updates.length === 0) return
     setSaving(true)
@@ -104,17 +111,34 @@ export default function ViewPage() {
     }
   }
 
-  const handleSectionEditStart = (sectionId: number, currentContent: string) => {
+  const handleSectionEditStart = (
+    sectionId: number,
+    currentHeading: string,
+    currentContent: string,
+  ) => {
     setSectionEdits(prev => ({
       ...prev,
-      [sectionId]: { content: currentContent },
+      [sectionId]: {
+        heading: currentHeading,
+        content: currentContent,
+      },
     }))
   }
 
-  const handleSectionEditChange = (sectionId: number, value: string) => {
+  const handleSectionEditChange = (
+    sectionId: number,
+    field: keyof SectionEditDraft,
+    value: string,
+  ) => {
+    const applyDraftChange = (draft: SectionEditDraft): SectionEditDraft => (
+      field === 'heading'
+        ? { ...draft, heading: value }
+        : { ...draft, content: value }
+    )
+
     setSectionEdits(prev => ({
       ...prev,
-      [sectionId]: { content: value },
+      [sectionId]: applyDraftChange(prev[sectionId] ?? { heading: '', content: '' }),
     }))
   }
 
