@@ -1,6 +1,6 @@
 // web/src/components/SectionCard.tsx
-import { useEffect, useRef } from 'react'
-import { Edit3, Check, X, AlertTriangle } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Edit3, Check, X, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
 import SectionContentRenderer, { normalizeSectionContent } from './SectionContentRenderer'
 
@@ -30,6 +30,7 @@ export default function SectionCard({
   saving = false,
 }: SectionCardProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const [isCollapsed, setIsCollapsed] = useState(false)
 
   const isEditing = editValue !== null
   const hasRenderableContent = normalizeSectionContent(node.content).length > 0
@@ -55,18 +56,27 @@ export default function SectionCard({
   return (
     <div
       ref={refCallback}
-      className={`section-card${isActive ? ' section-card--active' : ''}${isEditing ? ' section-card--editing' : ''}${hideEmptyBody ? ' section-card--compact' : ''}`}
+      className={`section-card${isActive ? ' section-card--active' : ''}${isEditing ? ' section-card--editing' : ''}${hideEmptyBody ? ' section-card--compact' : ''}${isCollapsed ? ' section-card--collapsed' : ''}`}
     >
       {/* Header */}
       <div className="section-card-header">
-        <span className={`section-card-heading section-heading-level-${node.level ?? 1}`} style={{ paddingLeft: indent }}>
+        {!hideEmptyBody && (
+          <button
+            className="section-collapse-btn"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            title={isCollapsed ? 'Mở rộng' : 'Thu gọn'}
+          >
+            {isCollapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+          </button>
+        )}
+        <span className={`section-card-heading section-heading-level-${node.level ?? 1}`} style={{ paddingLeft: hideEmptyBody ? indent : 0 }}>
           {headingLabel}
         </span>
         <div className="section-card-header-actions">
           {node.is_suspect && (
-            <span className="section-suspect-badge" title="Mục cần kiểm tra chất lượng OCR">
+            <div className="section-suspect-badge" title={`OCR Score: ${node.score?.toFixed(2) ?? 'N/A'} - Cần kiểm tra chất lượng`}>
               <AlertTriangle size={13} />
-            </span>
+            </div>
           )}
           {canEdit && !isEditing && (
             <button
@@ -81,7 +91,7 @@ export default function SectionCard({
       </div>
 
       {/* Body */}
-      {!hideEmptyBody && (
+      {!hideEmptyBody && !isCollapsed && (
         <div className="section-card-body">
           {isEditing ? (
             <div className="section-card-edit-fields">
@@ -109,7 +119,7 @@ export default function SectionCard({
       )}
 
       {/* Footer (edit mode only) */}
-      {isEditing && (
+      {isEditing && !isCollapsed && (
         <div className="section-card-footer">
           <button
             className="btn btn-primary btn-xs"

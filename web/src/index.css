@@ -751,12 +751,38 @@ a:hover {
   border-radius: var(--r-md);
 }
 
+.section-card--collapsed .section-card-header {
+  border-bottom: none;
+  border-radius: var(--r-md);
+}
+
+.section-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background var(--t), color var(--t);
+  padding: 0;
+}
+
+.section-collapse-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
+}
+
 .section-card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 10px 16px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
   border-radius: var(--r-md) var(--r-md) 0 0;
@@ -773,6 +799,7 @@ a:hover {
   flex: 1;
   min-width: 0;
   word-break: break-word;
+  margin-left: 4px;
 }
 
 .section-heading-level-1 { font-size: 16px; }
@@ -793,15 +820,56 @@ a:hover {
   display: flex;
   align-items: center;
   color: var(--warning);
+  cursor: help;
+  position: relative;
+}
+
+.section-suspect-badge:hover::after {
+  content: attr(title);
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  background: rgba(0, 0, 0, 0.9);
+  color: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  z-index: 10;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.section-suspect-badge:hover::before {
+  content: '';
+  position: absolute;
+  bottom: calc(100% + 2px);
+  right: 8px;
+  border: 6px solid transparent;
+  border-top-color: rgba(0, 0, 0, 0.9);
+  z-index: 10;
+  pointer-events: none;
 }
 
 .section-edit-btn {
-  opacity: 0;
-  transition: opacity var(--t);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--r-sm);
+  transition: background var(--t), color var(--t);
+  padding: 0;
 }
 
-.section-card:hover .section-edit-btn {
-  opacity: 1;
+.section-edit-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text-primary);
 }
 
 .section-card-body {
