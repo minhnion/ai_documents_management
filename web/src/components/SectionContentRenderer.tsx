@@ -19,12 +19,14 @@ type ContentBlock =
 const TABLE_BLOCK_RE = /<table\b[\s\S]*?<\/table>/gi
 const FLOWCHART_BLOCK_RE = /<::flowchart\s*([\s\S]*?)\s*:\s*flowchart::>/gi
 const PAGE_BREAK_RE = /<!--\s*PAGE_BREAK\s*-->/gi
-const LOGO_BLOCK_RE = /<::logo:[\s\S]*?::>/gi
 const PURE_PAGE_NUMBER_RE = /^\s*\d+\s*$/gm
 const HEADING_RE = /^(#{1,6})\s+(.+)$/
 const LIST_ITEM_RE = /^(?:[-*•]\s+|(?:\d+|[A-Za-z])[.)]\s+)(.+)$/
 const BOLD_RE = /\*\*(.+?)\*\*/g
 const ARROW_ONLY_RE = /^(?:↓|⬇|->|=>|→)+$/
+
+// Matches custom tag blocks like <::Diagram ... : diagram::>
+const SPECIAL_TAG_RE = /<::[\s\S]*?:\s*[A-Za-z][\w-]*\s*::>/gi
 
 export default function SectionContentRenderer({ content }: SectionContentRendererProps) {
   const normalized = normalizeSectionContent(content)
@@ -53,13 +55,94 @@ export default function SectionContentRenderer({ content }: SectionContentRender
 export function normalizeSectionContent(content: string | null): string {
   if (!content) return ''
 
-  return content
+  let cleaned = content
     .replace(/\r\n?/g, '\n')
-    .replace(LOGO_BLOCK_RE, '\n')
     .replace(PAGE_BREAK_RE, '\n')
     .replace(PURE_PAGE_NUMBER_RE, '\n')
+  
+  // Remove incomplete table tags (extract text content only)
+  cleaned = cleanIncompleteTables(cleaned)
+  
+  return cleaned
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+/**
+ * Removes incomplete table tags and extracts only text content from tables
+ * If a table is missing opening/closing tags or is malformed, strip all HTML tags
+ */
+function cleanIncompleteTables(content: string): string {
+  // Find all potential table-like content
+  const tablePattern = /<\/?(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>|<table\b[\s\S]*?<\/table>/gi
+  
+  let result = content
+  let match: RegExpExecArray | null
+  
+  // First, validate complete tables
+  const completeTablePattern = /<table\b[^>]*>[\s\S]*?<\/table>/gi
+  const completeTables = new Set<string>()
+  
+  while ((match = completeTablePattern.exec(content)) !== null) {
+    const tableHtml = match[0]
+    if (isValidTable(tableHtml)) {
+      completeTables.add(tableHtml)
+    } else {
+      // Invalid table - extract text only
+      const textOnly = extractTextFromTable(tableHtml)
+      result = result.replace(tableHtml, textOnly)
+    }
+  }
+  
+  // Remove any remaining incomplete table tags
+  result = result.replace(/<\/?(?:tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, ' ')
+  
+  return result
+}
+
+/**
+ * Validates if a table HTML has proper structure
+ */
+function isValidTable(tableHtml: string): boolean {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    return false
+  }
+  
+  try {
+    const doc = new DOMParser().parseFromString(tableHtml, 'text/html')
+    const table = doc.querySelector('table')
+    if (!table) return false
+    
+    const rows = table.querySelectorAll('tr')
+    if (rows.length === 0) return false
+    
+    // Check if each row has at least one cell
+    for (const row of Array.from(rows)) {
+      const cells = row.querySelectorAll('th, td')
+      if (cells.length === 0) return false
+    }
+    
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Extracts plain text from table HTML, removing all tags
+ */
+function extractTextFromTable(tableHtml: string): string {
+  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
+    // Fallback: simple tag removal
+    return tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  }
+  
+  try {
+    const doc = new DOMParser().parseFromString(tableHtml, 'text/html')
+    return (doc.body.textContent ?? '').replace(/\s+/g, ' ').trim()
+  } catch {
+    return tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  }
 }
 
 function parseContentBlocks(content: string): ContentBlock[] {
@@ -99,9 +182,17 @@ function parseContentBlocks(content: string): ContentBlock[] {
 }
 
 function pushTextBlock(blocks: ContentBlock[], value: string): void {
-  const cleaned = value.trim()
+  const cleaned = normalizeTextSegment(value).trim()
   if (!cleaned) return
   blocks.push({ type: 'text', value: cleaned })
+}
+
+function normalizeTextSegment(value: string): string {
+  return value
+    .replace(SPECIAL_TAG_RE, '')
+    .replace(/<::/g, '')
+    .replace(/::>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
 }
 
 function parseTable(tableHtml: string): TableCellData[][] {
@@ -123,6 +214,33 @@ function parseTable(tableHtml: string): TableCellData[][] {
       })),
     )
     .filter((row) => row.length > 0)
+}
+
+function TableBlock({ rows }: { rows: TableCellData[][] }) {
+  return (
+    <div className="section-rich-table-wrap">
+      <table className="section-rich-table">
+        <tbody>
+          {rows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>
+              {row.map((cell, cellIndex) => {
+                const CellTag = cell.isHeader ? 'th' : 'td'
+                return (
+                  <CellTag
+                    key={`cell-${rowIndex}-${cellIndex}`}
+                    colSpan={cell.colSpan}
+                    rowSpan={cell.rowSpan}
+                  >
+                    {cell.text}
+                  </CellTag>
+                )
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 function parseFlowchart(flowchartBlock: string): string[] {
@@ -153,33 +271,6 @@ function parseFlowchart(flowchartBlock: string): string[] {
   }
 
   return steps
-}
-
-function TableBlock({ rows }: { rows: TableCellData[][] }) {
-  return (
-    <div className="section-rich-table-wrap">
-      <table className="section-rich-table">
-        <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={`row-${rowIndex}`}>
-              {row.map((cell, cellIndex) => {
-                const CellTag = cell.isHeader ? 'th' : 'td'
-                return (
-                  <CellTag
-                    key={`cell-${rowIndex}-${cellIndex}`}
-                    colSpan={cell.colSpan}
-                    rowSpan={cell.rowSpan}
-                  >
-                    {cell.text}
-                  </CellTag>
-                )
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
 }
 
 function FlowchartBlock({ steps }: { steps: string[] }) {
