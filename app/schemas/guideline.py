@@ -160,3 +160,8 @@ class BulkSectionContentUpdateResponse(BaseModel):
     updated_section_ids: list[int]
     deleted_chunk_count: int
     created_chunk_count: int
+
+
+class GuidelineFilterOptionsResponse(BaseModel):
+    publishers: list[str]
+    ten_benhs: list[str]

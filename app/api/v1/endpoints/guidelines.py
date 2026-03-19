@@ -8,6 +8,7 @@ from app.schemas.guideline import (
     CreateGuidelineResponse,
     CreateGuidelineVersionResponse,
     DeleteGuidelineResponse,
+    GuidelineFilterOptionsResponse,
     GuidelineListItem,
     GuidelineListResponse,
     GuidelineVersionItem,
@@ -19,6 +20,20 @@ from app.services.guideline_delete_service import GuidelineDeleteService
 from app.services.guideline_query_service import GuidelineQueryService
 
 router = APIRouter(prefix="/guidelines", tags=["Guidelines"])
+
+
+@router.get(
+    "/filter-options",
+    response_model=GuidelineFilterOptionsResponse,
+    summary="Get Filter Options",
+)
+async def get_filter_options(
+    db: DBSession,
+    _: ActiveUser,
+) -> GuidelineFilterOptionsResponse:
+    service = GuidelineQueryService(db)
+    options = await service.get_filter_options()
+    return GuidelineFilterOptionsResponse(**options)
 
 
 @router.get("", response_model=GuidelineListResponse, summary="List Guidelines")
@@ -133,17 +148,20 @@ async def create_guideline_version(
     status: Annotated[str | None, Form(max_length=50)] = "active",
 ) -> CreateGuidelineVersionResponse:
     service = GuidelineCommandService(db)
-    _, guideline_version, document, previous_active_versions_updated = (
-        await service.create_guideline_version(
-            guideline_id=guideline_id,
-            version_label=version_label,
-            release_date=release_date,
-            effective_from=effective_from,
-            effective_to=effective_to,
-            status=status,
-            upload_file=file,
-            doc_type="pdf",
-        )
+    (
+        _,
+        guideline_version,
+        document,
+        previous_active_versions_updated,
+    ) = await service.create_guideline_version(
+        guideline_id=guideline_id,
+        version_label=version_label,
+        release_date=release_date,
+        effective_from=effective_from,
+        effective_to=effective_to,
+        status=status,
+        upload_file=file,
+        doc_type="pdf",
     )
     return CreateGuidelineVersionResponse(
         guideline_id=guideline_id,

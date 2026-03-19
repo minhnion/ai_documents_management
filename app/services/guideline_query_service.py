@@ -79,11 +79,7 @@ class GuidelineQueryService:
 
         offset = (page - 1) * page_size
 
-        total_stmt = (
-            select(func.count())
-            .select_from(GuidelineVersion)
-            .where(*filters)
-        )
+        total_stmt = select(func.count()).select_from(GuidelineVersion).where(*filters)
         total = int((await self.db.execute(total_stmt)).scalar_one())
 
         versions_stmt = (
@@ -153,9 +149,7 @@ class GuidelineQueryService:
         normalized_value = normalize_search_text(value)
         if not normalized_value:
             return
-        filters.append(
-            self._normalized_text_expr(column).like(f"%{normalized_value}%")
-        )
+        filters.append(self._normalized_text_expr(column).like(f"%{normalized_value}%"))
 
     def _normalized_text_expr(self, column):
         lowered = func.lower(func.coalesce(column, ""))
@@ -165,6 +159,35 @@ class GuidelineQueryService:
             VIETNAMESE_TRANSLATION_TARGET,
         )
         return func.regexp_replace(translated, r"[^a-z0-9]+", "", "g")
+
+    async def get_filter_options(self) -> dict[str, list[str]]:
+        """Get unique values for filter dropdowns."""
+        publishers_stmt = (
+            select(Guideline.publisher)
+            .where(Guideline.publisher.isnot(None))
+            .where(Guideline.publisher != "")
+            .distinct()
+            .order_by(Guideline.publisher)
+        )
+        publishers = [
+            row for row in (await self.db.execute(publishers_stmt)).scalars().all()
+        ]
+
+        ten_benh_stmt = (
+            select(Guideline.ten_benh)
+            .where(Guideline.ten_benh.isnot(None))
+            .where(Guideline.ten_benh != "")
+            .distinct()
+            .order_by(Guideline.ten_benh)
+        )
+        ten_benhs = [
+            row for row in (await self.db.execute(ten_benh_stmt)).scalars().all()
+        ]
+
+        return {
+            "publishers": publishers,
+            "ten_benhs": ten_benhs,
+        }
 
     async def _get_active_versions(
         self,

@@ -7,6 +7,11 @@ import type { GuidelineListResponse } from '../lib/types'
 import { useAuth } from '../store/auth'
 import VersionManagerModal from '../components/VersionManagerModal'
 
+interface FilterOptions {
+  publishers: string[]
+  ten_benhs: string[]
+}
+
 const DEFAULT_PAGE_SIZE = 10
 
 export default function ListPage() {
@@ -15,9 +20,21 @@ export default function ListPage() {
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [chuyenKhoa, setChuyenKhoa] = useState('')
+  const [publisher, setPublisher] = useState('')
+  const [tenBenh, setTenBenh] = useState('')
   const [page, setPage] = useState(1)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
+  const [filterOptions, setFilterOptions] = useState<FilterOptions>({ publishers: [], ten_benhs: [] })
+
+  const fetchFilterOptions = useCallback(async () => {
+    try {
+      const res = await api.get<FilterOptions>('/guidelines/filter-options')
+      setFilterOptions(res.data)
+    } catch (err) {
+      console.error('Failed to fetch filter options:', err)
+    }
+  }, [])
 
   const fetchGuidelines = useCallback(async () => {
     setLoading(true)
@@ -26,6 +43,8 @@ export default function ListPage() {
     params.set('page_size', String(DEFAULT_PAGE_SIZE))
     if (search) params.set('search', search)
     if (chuyenKhoa) params.set('chuyen_khoa', chuyenKhoa)
+    if (publisher) params.set('publisher', publisher)
+    if (tenBenh) params.set('ten_benh', tenBenh)
 
     try {
       const res = await api.get<GuidelineListResponse>(`/guidelines?${params.toString()}`)
@@ -35,7 +54,7 @@ export default function ListPage() {
     } finally {
       setLoading(false)
     }
-  }, [chuyenKhoa, page, search])
+  }, [chuyenKhoa, publisher, tenBenh, page, search])
 
   const handleDelete = async (guidelineId: number, title: string) => {
     if (!window.confirm(`Xóa "${title}" và tất cả phiên bản? Thao tác này không thể hoàn tác.`)) return
@@ -56,6 +75,10 @@ export default function ListPage() {
   }
 
   useEffect(() => {
+    fetchFilterOptions()
+  }, [fetchFilterOptions])
+
+  useEffect(() => {
     fetchGuidelines()
   }, [fetchGuidelines])
 
@@ -74,8 +97,8 @@ export default function ListPage() {
       </div>
 
       <div className="card flex-1 flex-col" style={{ padding: 20 }}>
-        <div className="filter-bar">
-          <div className="form-group" style={{ flex: 1 }}>
+        <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 12 }}>
+          <div className="form-group" style={{ flex: 1, minWidth: 200 }}>
             <div style={{ position: 'relative' }}>
               <Search size={16} style={{ position: 'absolute', top: 11, left: 12, color: 'var(--text-muted)' }} />
               <input
@@ -91,7 +114,41 @@ export default function ListPage() {
               />
             </div>
           </div>
-          <div className="form-group" style={{ width: 320, maxWidth: '100%' }}>
+          <div className="form-group" style={{ width: 220, minWidth: 180 }}>
+            <select
+              className="form-select"
+              value={publisher}
+              onChange={e => {
+                setPublisher(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả đơn vị ban hành</option>
+              {filterOptions.publishers.map(option => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ width: 220, minWidth: 180 }}>
+            <select
+              className="form-select"
+              value={tenBenh}
+              onChange={e => {
+                setTenBenh(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả tên bệnh</option>
+              {filterOptions.ten_benhs.map(option => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group" style={{ width: 220, minWidth: 180 }}>
             <select
               className="form-select"
               value={chuyenKhoa}
