@@ -114,7 +114,7 @@ TRƯỜNG HỢP 2 — KHÔNG TÌM THẤY MỤC LỤC:
 {_STRUCTURE_RULES}"""
 
 PROMPT_PHASE2 = f"""\
-Bạn là hệ thống xây dựng cây TOC tài liệu y tế từ danh sách tiêu đề. Trả về DUY NHẤT một JSON hợp lệ, không markdown, không giải thích.
+Bạn là hệ thống xây dựng cây TOC tài liệu y tế từ outline tiêu đề đã được trích xuất bằng regex. Trả về DUY NHẤT một JSON hợp lệ, không markdown, không giải thích.
 
 OUTPUT SCHEMA: giống hệt Phase 1 (metadata + chapters đầy đủ).
 
@@ -123,13 +123,79 @@ xây dựng cây chapters đầy đủ chiều sâu.
 
 {_STRUCTURE_RULES}
 
-XÁC ĐỊNH CẤP DỰA TRÊN SỐ THẬP PHÂN:
-  "2."      hoặc "2. Tiêu đề"    → chapter cấp 1
-  "2.1."    hoặc "2.1 Tiêu đề"   → section cấp 2
-  "2.1.1."                        → subsection cấp 3
-  "2.1.1.1."                      → subsubsection cấp 4
-  Dòng in hoa không số → chapter. Markdown ## → cấp theo số dấu #.
-  Giữ nguyên tiêu đề gốc. KHÔNG thêm mục không có trong outline."""
+═══════════════════════════════════════════════════════════════
+ĐẶC ĐIỂM ĐỊNH DẠNG CỦA OUTLINE (quan trọng — đọc kỹ trước khi xử lý)
+═══════════════════════════════════════════════════════════════
+
+Outline được sinh tự động từ Markdown OCR của Landing AI. Có các đặc điểm sau:
+
+1. TIÊU ĐỀ MARKDOWN (`## text`):
+   - Dòng bắt đầu bằng `##`, `###` v.v. là tiêu đề markdown.
+   - Số dấu `#` chỉ cấp tương đối, KHÔNG phải cấp tuyệt đối trong TOC.
+   - Ví dụ: `## BƯỚC 1. HỎI BỆNH` → section cấp Bước; `## Điều 2.` → section Điều.
+
+2. TIÊU ĐỀ PHẲNG (đã strip `**bold**`):
+   - Tiêu đề in đậm `**Điều X.**` trong nguồn đã được strip dấu `**`, xuất hiện là plain text.
+   - Cần nhận diện qua từ khoá: "Chương", "Điều", "Mục", "Phần", "Bước", "Phụ lục", "Chuyên đề".
+
+3. TIÊU ĐỀ CHƯƠNG/PHẦN HAI DÒNG — CỰC KỲ QUAN TRỌNG:
+   - Trong OCR, đôi khi tiêu đề chương bị tách thành 2 dòng liên tiếp:
+     * Dòng 1: chỉ có từ khoá + số: "Chương II" / "Phần I." / "PHẦN 1. HƯỚNG DẪN..."
+     * Dòng 2: phần còn lại hoặc toàn bộ tên chương (ALL CAPS): "ĐIỀU KIỆN TRIỂN KHAI..."
+   - Quy tắc: Nếu dòng N là "Chương X" / "Phần X." / "PHẦN X. nửa tên" VÀ dòng N+1 là
+     ALL CAPS tiếp nối → GHÉP hai dòng thành một node chapter duy nhất.
+   - Ví dụ đúng:
+       Outline: "Chương II" + "ĐIỀU KIỆN TRIỂN KHAI HOẠT ĐỘNG DƯỢC LÂM SÀNG"
+       → Node: "Chương II ĐIỀU KIỆN TRIỂN KHAI HOẠT ĐỘNG DƯỢC LÂM SÀNG"
+   - KHÔNG tạo node riêng cho dòng all-caps là phần nối tiếp của chương trước đó.
+
+4. ALL CAPS ĐỘC LẬP (không nối tiếp):
+   - Dòng in hoa hoàn toàn đứng một mình (không có chương trước) → chapter riêng.
+   - Ví dụ: "LỜI GIỚI THIỆU", "TÀI LIỆU THAM KHẢO", "DANH MỤC CHỮ VIẾT TẮT".
+
+5. SỐ LA MÃ (I., II., III., IV.):
+   - Trong cấu trúc "Phần" → các mục I., II., III. là section cấp 2.
+   - Ví dụ: dưới "Phần IV. Các quy định..." → "I. Trách nhiệm thực hiện..." là section.
+
+═══════════════════════════════════════════════════════════════
+XÁC ĐỊNH CẤP PHÂN CẤPY
+═══════════════════════════════════════════════════════════════
+
+Cấp 1 (chapters):
+  - "Chương X ...", "Phần X ...", "PHẦN X. ...", "Chuyên đề X ..."
+  - Dòng ALL CAPS độc lập (Lời giới thiệu, Phụ lục không số, v.v.)
+  - Từ khoá không số: "LỜI NÓI ĐẦU", "KẾT LUẬN", "TÀI LIỆU THAM KHẢO"
+
+Cấp 2 (sections):
+  - "Điều X. ...", "Bước X. ...", "Mục X. ...", số La Mã "I.", "II.", "III."
+  - Số thập phân 1 cấp: "1.", "2." CHỈ KHI nằm ngay dưới một Chương/Phần (hiếm)
+
+Cấp 3+ (subsections):
+  - Số thập phân nhiều cấp: "2.1", "2.1.1", "3.4.1"
+  - Ký tự + số hoặc chữ cái dưới Bước/Mục: "A.", "B."
+
+Giữ nguyên tiêu đề gốc. KHÔNG thêm mục không có trong outline.
+
+═══════════════════════════════════════════════════════════════
+PHÂN BIỆT TIÊU ĐỀ CẤU TRÚC vs NỘI DUNG ĐÁnh số — BẮT BUỘC
+═══════════════════════════════════════════════════════════════
+
+✔ TIÊU ĐỀ CẤU TRÚC → đưa vào TOC:
+    • Có từ khoá cấp mục ở đầu: Chương, Điều, Mục, Phần, Bước, Phụ lục, Chuyên đề
+    • Số thập phân nhiều cấp (2.1, 3.4.1...)
+    • Số La Mã + dấu chấm (I., II., III., IV.)
+    • Dòng ALL CAPS ngắn gọn (tiêu đề chương/phần)
+
+✘ NỘI DUNG LIỆT KÊ → TUYỆT ĐỐI KHÔNG đưa vào TOC:
+    • Dạng "1. câu văn...", "2. câu văn...", "3. câu văn..." nằm BÊN TRONG một Điều/Bước/Mục.
+    • Dấu hiệu: số đơn (1, 2, 3...) + nội dung không có từ khoá cấu trúc.
+    • Đây là khoản/điểm nội dung liệt kê, không phải mục của tài liệu.
+    • Kể cả khi NGẮN: "1. Tuyển dụng và đào tạo...", "2. Cơ sở vật chất:" vẫn là nội dung.
+    • Kể cả khi XUẤT HIỆN TRONG OUTLINE: regex có thể lọt sót — bạn phải lọc lại.
+
+Quy tắc nhận dạng nhanh:
+    Nếu loại bỏ tất cả dòng "X. ..." (số đơn) khỏi outline mà cây TOC vẫn đầy đủ → đó là nội dung.
+    Điều X là node lá → 1., 2., 3. bên dưới là khoản nội dung của Điều đó, không phải con của nó."""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UTILITIES
@@ -171,20 +237,6 @@ def call_ai(client: OpenAI, system: str, user: str) -> dict:
         max_output_tokens=12000,
     )
     return parse_json_response(response.output_text or "")
-
-
-def _build_client() -> OpenAI:
-    load_dotenv(override=False)
-    api_key = os.getenv("OPENAI_API_KEY", "").strip().strip("\"'")
-    if not api_key:
-        raise BadRequestException("Missing OPENAI_API_KEY in environment.")
-
-    model_name = os.getenv("OPENAI_MODEL_NAME", "").strip()
-    if model_name:
-        global MODEL
-        MODEL = model_name
-
-    return OpenAI(api_key=api_key)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # NORMALIZATION
@@ -265,35 +317,134 @@ def toc_is_shallow(toc: dict) -> bool:
 # HEADING OUTLINE EXTRACTOR
 # ──────────────────────────────────────────────────────────────────────────────
 
-_RE_MD_HEADING     = re.compile(r"^(#{1,6})\s+(.+)")
-_RE_NUMBERED       = re.compile(r"^(\d+(?:\.\d+)*)\s*[\.\)]\s*(.+)")
-_RE_ROMAN_HEADING  = re.compile(r"^(I{1,3}|IV|V?I{0,3}|IX|X{0,3})\.\s+\S")
-_RE_CHAPTER_PREFIX = re.compile(r"^(ph[aầ]n|phan|chương|chuong|bước|buoc|mục|muc)\s+\S", re.IGNORECASE)
-_RE_HTML_TAG       = re.compile(r"<[^>]+>")
-_RE_PURE_NUM       = re.compile(r"^\s*[\d\s,\.\-/]+\s*$")
+# ──────────────────────────────────────────────────────────────────────────────
+# HEADING OUTLINE EXTRACTOR
+# ──────────────────────────────────────────────────────────────────────────────
+
+_RE_MD_HEADING  = re.compile(r"^(#{1,6})\s+(.+)")
+_RE_NUMBERED    = re.compile(r"^(\d+(?:\.\d+)*)\s*[\.\)]\s*(.+)")
+_RE_HTML_TAG    = re.compile(r"<[^>]+>")
+_RE_PURE_NUM    = re.compile(r"^\s*[\d\s,\.\-/]+\s*$")
+_RE_MD_MARKUP   = re.compile(r"\*{1,3}|_{1,3}")   # strip **bold**, *italic*, __underline__
+
+# Số La Mã đứng đầu dòng (I., II., III., IV., V. ... XV.) — section trong Phần
+_RE_ROMAN_HEADING = re.compile(
+    r"^(XIV|XIII|XII|XI|IX|VIII|VII|VI|IV|III|II|XV|I|X|V)\.\s+\S",
+    re.IGNORECASE,
+)
+
+# Nhận diện từ khoá cấu trúc — dùng lowercase để tránh lỗi IGNORECASE với tiếng Việt có dấu
+# Kiểm tra bằng: _RE_STRUCT_PREFIX.match(clean.lower())
+_RE_STRUCT_PREFIX = re.compile(
+    r"^(chương|phần|bước|mục|điều|phụ lục|phụlục|chuyên đề|chuyênđề|phan|chuong|buoc|muc|dieu)\s+\S"
+)
+
+# Từ khoá cấu trúc ở phần _content_ của numbered item ("Điều" sau "1.")
+_RE_STRUCT_KEYWORD_LOWER = re.compile(
+    r"^(chương|phần|bước|mục|điều|phụ lục|phụlục|chuyên đề|phan|chuong|buoc|muc|dieu)\s+"
+)
+
+
+def _is_content_list_item(clean_lower: str, clean: str) -> bool:
+    """
+    Trả về True nếu dòng là khoản nội dung liệt kê — KHÔNG phải tiêu đề cấu trúc.
+
+    Phase 2 chỉ chạy khi không có MỤC LỤC. Trong các tài liệu đó,
+    tiêu đề thực sự luôn dùng từ khoá cấu trúc (Chương, Điều, Phần, Bước...).
+    Mọi dòng "X. ..." đơn cấp mà không có từ khoá đều là nội dung liệt kê.
+    """
+    m = _RE_NUMBERED.match(clean)
+    if not m:
+        return False
+    num_part = m.group(1)   # vd "1", "2", "2.1"
+    content  = m.group(2).strip()
+
+    # Số thập phân nhiều cấp (2.1, 3.4.1...) → tiêu đề cấu trúc
+    if "." in num_part:
+        return False
+
+    # Số đơn cấp + content có từ khoá cấu trúc → tiêu đề cấu trúc
+    # (vd: "1. Điều 5..." hay "2. Chương III..." — hiếm nhưng có)
+    if _RE_STRUCT_KEYWORD_LOWER.match(content.lower()):
+        return False
+
+    # Mọi trường hợp còn lại: số đơn cấp không có từ khoá → nội dung liệt kê
+    return True
 
 
 def extract_heading_outline(text: str) -> str:
+    """
+    Trích xuất outline tiêu đề từ toàn văn bản OCR Markdown (Landing AI format).
+
+    Xử lý các đặc điểm của OCR output:
+    - Thẻ <a id='uuid'></a> trước mỗi block (bị strip bởi _RE_HTML_TAG)
+    - Tiêu đề in đậm **Điều X.** (bị strip bởi _RE_MD_MARKUP)
+    - Tiêu đề markdown ## heading (giữ nguyên để LLM biết cấp)
+    - Bảng HTML <table>/<td> (stripped, text cell hiện ra)
+    - Ảnh <:: ... ::> (stripped hoàn toàn)
+
+    Output: danh sách tiêu đề, mỗi dòng 1 tiêu đề, đã strip markup.
+    """
     lines = []
     for raw in text.splitlines():
         s = raw.strip()
         if not s or s == PAGE_BREAK or _RE_PURE_NUM.match(s):
             continue
+
+        # Bước 1: strip HTML tags (<a id=...>, <table>, <td>, <tr>, <::..::>, v.v.)
         plain = _RE_HTML_TAG.sub("", s).strip()
+        # Xử lý block đặc biệt của Landing AI: <:: ... ::>
+        plain = re.sub(r"<::.*?::>", "", plain, flags=re.DOTALL).strip()
         if not plain:
             continue
-        if _RE_MD_HEADING.match(s):
-            lines.append(s)
-        elif _RE_NUMBERED.match(plain):
-            lines.append(plain)
-        elif _RE_ROMAN_HEADING.match(plain):
-            lines.append(plain)
-        elif _RE_CHAPTER_PREFIX.match(plain):
-            lines.append(plain)
-        elif len(plain) <= 120 and plain == plain.upper() and len(plain) > 4:
-            if not re.fullmatch(r"[\-\=\*\s]+", plain):
-                lines.append(plain)
 
+        # Bước 2: strip markdown bold/italic (**text**, *text*, __text__)
+        clean = _RE_MD_MARKUP.sub("", plain).strip()
+        if not clean:
+            continue
+
+        clean_lower = clean.lower()
+
+        # ── Ưu tiên 1: Markdown heading (## Chương I, ## BƯỚC 1. ...) ──
+        if _RE_MD_HEADING.match(s):
+            # Lấy nội dung sau ## (đã strip markup) để output sạch hơn
+            md_content = _RE_MD_MARKUP.sub("", _RE_MD_HEADING.match(s).group(2)).strip()
+            if md_content:
+                # Giữ ## prefix để LLM biết đây là markdown heading có cấp
+                hashes = _RE_MD_HEADING.match(s).group(1)
+                lines.append(f"{hashes} {md_content}")
+            continue
+
+        # ── Ưu tiên 2: Từ khoá cấu trúc (Chương, Điều, Phần, Bước...) ──
+        # Dùng lowercase để tránh lỗi IGNORECASE với Unicode tiếng Việt
+        if _RE_STRUCT_PREFIX.match(clean_lower):
+            lines.append(clean)
+            continue
+
+        # ── Ưu tiên 3: Số La Mã đầu dòng (I., II., III. — section trong Phần) ──
+        if _RE_ROMAN_HEADING.match(clean):
+            lines.append(clean)
+            continue
+
+        # ── Ưu tiên 4: Số thập phân (chỉ chấp nhận nếu KHÔNG phải nội dung liệt kê) ──
+        if _RE_NUMBERED.match(clean):
+            if not _is_content_list_item(clean_lower, clean):
+                lines.append(clean)
+            continue
+
+        # ── Ưu tiên 5: ALL CAPS — tiêu đề chương/phần không số ──
+        # Lọc bỏ: dòng số thuần, dòng chỉ có ký tự đặc biệt, dòng quá ngắn
+        if (len(clean) > 4
+                and clean == clean.upper()
+                and not re.fullmatch(r"[\-\=\*\_\s\|/\\\.]+", clean)
+                and not _RE_PURE_NUM.match(clean)):
+            # Lọc thêm: loại bỏ các dòng ALL CAPS là tên người, tổ chức ngắn (< 10 ký tự)
+            # hoặc các cụm viết tắt đơn lẻ (BYT, BGDĐT, THA...)
+            if len(clean) >= 10 or " " in clean:
+                lines.append(clean)
+            continue
+
+    # Dedup liên tiếp
     deduped, prev = [], None
     for ln in lines:
         if ln != prev:
@@ -385,6 +536,20 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Saved → {out_path.name}")
+
+
+def _build_client() -> OpenAI:
+    load_dotenv(override=False)
+    api_key = os.getenv("OPENAI_API_KEY", "").strip().strip("\"'")
+    if not api_key:
+        raise BadRequestException("Missing OPENAI_API_KEY in environment.")
+
+    model_name = os.getenv("OPENAI_MODEL_NAME", "").strip()
+    if model_name:
+        global MODEL
+        MODEL = model_name
+
+    return OpenAI(api_key=api_key)
 
 
 def build_toc_from_text(text: str, filename: str) -> dict[str, Any]:
