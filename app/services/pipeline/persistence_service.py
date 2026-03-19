@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document
 from app.models.section import Section
+from app.services.chunk_generation_service import ChunkGenerationService
 from app.services.pipeline.clean_markdown_service import PAGE_BREAK_MARKER
 
 OCR_MD_FILENAME = "extraction.md"
@@ -55,7 +56,13 @@ class PipelinePersistenceService:
             section_count += inserted
 
         document.page_count = self._estimate_page_count(clean_text)
-        return {"section_count": section_count, "chunk_count": 0}
+        chunk_stats = await ChunkGenerationService(self.db).rebuild_chunks_for_version(
+            version_id
+        )
+        return {
+            "section_count": section_count,
+            "chunk_count": int(chunk_stats.get("chunk_count", 0)),
+        }
 
     async def _persist_section_tree(
         self,

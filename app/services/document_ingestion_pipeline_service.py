@@ -89,10 +89,18 @@ class DocumentIngestionPipelineService:
         self._hydrate_core_pipeline_env()
         if not settings.LANDINGAI_API_KEY.strip():
             raise BadRequestException("LANDINGAI_API_KEY is required for OCR pipeline.")
+        if not settings.LANDINGAI_MODEL_NAME.strip():
+            raise BadRequestException("LANDINGAI_MODEL_NAME is required for OCR pipeline.")
         if not settings.OPENAI_API_KEY.strip():
-            raise BadRequestException("OPENAI_API_KEY is required for TOC pipeline.")
+            raise BadRequestException("OPENAI_API_KEY is required for TOC and chunk pipeline.")
+        if not settings.OPENAI_MODEL_NAME.strip():
+            raise BadRequestException("OPENAI_MODEL_NAME is required for TOC and chunk abstract pipeline.")
+        if not settings.OPENAI_EMBEDDING_MODEL_NAME.strip():
+            raise BadRequestException("OPENAI_EMBEDDING_MODEL_NAME is required for chunk embedding pipeline.")
         if not 0.0 < float(settings.SCORE_THRESHOLD) < 1.0:
             raise BadRequestException("SCORE_THRESHOLD must be > 0 and < 1.")
+        if int(settings.CHUNK_MAX_CHARS) <= 0:
+            raise BadRequestException("CHUNK_MAX_CHARS must be greater than 0.")
 
     def _hydrate_core_pipeline_env(self) -> None:
         if settings.LANDINGAI_API_KEY.strip():

@@ -141,3 +141,16 @@ async def migrate_guidelines_ten_benh_schema() -> None:
                 """
             )
         )
+
+
+async def migrate_chunks_text_abstract_schema() -> None:
+    """Add LLM summary column for chunk retrieval payloads."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE chunks
+                ADD COLUMN IF NOT EXISTS text_abstract TEXT
+                """
+            )
+        )

@@ -22,6 +22,7 @@ class Chunk(Base):
         nullable=True,
     )
     text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    text_abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[object | None] = mapped_column(HALFVEC(3072), nullable=True)
 
     # Relationships

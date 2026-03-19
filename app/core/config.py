@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 20
     LOCAL_STORAGE_ROOT: str = "uploads"
     SCORE_THRESHOLD: float = 0.65
+    CHUNK_MAX_CHARS: int = 3000
 
     # API
     API_V1_PREFIX: str = "/api/v1"
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_API_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL_NAME: str = ""
+    OPENAI_EMBEDDING_MODEL_NAME: str = "text-embedding-3-large"
     CORE_AI_BASE_URL: str = ""
     CORE_AI_API_KEY: str = ""
 

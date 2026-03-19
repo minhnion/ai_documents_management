@@ -84,7 +84,7 @@ pip install -r requirements.txt
 
 Lưu ý:
 - Nếu dùng schema có cột `chunks.embedding halfvec(3072)`, PostgreSQL cần có extension/vector type tương ứng trước khi app startup với `AUTO_CREATE_TABLES=true`.
-- Backend hiện mới map đúng schema `chunks`, nhưng chưa đọc/ghi dữ liệu embedding trong luồng nghiệp vụ.
+- Backend hiện build `chunks` sau khi persist `sections`, tạo `text_abstract` bằng OpenAI và lưu `embedding` vào chính bảng `chunks`.
 
 ### 3. Cấu hình biến môi trường
 
@@ -212,12 +212,14 @@ DEFAULT_ADMIN_PASSWORD="ChangeMe123!"
 DEFAULT_ADMIN_FULL_NAME="System Admin"
 LOCAL_STORAGE_ROOT=uploads
 SCORE_THRESHOLD=0.65
+CHUNK_MAX_CHARS=3000
 LANDINGAI_API_KEY=
 LANDINGAI_API_URL="https://api.va.landing.ai/v1/ade/parse"
 LANDINGAI_MODEL_NAME="dpt-2-latest"
 OPENAI_API_KEY=
 OPENAI_API_URL="https://api.openai.com/v1"
 OPENAI_MODEL_NAME="gpt-4.1"
+OPENAI_EMBEDDING_MODEL_NAME="text-embedding-3-large"
 ```
 
 ### Luồng sử dụng nhanh
