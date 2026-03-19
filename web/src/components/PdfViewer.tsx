@@ -15,7 +15,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 const PDFJS_VERSION = '5.5.207'
 const PDFJS_WASM_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/wasm/`
 
-const DEFAULT_SCALE = 1.5
+const DEFAULT_SCALE = 1.25
 const DEFAULT_ROTATION = 0
 const RANGE_CHUNK_SIZE = 256 * 1024
 
