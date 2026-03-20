@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ChevronLeft, AlertTriangle, Check, X } from 'lucide-react'
 import { api } from '../lib/api'
@@ -6,7 +6,12 @@ import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
-import type { VersionWorkspaceResponse, WorkspaceSectionNode, GuidelineVersionItem } from '../lib/types'
+import type {
+  GuidelineVersionItem,
+  RebuildVersionChunksResponse,
+  VersionWorkspaceResponse,
+  WorkspaceSectionNode,
+} from '../lib/types'
 
 type SectionEditDraft = {
   heading: string
@@ -27,8 +32,12 @@ export default function ViewPage() {
   const [savingSections, setSavingSections] = useState<Record<number, boolean>>({})
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [chunking, setChunking] = useState(false)
+  const [chunkError, setChunkError] = useState('')
+  const [chunkSuccess, setChunkSuccess] = useState('')
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
+  const unsavedEditCount = useMemo(() => Object.keys(sectionEdits).length, [sectionEdits])
 
   useEffect(() => {
     setTargetVersionId(versionId)
@@ -38,17 +47,21 @@ export default function ViewPage() {
     if (!guidelineId || !targetVersionId) return
 
     setSectionEdits({})
+    setChunkError('')
+    setChunkSuccess('')
     setLoading(true)
     Promise.all([
       api.get<VersionWorkspaceResponse>(`/versions/${targetVersionId}/workspace`),
-      api.get<{ items: GuidelineVersionItem[] }>(`/guidelines/${guidelineId}/versions`)
-    ]).then(([wsRes, vRes]) => {
-      setWorkspace(wsRes.data)
-      setVersions(vRes.data.items)
-      if (targetVersionId !== versionId) {
-        navigate(`/guidelines/${guidelineId}/versions/${targetVersionId}`, { replace: true })
-      }
-    }).catch(console.error)
+      api.get<{ items: GuidelineVersionItem[] }>(`/guidelines/${guidelineId}/versions`),
+    ])
+      .then(([wsRes, vRes]) => {
+        setWorkspace(wsRes.data)
+        setVersions(vRes.data.items)
+        if (targetVersionId !== versionId) {
+          navigate(`/guidelines/${guidelineId}/versions/${targetVersionId}`, { replace: true })
+        }
+      })
+      .catch(console.error)
       .finally(() => setLoading(false))
   }, [guidelineId, targetVersionId, navigate, versionId])
 
@@ -58,13 +71,15 @@ export default function ViewPage() {
     if (!draft) return
     setSavingSections(prev => ({ ...prev, [sectionId]: true }))
     setSaveError('')
+    setChunkError('')
+    setChunkSuccess('')
     try {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, {
         updates: [{
           section_id: sectionId,
           content: draft.content,
           heading: draft.heading,
-        }]
+        }],
       })
       const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
       setWorkspace(wsRes.data)
@@ -94,6 +109,8 @@ export default function ViewPage() {
     if (updates.length === 0) return
     setSaving(true)
     setSaveError('')
+    setChunkError('')
+    setChunkSuccess('')
     try {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, { updates })
       const wsRes = await api.get<VersionWorkspaceResponse>(`/versions/${workspace.version.version_id}/workspace`)
@@ -108,6 +125,30 @@ export default function ViewPage() {
       setSaveError(err.response?.data?.detail || 'Lỗi khi lưu nội dung.')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleRebuildChunks = async () => {
+    if (!workspace) return
+    if (unsavedEditCount > 0) {
+      setChunkError('Hãy lưu hoặc hủy các chỉnh sửa hiện tại trước khi tạo chunks.')
+      setChunkSuccess('')
+      return
+    }
+    setChunking(true)
+    setChunkError('')
+    setChunkSuccess('')
+    try {
+      const response = await api.post<RebuildVersionChunksResponse>(
+        `/versions/${workspace.version.version_id}/chunks/rebuild`
+      )
+      setChunkSuccess(
+        `Đã tạo chunks thành công. Xóa ${response.data.deleted_chunk_count} chunks cũ, tạo ${response.data.created_chunk_count} chunks mới.`
+      )
+    } catch (err: any) {
+      setChunkError(err.response?.data?.detail || 'Lỗi khi tạo chunks từ dữ liệu sections.')
+    } finally {
+      setChunking(false)
     }
   }
 
@@ -158,7 +199,6 @@ export default function ViewPage() {
 
   return (
     <div className="view-layout">
-      {/* LEFT PANE: TOC */}
       <div className="toc-sidebar">
         <div className="toc-header">
           <button className="btn btn-ghost btn-xs" onClick={() => navigate('/guidelines')} style={{ marginRight: 8 }}>
@@ -193,7 +233,6 @@ export default function ViewPage() {
         </div>
       </div>
 
-      {/* CENTER PANE: TEXT */}
       <div className="content-pane">
         <div className="content-toolbar">
           <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
@@ -207,30 +246,50 @@ export default function ViewPage() {
               <AlertTriangle size={11} /> {workspace.suspect_section_count} mục cần kiểm tra
             </span>
           )}
-          {Object.keys(sectionEdits).length > 0 && (
-            <>
-                <button
-                className="btn btn-primary btn-xs"
-                disabled={saving}
-                onClick={handleSaveAll}
-                style={{ marginLeft: 'auto' }}
-                >
-                {saving
-                  ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
-                  : <><Check size={12} /> Lưu tất cả ({Object.keys(sectionEdits).length})</>
-                }
-                </button>
+          <div className="content-toolbar-actions">
+            {canEdit && (
               <button
                 className="btn btn-secondary btn-xs"
-                disabled={saving}
-                onClick={() => { setSectionEdits({}); setSaveError('') }}
+                disabled={chunking || saving || unsavedEditCount > 0}
+                onClick={handleRebuildChunks}
+                title={
+                  unsavedEditCount > 0
+                    ? 'Hãy lưu hoặc hủy chỉnh sửa trước khi tạo chunks.'
+                    : 'Tạo chunks từ dữ liệu sections hiện tại'
+                }
               >
-                <X size={12} /> Hủy
+                {chunking
+                  ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                  : <><Check size={12} /> Tạo chunks</>
+                }
               </button>
-            </>
-          )}
+            )}
+            {unsavedEditCount > 0 && (
+              <>
+                <button
+                  className="btn btn-primary btn-xs"
+                  disabled={saving || chunking}
+                  onClick={handleSaveAll}
+                >
+                  {saving
+                    ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                    : <><Check size={12} /> Lưu tất cả ({unsavedEditCount})</>
+                  }
+                </button>
+                <button
+                  className="btn btn-secondary btn-xs"
+                  disabled={saving || chunking}
+                  onClick={() => { setSectionEdits({}); setSaveError('') }}
+                >
+                  <X size={12} /> Hủy
+                </button>
+              </>
+            )}
+          </div>
         </div>
         {saveError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{saveError}</div>}
+        {chunkError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{chunkError}</div>}
+        {chunkSuccess && <div className="alert alert-success" style={{ margin: '8px 20px 0' }}>{chunkSuccess}</div>}
         <TextContent
           toc={workspace.toc}
           canEdit={canEdit}
@@ -248,7 +307,6 @@ export default function ViewPage() {
         />
       </div>
 
-      {/* RIGHT PANE: PDF */}
       <div className="pdf-pane">
         <PdfViewer
           documentId={documentId}
