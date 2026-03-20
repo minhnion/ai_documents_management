@@ -135,7 +135,7 @@ class ChunkGenerationService:
     ) -> list[PreparedChunk]:
         prepared: list[PreparedChunk] = []
         for root in roots:
-            self._walk_section_tree(
+            self._collect_subtree_chunks(
                 node=root,
                 ancestor_blocks=[],
                 max_chars=max_chars,
@@ -143,7 +143,7 @@ class ChunkGenerationService:
             )
         return prepared
 
-    def _walk_section_tree(
+    def _collect_subtree_chunks(
         self,
         *,
         node: SectionSnapshot,
@@ -153,25 +153,49 @@ class ChunkGenerationService:
     ) -> None:
         own_block = self._build_section_block(node)
         next_ancestor_blocks = list(ancestor_blocks)
-
         if own_block:
             next_ancestor_blocks.append(own_block)
-            full_text = self._join_context_blocks(next_ancestor_blocks)
-            for chunk_text in self._split_text(full_text, max_chars=max_chars):
+
+        if not node.children:
+            if own_block:
                 prepared.append(
                     PreparedChunk(
                         section_id=node.section_id,
-                        text=chunk_text,
+                        text=self._join_context_blocks([*ancestor_blocks, own_block]),
                     )
                 )
+            return
+
+        subtree_block = self._build_subtree_block(node)
+        if subtree_block and len(subtree_block) <= max_chars:
+            prepared.append(
+                PreparedChunk(
+                    section_id=node.section_id,
+                    text=self._join_context_blocks([*ancestor_blocks, subtree_block]),
+                )
+            )
+            return
 
         for child in node.children:
-            self._walk_section_tree(
+            self._collect_subtree_chunks(
                 node=child,
                 ancestor_blocks=next_ancestor_blocks,
                 max_chars=max_chars,
                 prepared=prepared,
             )
+
+    def _build_subtree_block(self, node: SectionSnapshot) -> str:
+        blocks: list[str] = []
+        own_block = self._build_section_block(node)
+        if own_block:
+            blocks.append(own_block)
+
+        for child in node.children:
+            child_block = self._build_subtree_block(child)
+            if child_block:
+                blocks.append(child_block)
+
+        return self._join_context_blocks(blocks)
 
     def _build_section_block(self, node: SectionSnapshot) -> str:
         parts: list[str] = []
