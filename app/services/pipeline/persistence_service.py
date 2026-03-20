@@ -10,21 +10,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document
 from app.models.section import Section
-from app.services.chunk_generation_service import ChunkGenerationService
 from app.services.pipeline.clean_markdown_service import PAGE_BREAK_MARKER
 
-OCR_MD_FILENAME = "extraction.md"
-CLEAN_MD_FILENAME = "extraction_clean.md"
-TOC_FILENAME = "toc_structure.json"
-CHUNKS_FILENAME = "chunks.json"
+OCR_MD_FILENAME = 'extraction.md'
+CLEAN_MD_FILENAME = 'extraction_clean.md'
+TOC_FILENAME = 'toc_structure.json'
+CHUNKS_FILENAME = 'chunks.json'
 
 _CHILD_KEYS = (
-    "chapters",
-    "sections",
-    "subsections",
-    "subsubsections",
-    "subsubsubsections",
-    "children",
+    'chapters',
+    'sections',
+    'subsections',
+    'subsubsections',
+    'subsubsubsections',
+    'children',
 )
 
 
@@ -56,12 +55,9 @@ class PipelinePersistenceService:
             section_count += inserted
 
         document.page_count = self._estimate_page_count(clean_text)
-        chunk_stats = await ChunkGenerationService(self.db).rebuild_chunks_for_version(
-            version_id
-        )
         return {
-            "section_count": section_count,
-            "chunk_count": int(chunk_stats.get("chunk_count", 0)),
+            'section_count': section_count,
+            'chunk_count': 0,
         }
 
     async def _persist_section_tree(
@@ -74,7 +70,7 @@ class PipelinePersistenceService:
         order_index: int,
         section_path: str,
     ) -> int:
-        score = node.get("match_score")
+        score = node.get('match_score')
         is_suspect = False
         try:
             if score is not None:
@@ -85,24 +81,24 @@ class PipelinePersistenceService:
         section = Section(
             version_id=version_id,
             parent_id=parent_id,
-            heading=node.get("title"),
+            heading=node.get('title'),
             section_path=section_path,
             level=level,
             order_index=order_index,
-            start_char=node.get("start_char"),
-            end_char=node.get("end_char"),
-            page_start=node.get("page_start"),
-            page_end=node.get("page_end"),
+            start_char=node.get('start_char'),
+            end_char=node.get('end_char'),
+            page_start=node.get('page_start'),
+            page_end=node.get('page_end'),
             match_score=score,
             is_suspect=is_suspect,
-            content=node.get("content"),
+            content=node.get('content'),
         )
         self.db.add(section)
         await self.db.flush()
 
         section_count = 1
         for index, child in enumerate(self._extract_children(node), start=1):
-            child_path = f"{section_path}.{index}"
+            child_path = f'{section_path}.{index}'
             inserted = await self._persist_section_tree(
                 version_id=version_id,
                 node=child,
@@ -123,15 +119,15 @@ class PipelinePersistenceService:
         toc: dict[str, Any],
         chunk_payload: dict[str, Any],
     ) -> None:
-        (artifact_dir / OCR_MD_FILENAME).write_text(raw_md, encoding="utf-8")
-        (artifact_dir / CLEAN_MD_FILENAME).write_text(clean_md, encoding="utf-8")
+        (artifact_dir / OCR_MD_FILENAME).write_text(raw_md, encoding='utf-8')
+        (artifact_dir / CLEAN_MD_FILENAME).write_text(clean_md, encoding='utf-8')
         (artifact_dir / TOC_FILENAME).write_text(
             json.dumps(toc, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            encoding='utf-8',
         )
         (artifact_dir / CHUNKS_FILENAME).write_text(
             json.dumps(chunk_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+            encoding='utf-8',
         )
 
     def _extract_children(self, node: dict[str, Any]) -> list[dict[str, Any]]:
@@ -141,7 +137,7 @@ class PipelinePersistenceService:
             if not isinstance(value, list):
                 continue
             for child in value:
-                if isinstance(child, dict) and child.get("title"):
+                if isinstance(child, dict) and child.get('title'):
                     children.append(child)
         return children
 

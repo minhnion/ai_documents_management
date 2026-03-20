@@ -78,6 +78,12 @@ class DeleteGuidelineVersionResponse(BaseModel):
     remaining_version_count: int
 
 
+class RebuildVersionChunksResponse(BaseModel):
+    version_id: int
+    deleted_chunk_count: int
+    created_chunk_count: int
+
+
 class WorkspaceGuidelineInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -126,7 +132,7 @@ class WorkspaceSectionNode(BaseModel):
     score: float | None = None
     is_suspect: bool = False
     content: str | None = None
-    children: list["WorkspaceSectionNode"] = Field(default_factory=list)
+    children: list['WorkspaceSectionNode'] = Field(default_factory=list)
 
 
 WorkspaceSectionNode.model_rebuild()
@@ -158,8 +164,6 @@ class BulkSectionContentUpdateResponse(BaseModel):
     requested_count: int
     updated_count: int
     updated_section_ids: list[int]
-    deleted_chunk_count: int
-    created_chunk_count: int
 
 
 class GuidelineFilterOptionsResponse(BaseModel):

@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import BadRequestException, NotFoundException
-from app.models.chunk import Chunk
 from app.models.guideline_version import GuidelineVersion
 from app.models.section import Section
-from app.services.chunk_generation_service import ChunkGenerationService
 
 
 @dataclass(slots=True)
@@ -45,19 +43,11 @@ class GuidelineEditService:
                 section_map[item.section_id].heading = item.heading.strip() or None
         await self.db.flush()
 
-        deleted_chunk_count = await self._count_chunks_for_version(version_id)
-        chunk_stats = await ChunkGenerationService(self.db).rebuild_chunks_for_version(
-            version_id
-        )
-        created_chunk_count = int(chunk_stats.get("chunk_count", 0))
-
         return {
-            "version_id": version_id,
-            "requested_count": len(normalized_updates),
-            "updated_count": len(normalized_updates),
-            "updated_section_ids": section_ids,
-            "deleted_chunk_count": deleted_chunk_count,
-            "created_chunk_count": created_chunk_count,
+            'version_id': version_id,
+            'requested_count': len(normalized_updates),
+            'updated_count': len(normalized_updates),
+            'updated_section_ids': section_ids,
         }
 
     def _normalize_updates(
@@ -65,20 +55,20 @@ class GuidelineEditService:
         updates: list[SectionContentUpdate],
     ) -> list[SectionContentUpdate]:
         if not updates:
-            raise BadRequestException("At least one section update is required.")
+            raise BadRequestException('At least one section update is required.')
 
         normalized: list[SectionContentUpdate] = []
         seen_ids: set[int] = set()
         for item in updates:
             if item.section_id in seen_ids:
                 raise BadRequestException(
-                    f"Duplicate section_id in request: {item.section_id}."
+                    f'Duplicate section_id in request: {item.section_id}.'
                 )
             has_content = item.content is not None
             has_heading = item.heading is not None
             if not has_content and not has_heading:
                 raise BadRequestException(
-                    f"section_id={item.section_id} must include content or heading."
+                    f'section_id={item.section_id} must include content or heading.'
                 )
             seen_ids.add(item.section_id)
             normalized.append(
@@ -99,7 +89,7 @@ class GuidelineEditService:
             )
         ).scalar_one_or_none()
         if version is None:
-            raise NotFoundException("GuidelineVersion", version_id)
+            raise NotFoundException('GuidelineVersion', version_id)
 
     async def _lock_sections_for_update(
         self,
@@ -119,17 +109,7 @@ class GuidelineEditService:
 
         missing_ids = sorted(set(section_ids) - set(section_map.keys()))
         if missing_ids:
-            missing_value = ", ".join(str(section_id) for section_id in missing_ids)
-            raise NotFoundException("Section", missing_value)
+            missing_value = ', '.join(str(section_id) for section_id in missing_ids)
+            raise NotFoundException('Section', missing_value)
 
         return section_map
-
-    async def _count_chunks_for_version(self, version_id: int) -> int:
-        total = (
-            await self.db.execute(
-                select(func.count())
-                .select_from(Chunk)
-                .where(Chunk.version_id == version_id)
-            )
-        ).scalar_one()
-        return int(total or 0)

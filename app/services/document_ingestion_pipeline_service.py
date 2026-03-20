@@ -73,7 +73,7 @@ class DocumentIngestionPipelineService:
             clean_text=clean_md,
         )
         logger.info(
-            "Pipeline done | guideline_id=%s version_id=%s sections=%s persisted_chunks=%s artifacts=%s",
+            "Pipeline done | guideline_id=%s version_id=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,
             version_id,
             persist_stats.get("section_count"),
@@ -94,13 +94,9 @@ class DocumentIngestionPipelineService:
         if not settings.OPENAI_API_KEY.strip():
             raise BadRequestException("OPENAI_API_KEY is required for TOC and chunk pipeline.")
         if not settings.OPENAI_MODEL_NAME.strip():
-            raise BadRequestException("OPENAI_MODEL_NAME is required for TOC and chunk abstract pipeline.")
-        if not settings.OPENAI_EMBEDDING_MODEL_NAME.strip():
-            raise BadRequestException("OPENAI_EMBEDDING_MODEL_NAME is required for chunk embedding pipeline.")
+            raise BadRequestException("OPENAI_MODEL_NAME is required for TOC pipeline.")
         if not 0.0 < float(settings.SCORE_THRESHOLD) < 1.0:
             raise BadRequestException("SCORE_THRESHOLD must be > 0 and < 1.")
-        if int(settings.CHUNK_MAX_CHARS) <= 0:
-            raise BadRequestException("CHUNK_MAX_CHARS must be greater than 0.")
 
     def _hydrate_core_pipeline_env(self) -> None:
         if settings.LANDINGAI_API_KEY.strip():

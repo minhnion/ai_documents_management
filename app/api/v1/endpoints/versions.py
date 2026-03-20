@@ -7,12 +7,14 @@ from app.schemas.guideline import (
     BulkSectionContentUpdateRequest,
     BulkSectionContentUpdateResponse,
     DeleteGuidelineVersionResponse,
+    RebuildVersionChunksResponse,
     VersionWorkspaceResponse,
     WorkspaceDocumentInfo,
     WorkspaceGuidelineInfo,
     WorkspaceSectionNode,
     WorkspaceVersionInfo,
 )
+from app.services.guideline_chunk_service import GuidelineChunkService
 from app.services.guideline_delete_service import GuidelineDeleteService
 from app.services.guideline_edit_service import (
     GuidelineEditService,
@@ -20,13 +22,13 @@ from app.services.guideline_edit_service import (
 )
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
 
-router = APIRouter(prefix="/versions", tags=["Versions"])
+router = APIRouter(prefix='/versions', tags=['Versions'])
 
 
 @router.get(
-    "/{version_id}/workspace",
+    '/{version_id}/workspace',
     response_model=VersionWorkspaceResponse,
-    summary="Get Version Workspace",
+    summary='Get Version Workspace',
 )
 async def get_version_workspace(
     version_id: int,
@@ -43,34 +45,34 @@ async def get_version_workspace(
     )
     return VersionWorkspaceResponse(
         guideline=WorkspaceGuidelineInfo.model_validate(
-            workspace_data["guideline"]
+            workspace_data['guideline']
         ),
-        version=WorkspaceVersionInfo.model_validate(workspace_data["version"]),
+        version=WorkspaceVersionInfo.model_validate(workspace_data['version']),
         documents=[
             WorkspaceDocumentInfo.model_validate(document)
-            for document in workspace_data["documents"]
+            for document in workspace_data['documents']
         ],
         toc=[
             WorkspaceSectionNode.model_validate(node)
-            for node in workspace_data["toc"]
+            for node in workspace_data['toc']
         ],
-        section_count=int(workspace_data["section_count"]),
-        suspect_score_threshold=float(workspace_data["suspect_score_threshold"]),
-        suspect_section_count=int(workspace_data["suspect_section_count"]),
-        full_text=workspace_data["full_text"],
+        section_count=int(workspace_data['section_count']),
+        suspect_score_threshold=float(workspace_data['suspect_score_threshold']),
+        suspect_section_count=int(workspace_data['suspect_section_count']),
+        full_text=workspace_data['full_text'],
     )
 
 
 @router.patch(
-    "/{version_id}/sections/content",
+    '/{version_id}/sections/content',
     response_model=BulkSectionContentUpdateResponse,
-    summary="Bulk Update Section Content and Heading",
+    summary='Bulk Update Section Content and Heading',
 )
 async def bulk_update_section_content(
     version_id: int,
     payload: BulkSectionContentUpdateRequest,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
 ) -> BulkSectionContentUpdateResponse:
     service = GuidelineEditService(db)
     result = await service.bulk_update_section_content(
@@ -87,15 +89,30 @@ async def bulk_update_section_content(
     return BulkSectionContentUpdateResponse(**result)
 
 
+@router.post(
+    '/{version_id}/chunks/rebuild',
+    response_model=RebuildVersionChunksResponse,
+    summary='Rebuild Version Chunks',
+)
+async def rebuild_version_chunks(
+    version_id: int,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+) -> RebuildVersionChunksResponse:
+    service = GuidelineChunkService(db)
+    result = await service.rebuild_version_chunks(version_id)
+    return RebuildVersionChunksResponse(**result)
+
+
 @router.delete(
-    "/{version_id}",
+    '/{version_id}',
     response_model=DeleteGuidelineVersionResponse,
-    summary="Delete Guideline Version",
+    summary='Delete Guideline Version',
 )
 async def delete_guideline_version(
     version_id: int,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
 ) -> DeleteGuidelineVersionResponse:
     service = GuidelineDeleteService(db)
     result = await service.delete_version(version_id)

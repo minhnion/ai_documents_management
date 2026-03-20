@@ -190,6 +190,10 @@ export interface BulkSectionContentUpdateResponse {
   requested_count: number
   updated_count: number
   updated_section_ids: number[]
+}
+
+export interface RebuildVersionChunksResponse {
+  version_id: number
   deleted_chunk_count: number
   created_chunk_count: number
 }
