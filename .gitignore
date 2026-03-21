@@ -50,6 +50,7 @@ examples/
 
 # Temporary files (IDE / tooling)
 tmpclaude*
+.worktrees/
 
 # Tests
 tests/
