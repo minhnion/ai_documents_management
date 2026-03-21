@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronLeft, AlertTriangle, Check, X } from 'lucide-react'
+import { ChevronLeft, AlertTriangle, Check, X, PanelRightClose, PanelRightOpen } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
@@ -22,6 +22,9 @@ export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
   const { user } = useAuth()
+  const contentPaneRef = useRef<HTMLDivElement | null>(null)
+  const contentToggleButtonRef = useRef<HTMLButtonElement | null>(null)
+  const focusWasInContentPaneRef = useRef(false)
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
@@ -35,6 +38,7 @@ export default function ViewPage() {
   const [chunking, setChunking] = useState(false)
   const [chunkError, setChunkError] = useState('')
   const [chunkSuccess, setChunkSuccess] = useState('')
+  const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
   const unsavedEditCount = useMemo(() => Object.keys(sectionEdits).length, [sectionEdits])
@@ -64,6 +68,18 @@ export default function ViewPage() {
       .catch(console.error)
       .finally(() => setLoading(false))
   }, [guidelineId, targetVersionId, navigate, versionId])
+
+  useEffect(() => {
+    const pane = contentPaneRef.current
+    if (!pane) return
+
+    if (isContentPaneCollapsed) {
+      pane.setAttribute('inert', '')
+      return
+    }
+
+    pane.removeAttribute('inert')
+  }, [isContentPaneCollapsed])
 
   const handleSaveSection = async (sectionId: number) => {
     if (!workspace) return
@@ -192,19 +208,54 @@ export default function ViewPage() {
     setSaveError('')
   }
 
+  const handleContentTogglePointerDown = () => {
+    focusWasInContentPaneRef.current = contentPaneRef.current?.contains(document.activeElement) ?? false
+  }
+
+  const handleContentToggle = () => {
+    const focusWasInContentPane = focusWasInContentPaneRef.current
+      || (contentPaneRef.current?.contains(document.activeElement) ?? false)
+
+    setIsContentPaneCollapsed(prev => !prev)
+
+    if (focusWasInContentPane && !isContentPaneCollapsed) {
+      window.requestAnimationFrame(() => {
+        contentToggleButtonRef.current?.focus()
+      })
+    }
+
+    focusWasInContentPaneRef.current = false
+  }
+
   const documentId = workspace?.documents[0]?.document_id ?? null
 
   if (loading) return <div className="loading-center"><span className="loading-spinner" /></div>
   if (!workspace) return <div className="empty-state">Không tìm thấy dữ liệu.</div>
 
   return (
-    <div className="view-layout">
+    <div className={isContentPaneCollapsed ? 'view-layout view-layout--content-collapsed' : 'view-layout'}>
+      {/* LEFT PANE: TOC */}
       <div className="toc-sidebar">
         <div className="toc-header">
-          <button className="btn btn-ghost btn-xs" onClick={() => navigate('/guidelines')} style={{ marginRight: 8 }}>
+          <button className="btn btn-ghost btn-xs toc-header-back" onClick={() => navigate('/guidelines')}>
             <ChevronLeft size={16} /> Quay lại
           </button>
-          Mục lục
+          <h2 className="toc-header-title">Mục lục</h2>
+          <div className="toc-header-actions">
+            <button
+              ref={contentToggleButtonRef}
+              type="button"
+              className="btn btn-ghost btn-xs toc-header-toggle"
+              aria-label="Bật/tắt panel nội dung"
+              aria-controls="viewer-content-pane"
+              aria-pressed={isContentPaneCollapsed}
+              title={isContentPaneCollapsed ? 'Hiện nội dung' : 'Ẩn nội dung'}
+              onPointerDown={handleContentTogglePointerDown}
+              onClick={handleContentToggle}
+            >
+              {isContentPaneCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+            </button>
+          </div>
         </div>
         <div className="version-bar">
           <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Phiên bản:</span>
@@ -233,7 +284,15 @@ export default function ViewPage() {
         </div>
       </div>
 
-      <div className="content-pane">
+      {/* CENTER PANE: TEXT */}
+      <div
+        id="viewer-content-pane"
+        ref={contentPaneRef}
+        className="content-pane"
+        role="region"
+        aria-label="Nội dung hướng dẫn"
+        aria-hidden={isContentPaneCollapsed}
+      >
         <div className="content-toolbar">
           <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>
             {workspace.guideline.title}

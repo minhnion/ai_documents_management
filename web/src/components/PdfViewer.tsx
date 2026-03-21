@@ -7,6 +7,8 @@ import {
   RefreshCw,
   Download,
   ExternalLink,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react'
 import { api } from '../lib/api'
 
@@ -16,8 +18,21 @@ const PDFJS_VERSION = '5.5.207'
 const PDFJS_WASM_URL = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/wasm/`
 
 const DEFAULT_SCALE = 1.25
+const ZOOM_STEP = 0.1
+const MIN_ZOOM_LEVEL = -5
+const MAX_ZOOM_LEVEL = 8
+const PDF_PAGE_HORIZONTAL_MARGIN = 32
+const PDF_PAGE_MAX_WIDTH = 900
 const DEFAULT_ROTATION = 0
 const RANGE_CHUNK_SIZE = 256 * 1024
+
+export const clampZoomLevel = (zoomLevel: number) => {
+  return Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, zoomLevel))
+}
+
+export const getZoomScale = (fitScale: number, zoomLevel: number) => {
+  return fitScale * (1 + clampZoomLevel(zoomLevel) * ZOOM_STEP)
+}
 
 interface PdfViewerProps {
   documentId: number | null
@@ -45,13 +60,18 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
   const [currentPage, setCurrentPage] = useState(1)
   const [pageInputValue, setPageInputValue] = useState('1')
   const [reloadKey, setReloadKey] = useState(0)
+  const [fitScale, setFitScale] = useState(DEFAULT_SCALE)
+  const [zoomLevel, setZoomLevel] = useState(0)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<(HTMLDivElement | null)[]>([])
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([])
   const renderingRef = useRef(false)
+  const queuedRenderRef = useRef<{ doc: PDFDocumentProxy; scale: number } | null>(null)
   const currentDocRef = useRef<PDFDocumentProxy | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
+
+  const renderScale = getZoomScale(fitScale, zoomLevel)
 
   const loadPdfBlob = useCallback(async () => {
     if (!documentId) return null
@@ -75,8 +95,11 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
     }
   }, [documentId])
 
-  const renderAllPages = useCallback(async (doc: PDFDocumentProxy) => {
-    if (renderingRef.current) return
+  const renderAllPages = useCallback(async (doc: PDFDocumentProxy, scale: number) => {
+    if (renderingRef.current) {
+      queuedRenderRef.current = { doc, scale }
+      return
+    }
     renderingRef.current = true
 
     try {
@@ -90,7 +113,7 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
         try {
           const pdfPage = await doc.getPage(pageNumber)
           const viewport = pdfPage.getViewport({
-            scale: DEFAULT_SCALE,
+            scale,
             rotation: DEFAULT_ROTATION,
           })
           const context = canvas.getContext('2d')
@@ -124,6 +147,39 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
       }
     } finally {
       renderingRef.current = false
+      const queuedRender = queuedRenderRef.current
+      queuedRenderRef.current = null
+      if (queuedRender && currentDocRef.current === queuedRender.doc) {
+        void renderAllPages(queuedRender.doc, queuedRender.scale)
+      }
+    }
+  }, [])
+
+  const measureFitScale = useCallback(async (doc: PDFDocumentProxy) => {
+    const container = containerRef.current
+    if (!container) return DEFAULT_SCALE
+
+    const firstPage = await doc.getPage(1)
+
+    try {
+      const viewport = firstPage.getViewport({
+        scale: 1,
+        rotation: DEFAULT_ROTATION,
+      })
+      const availableWidth = Math.min(
+        Math.max(container.clientWidth - PDF_PAGE_HORIZONTAL_MARGIN, 0),
+        PDF_PAGE_MAX_WIDTH
+      )
+
+      if (availableWidth <= 0 || viewport.width <= 0) {
+        return DEFAULT_SCALE
+      }
+
+      return availableWidth / viewport.width
+    } finally {
+      if (typeof firstPage.cleanup === 'function') {
+        firstPage.cleanup()
+      }
     }
   }, [])
 
@@ -151,6 +207,8 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
     setRenderedPages([])
     setCurrentPage(1)
     setPageInputValue('1')
+    setFitScale(DEFAULT_SCALE)
+    setZoomLevel(0)
     currentDocRef.current = null
     pageRefs.current = []
     canvasRefs.current = []
@@ -190,7 +248,28 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
         void existingDoc.destroy()
       }
     }
-  }, [buildPdfRequest, documentId, reloadKey])
+  }, [buildPdfRequest, documentId, measureFitScale, reloadKey])
+
+  useEffect(() => {
+    if (!pdfDoc) return
+
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const nextFitScale = await measureFitScale(pdfDoc)
+        if (!cancelled) {
+          setFitScale(nextFitScale)
+        }
+      } catch (scaleError) {
+        console.error('Failed measuring PDF fit scale', scaleError)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [measureFitScale, pdfDoc])
 
   useEffect(() => {
     if (!pdfDoc) return
@@ -201,10 +280,10 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
     setRenderedPages(Array.from({ length: totalPages }, (_, index) => index + 1))
 
     const timer = window.setTimeout(() => {
-      void renderAllPages(pdfDoc)
+      void renderAllPages(pdfDoc, renderScale)
     }, 50)
     return () => window.clearTimeout(timer)
-  }, [pdfDoc, renderAllPages])
+  }, [pdfDoc, renderAllPages, renderScale])
 
   useEffect(() => {
     if (!containerRef.current || renderedPages.length === 0) return
@@ -258,6 +337,14 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
 
   const reload = () => {
     setReloadKey((value) => value + 1)
+  }
+
+  const zoomOut = () => {
+    setZoomLevel((value) => clampZoomLevel(value - 1))
+  }
+
+  const zoomIn = () => {
+    setZoomLevel((value) => clampZoomLevel(value + 1))
   }
 
   const downloadPdf = async () => {
@@ -322,6 +409,9 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
     setPageInputValue(String(currentPage))
   }
 
+  const isMinZoom = zoomLevel <= MIN_ZOOM_LEVEL
+  const isMaxZoom = zoomLevel >= MAX_ZOOM_LEVEL
+
   if (!documentId) {
     return (
       <div className="loading-center">
@@ -384,6 +474,25 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
           />
           <span className="pdf-tb-page-total">/ {numPages}</span>
         </div>
+
+        <div className="pdf-tb-sep" />
+
+        <button
+          className="pdf-tb-btn"
+          onClick={zoomOut}
+          disabled={!pdfDoc || isMinZoom}
+          title="Thu nhỏ"
+        >
+          <ZoomOut size={16} />
+        </button>
+        <button
+          className="pdf-tb-btn"
+          onClick={zoomIn}
+          disabled={!pdfDoc || isMaxZoom}
+          title="Phóng to"
+        >
+          <ZoomIn size={16} />
+        </button>
 
         <div className="pdf-tb-sep" />
 
