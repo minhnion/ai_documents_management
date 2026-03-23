@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Edit3, Check, X, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
-import SectionContentRenderer, { normalizeSectionContent } from './SectionContentRenderer'
+import SectionContentRenderer from './SectionContentRenderer'
+import { normalizeSectionContent } from './sectionContent'
 
 interface SectionCardProps {
   node: WorkspaceSectionNode

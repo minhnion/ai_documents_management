@@ -1,4 +1,5 @@
 import { Fragment, type ElementType, type ReactNode } from 'react'
+import { normalizeSectionContent } from './sectionContent'
 
 interface SectionContentRendererProps {
   content: string | null
@@ -15,18 +16,39 @@ type ContentBlock =
   | { type: 'text'; value: string }
   | { type: 'table'; rows: TableCellData[][] }
   | { type: 'flowchart'; steps: string[] }
+  | {
+      type: 'custom'
+      inferredType: string | null
+      label: string | null
+      value: string
+    }
 
 const TABLE_BLOCK_RE = /<table\b[\s\S]*?<\/table>/gi
-const FLOWCHART_BLOCK_RE = /<::flowchart\s*([\s\S]*?)\s*:\s*flowchart::>/gi
-const PAGE_BREAK_RE = /<!--\s*PAGE_BREAK\s*-->/gi
-const PURE_PAGE_NUMBER_RE = /^\s*\d+\s*$/gm
 const HEADING_RE = /^(#{1,6})\s+(.+)$/
 const LIST_ITEM_RE = /^(?:[-*•]\s+|(?:\d+|[A-Za-z])[.)]\s+)(.+)$/
 const BOLD_RE = /\*\*(.+?)\*\*/g
 const ARROW_ONLY_RE = /^(?:↓|⬇|->|=>|→)+$/
+const FLOW_CONNECTOR_RE = /\s*(?:->|=>|→|↓|⬇)\s*/
+const CUSTOM_CLOSING_TYPE_RE = /:\s*([A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*)*)\s*::>\s*$/i
+const CUSTOM_OPENING_LABEL_RE = /^<::\s*([A-Za-z][\w-]*)\s*:/i
 
-// Matches custom tag blocks like <::Diagram ... : diagram::>
-const SPECIAL_TAG_RE = /<::[\s\S]*?:\s*[A-Za-z][\w-]*\s*::>/gi
+const CUSTOM_BLOCK_EXAMPLES = [
+  '<:: flow\nA\n->\nB\n: flow ::>',
+  '<:: flow : A -> B',
+  '<:: something : custom body : something ::>',
+  '<:: unknown block with missing ending',
+]
+
+// Temporary parser scaffolding for the upcoming custom tag refactor.
+// These fixtures document the malformed and shorthand formats the scanner
+// must keep recognizing while the heuristics are rewritten.
+void CUSTOM_BLOCK_EXAMPLES
+
+// Boundary priority for custom block recovery:
+// 1. nearest : type ::>
+// 2. nearest ::>
+// 3. next <table or <:: start
+// 4. end of content
 
 export default function SectionContentRenderer({ content }: SectionContentRendererProps) {
   const normalized = normalizeSectionContent(content)
@@ -46,139 +68,104 @@ export default function SectionContentRenderer({ content }: SectionContentRender
         if (block.type === 'flowchart') {
           return <FlowchartBlock key={`flowchart-${index}`} steps={block.steps} />
         }
+        if (block.type === 'custom') {
+          return (
+            <CustomTagFallbackBlock
+              key={`custom-${index}`}
+              value={block.value}
+              label={block.label}
+            />
+          )
+        }
         return <TextBlock key={`text-${index}`} value={block.value} />
       })}
     </div>
   )
 }
 
-export function normalizeSectionContent(content: string | null): string {
-  if (!content) return ''
-
-  let cleaned = content
-    .replace(/\r\n?/g, '\n')
-    .replace(PAGE_BREAK_RE, '\n')
-    .replace(PURE_PAGE_NUMBER_RE, '\n')
-  
-  // Remove incomplete table tags (extract text content only)
-  cleaned = cleanIncompleteTables(cleaned)
-  
-  return cleaned
-    .replace(/\n{3,}/g, '\n\n')
-    .trim()
-}
-
-/**
- * Removes incomplete table tags and extracts only text content from tables
- * If a table is missing opening/closing tags or is malformed, strip all HTML tags
- */
-function cleanIncompleteTables(content: string): string {
-  // Find all potential table-like content
-  const tablePattern = /<\/?(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>|<table\b[\s\S]*?<\/table>/gi
-  
-  let result = content
-  let match: RegExpExecArray | null
-  
-  // First, validate complete tables
-  const completeTablePattern = /<table\b[^>]*>[\s\S]*?<\/table>/gi
-  const completeTables = new Set<string>()
-  
-  while ((match = completeTablePattern.exec(content)) !== null) {
-    const tableHtml = match[0]
-    if (isValidTable(tableHtml)) {
-      completeTables.add(tableHtml)
-    } else {
-      // Invalid table - extract text only
-      const textOnly = extractTextFromTable(tableHtml)
-      result = result.replace(tableHtml, textOnly)
-    }
-  }
-  
-  // Remove any remaining incomplete table tags
-  result = result.replace(/<\/?(?:tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, ' ')
-  
-  return result
-}
-
-/**
- * Validates if a table HTML has proper structure
- */
-function isValidTable(tableHtml: string): boolean {
-  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
-    return false
-  }
-  
-  try {
-    const doc = new DOMParser().parseFromString(tableHtml, 'text/html')
-    const table = doc.querySelector('table')
-    if (!table) return false
-    
-    const rows = table.querySelectorAll('tr')
-    if (rows.length === 0) return false
-    
-    // Check if each row has at least one cell
-    for (const row of Array.from(rows)) {
-      const cells = row.querySelectorAll('th, td')
-      if (cells.length === 0) return false
-    }
-    
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
- * Extracts plain text from table HTML, removing all tags
- */
-function extractTextFromTable(tableHtml: string): string {
-  if (typeof window === 'undefined' || typeof DOMParser === 'undefined') {
-    // Fallback: simple tag removal
-    return tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  }
-  
-  try {
-    const doc = new DOMParser().parseFromString(tableHtml, 'text/html')
-    return (doc.body.textContent ?? '').replace(/\s+/g, ' ').trim()
-  } catch {
-    return tableHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-  }
-}
-
 function parseContentBlocks(content: string): ContentBlock[] {
   const blocks: ContentBlock[] = []
-  const tokenRe = new RegExp(`${TABLE_BLOCK_RE.source}|${FLOWCHART_BLOCK_RE.source}`, 'gi')
 
   let cursor = 0
-  let match = tokenRe.exec(content)
-  while (match) {
-    const start = match.index
-    if (start > cursor) {
-      pushTextBlock(blocks, content.slice(cursor, start))
+  while (cursor < content.length) {
+    const nextTable = content.indexOf('<table', cursor)
+    const nextCustom = content.indexOf('<::', cursor)
+    const nextIndex = chooseNearest(nextTable, nextCustom)
+
+    if (nextIndex === -1) {
+      pushTextBlock(blocks, content.slice(cursor))
+      break
     }
 
-    const token = match[0]
-    if (token.toLowerCase().startsWith('<table')) {
-      const rows = parseTable(token)
+    if (nextIndex > cursor) {
+      pushTextBlock(blocks, content.slice(cursor, nextIndex))
+    }
+
+    if (nextIndex === nextTable) {
+      TABLE_BLOCK_RE.lastIndex = nextIndex
+      const tableMatch = TABLE_BLOCK_RE.exec(content)
+      if (!tableMatch || tableMatch.index !== nextIndex) {
+        const danglingTagEnd = content.indexOf('>', nextIndex)
+        cursor = danglingTagEnd >= 0 ? danglingTagEnd + 1 : nextIndex + 1
+        continue
+      }
+
+      const rows = parseTable(tableMatch[0])
       if (rows.length > 0) {
         blocks.push({ type: 'table', rows })
+      } else {
+        pushTextBlock(blocks, tableMatch[0])
       }
-    } else {
-      const steps = parseFlowchart(token)
-      if (steps.length > 0) {
-        blocks.push({ type: 'flowchart', steps })
-      }
+
+      cursor = Math.max(nextIndex + 1, tableMatch.index + tableMatch[0].length)
+      continue
     }
 
-    cursor = start + token.length
-    match = tokenRe.exec(content)
+    const { raw, end, hasExplicitClose } = extractCustomBlockCandidate(content, nextIndex)
+    const inferredType = inferCustomBlockType(raw)
+    const label = extractCustomBlockLabel(raw)
+    const value = cleanCustomBlockBody(raw, inferredType)
+
+    if (!value && end <= nextIndex + 3) {
+      pushTextBlock(blocks, content.slice(nextIndex, nextIndex + 3))
+      cursor = nextIndex + 3
+      continue
+    }
+
+    if (!value && end > nextIndex) {
+      pushTextBlock(blocks, raw)
+      cursor = end
+      continue
+    }
+
+    if (!isConfidentCustomBlockCandidate(raw, value, inferredType, hasExplicitClose)) {
+      pushTextBlock(blocks, raw)
+      cursor = Math.max(nextIndex + 3, end)
+      continue
+    }
+
+    const rendererKey = getCustomRendererKey(inferredType)
+
+    if (rendererKey === 'flowchart') {
+      const steps = parseFlowchart(value)
+      if (steps.length > 0) {
+        blocks.push({ type: 'flowchart', steps })
+      } else {
+        blocks.push({ type: 'custom', inferredType, label, value })
+      }
+    } else {
+      blocks.push({ type: 'custom', inferredType, label, value })
+    }
+
+    cursor = Math.max(nextIndex + 3, end)
   }
 
-  if (cursor < content.length) {
-    pushTextBlock(blocks, content.slice(cursor))
+  if (blocks.length > 0) {
+    return blocks
   }
 
-  return blocks.length > 0 ? blocks : [{ type: 'text', value: content }]
+  const fallbackText = normalizeTextSegment(content).trim()
+  return fallbackText ? [{ type: 'text', value: fallbackText }] : []
 }
 
 function pushTextBlock(blocks: ContentBlock[], value: string): void {
@@ -188,11 +175,184 @@ function pushTextBlock(blocks: ContentBlock[], value: string): void {
 }
 
 function normalizeTextSegment(value: string): string {
+  return sanitizeRenderableText(value).replace(/\n{3,}/g, '\n\n')
+}
+
+function chooseNearest(...indexes: number[]): number {
+  const candidates = indexes.filter((index) => index >= 0)
+  return candidates.length > 0 ? Math.min(...candidates) : -1
+}
+
+function isStructuralBoundaryStart(content: string, index: number): boolean {
+  const lineStart = content.lastIndexOf('\n', index - 1) + 1
+  return content.slice(lineStart, index).trim().length === 0
+}
+
+function findNextTableBoundary(content: string, start: number): number {
+  TABLE_BLOCK_RE.lastIndex = start
+  const match = TABLE_BLOCK_RE.exec(content)
+  return match?.index ?? -1
+}
+
+function findNextBlockBoundary(content: string, start: number): number {
+  let cursor = start
+  let nextTable = findNextTableBoundary(content, start)
+
+  while (cursor < content.length) {
+    const nextCustom = content.indexOf('<::', cursor)
+    const nextIndex = chooseNearest(nextTable, nextCustom)
+
+    if (nextIndex === -1) {
+      return -1
+    }
+
+    if (nextIndex === nextTable) {
+      return nextTable
+    }
+
+    if (isStructuralBoundaryStart(content, nextIndex)) {
+      return nextIndex
+    }
+
+    cursor = nextIndex + 1
+    nextTable = nextTable >= cursor ? nextTable : findNextTableBoundary(content, cursor)
+  }
+
+  return -1
+}
+
+function extractCustomBlockCandidate(
+  content: string,
+  start: number,
+): { raw: string; end: number; hasExplicitClose: boolean } {
+  const contentAfterStart = start + 3
+  const boundary = findNextBlockBoundary(content, contentAfterStart)
+  const limit = boundary === -1 ? content.length : boundary
+  const candidate = content.slice(contentAfterStart, limit)
+  const typedClosingMatch = /:\s*[A-Za-z][\w-]*\s*::>/.exec(candidate)
+
+  if (typedClosingMatch) {
+    const end = contentAfterStart + typedClosingMatch.index + typedClosingMatch[0].length
+    return { raw: content.slice(start, end), end, hasExplicitClose: true }
+  }
+
+  const plainClosing = candidate.indexOf('::>')
+  if (plainClosing >= 0) {
+    const end = contentAfterStart + plainClosing + 3
+    return { raw: content.slice(start, end), end, hasExplicitClose: true }
+  }
+
+  if (boundary >= 0) {
+    return { raw: content.slice(start, boundary), end: boundary, hasExplicitClose: false }
+  }
+
+  return { raw: content.slice(start), end: content.length, hasExplicitClose: false }
+}
+
+function inferCustomBlockType(raw: string): string | null {
+  const closingType = CUSTOM_CLOSING_TYPE_RE.exec(raw)?.[1] ?? null
+  if (closingType) {
+    return normalizeCustomType(closingType)
+  }
+
+  const openingType = CUSTOM_OPENING_LABEL_RE.exec(raw)?.[1] ?? null
+  return normalizeCustomType(openingType)
+}
+
+function getCustomRendererKey(inferredType: string | null): 'flowchart' | 'fallback' {
+  return inferredType === 'flowchart' ? 'flowchart' : 'fallback'
+}
+
+function normalizeCustomType(value: string | null): string | null {
+  const normalized = value?.trim().toLowerCase().replace(/[\s_]+/g, '-') ?? ''
+  if (!normalized) {
+    return null
+  }
+
+  if (normalized === 'flow' || normalized === 'flowchart' || normalized === 'flow-chart') {
+    return 'flowchart'
+  }
+
+  return normalized
+}
+
+function extractCustomBlockLabel(raw: string): string | null {
+  const label =
+    CUSTOM_OPENING_LABEL_RE.exec(raw)?.[1]?.trim() ??
+    CUSTOM_CLOSING_TYPE_RE.exec(raw)?.[1]?.trim() ??
+    ''
+  return label || null
+}
+
+function cleanCustomBlockBody(raw: string, inferredType: string | null): string {
+  let value = raw.replace(/^<::\s*/, '')
+  const openingLabel = CUSTOM_OPENING_LABEL_RE.exec(raw)?.[1]?.trim() ?? ''
+
+  if (openingLabel) {
+    value = value.replace(new RegExp(`^${escapeRegExp(openingLabel)}\\s*:\\s*`, 'i'), '')
+  }
+
+  if (inferredType) {
+    value = value.replace(CUSTOM_CLOSING_TYPE_RE, '')
+  }
+
+  value = value.replace(/\s*::>\s*$/, '')
+
+  return sanitizeRenderableText(value).trim()
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function sanitizeRenderableText(value: string): string {
   return value
-    .replace(SPECIAL_TAG_RE, '')
-    .replace(/<::/g, '')
-    .replace(/::>/g, '')
-    .replace(/\n{3,}/g, '\n\n')
+    .replace(/<::\s*[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*)*\s*::>/gi, ' ')
+    .replace(/<\/(?:table|tbody|thead|tfoot|tr|td|th)\s*>/gi, ' ')
+    .replace(/<(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, ' ')
+    .replace(/<::\s*/g, ' ')
+    .replace(/\s*::>/g, ' ')
+    .replace(/\n?[ \t]*:[ \t]*[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*)*[ \t]*::>\s*$/gim, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+}
+
+function isConfidentCustomBlockCandidate(
+  raw: string,
+  value: string,
+  inferredType: string | null,
+  hasExplicitClose: boolean,
+): boolean {
+  if (!value) {
+    return false
+  }
+
+  if (hasExplicitClose) {
+    return true
+  }
+
+  if (inferredType === 'flowchart') {
+    const lines = value
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+
+    if (lines.length === 1 && FLOW_CONNECTOR_RE.test(lines[0]) && !ARROW_ONLY_RE.test(lines[0])) {
+      return true
+    }
+
+    if (lines.length < 3) {
+      return false
+    }
+
+    const arrowLineCount = lines.filter((line) => ARROW_ONLY_RE.test(line)).length
+    return arrowLineCount > 0
+  }
+
+  if (inferredType) {
+    return true
+  }
+
+  return /^<::\s*[A-Za-z][\w-]*\s*:[^\n]+$/.test(raw)
 }
 
 function parseTable(tableHtml: string): TableCellData[][] {
@@ -243,14 +403,18 @@ function TableBlock({ rows }: { rows: TableCellData[][] }) {
   )
 }
 
-function parseFlowchart(flowchartBlock: string): string[] {
-  const match = /<::flowchart\s*([\s\S]*?)\s*:\s*flowchart::>/i.exec(flowchartBlock)
-  if (!match) return []
-
-  const lines = match[1]
+function parseFlowchart(flowchartContent: string): string[] {
+  const lines = flowchartContent
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
+
+  if (lines.length === 1 && FLOW_CONNECTOR_RE.test(lines[0])) {
+    return lines[0]
+      .split(FLOW_CONNECTOR_RE)
+      .map((step) => step.trim())
+      .filter(Boolean)
+  }
 
   const steps: string[] = []
   let current: string[] = []
@@ -296,6 +460,21 @@ function FlowchartBlock({ steps }: { steps: string[] }) {
           </Fragment>
         )
       })}
+    </div>
+  )
+}
+
+function CustomTagFallbackBlock({
+  value,
+  label,
+}: {
+  value: string
+  label: string | null
+}) {
+  return (
+    <div className="section-custom-block">
+      {label && <div className="section-custom-block-label">{label}</div>}
+      <TextBlock value={value} />
     </div>
   )
 }
