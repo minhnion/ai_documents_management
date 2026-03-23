@@ -50,20 +50,45 @@ class GuidelineVersionListResponse(BaseModel):
     page_size: int
 
 
+class VersionIngestionStatusResponse(BaseModel):
+    job_id: int | None = None
+    guideline_id: int
+    version_id: int
+    document_id: int | None = None
+    status: str
+    version_status: str | None = None
+    target_status: str | None = None
+    previous_active_versions_updated: int = 0
+    error_message: str | None = None
+    requested_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 class CreateGuidelineResponse(BaseModel):
+    accepted: bool
     guideline_id: int
     version_id: int
     document_id: int
     storage_uri: str | None = None
+    job_id: int | None = None
+    pipeline_status: str
+    version_status: str | None = None
+    target_status: str | None = None
 
 
 class CreateGuidelineVersionResponse(BaseModel):
+    accepted: bool
     guideline_id: int
     version_id: int
     status: str | None = None
     previous_active_versions_updated: int = 0
     document_id: int | None = None
     storage_uri: str | None = None
+    job_id: int | None = None
+    pipeline_status: str
+    version_status: str | None = None
+    target_status: str | None = None
 
 
 class DeleteGuidelineResponse(BaseModel):

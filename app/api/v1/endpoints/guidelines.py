@@ -79,7 +79,7 @@ async def list_guidelines(
     )
 
 
-@router.post("", response_model=CreateGuidelineResponse, summary="Create Guideline")
+@router.post("", response_model=CreateGuidelineResponse, status_code=202, summary="Create Guideline")
 async def create_guideline(
     db: DBSession,
     _: Annotated[object, Depends(require_roles("editor", "admin"))],
@@ -95,7 +95,7 @@ async def create_guideline(
     status: Annotated[str | None, Form(max_length=50)] = "active",
 ) -> CreateGuidelineResponse:
     service = GuidelineCommandService(db)
-    guideline, guideline_version, document = await service.create_guideline(
+    guideline, guideline_version, document, job_result = await service.create_guideline(
         title=title,
         ten_benh=ten_benh,
         publisher=publisher,
@@ -109,10 +109,15 @@ async def create_guideline(
         doc_type="pdf",
     )
     return CreateGuidelineResponse(
+        accepted=bool(job_result["accepted"]),
         guideline_id=guideline.guideline_id,
         version_id=guideline_version.version_id,
         document_id=document.document_id,
         storage_uri=document.storage_uri,
+        job_id=job_result.get("job_id"),
+        pipeline_status=str(job_result["status"]),
+        version_status=job_result.get("version_status"),
+        target_status=job_result.get("target_status"),
     )
 
 
@@ -134,6 +139,7 @@ async def delete_guideline(
 @router.post(
     "/{guideline_id}/versions",
     response_model=CreateGuidelineVersionResponse,
+    status_code=202,
     summary="Create Guideline Version",
 )
 async def create_guideline_version(
@@ -148,12 +154,7 @@ async def create_guideline_version(
     status: Annotated[str | None, Form(max_length=50)] = "active",
 ) -> CreateGuidelineVersionResponse:
     service = GuidelineCommandService(db)
-    (
-        _,
-        guideline_version,
-        document,
-        previous_active_versions_updated,
-    ) = await service.create_guideline_version(
+    (_, guideline_version, document, job_result) = await service.create_guideline_version(
         guideline_id=guideline_id,
         version_label=version_label,
         release_date=release_date,
@@ -164,12 +165,17 @@ async def create_guideline_version(
         doc_type="pdf",
     )
     return CreateGuidelineVersionResponse(
+        accepted=bool(job_result["accepted"]),
         guideline_id=guideline_id,
         version_id=guideline_version.version_id,
         status=guideline_version.status,
-        previous_active_versions_updated=previous_active_versions_updated,
+        previous_active_versions_updated=int(job_result.get("previous_active_versions_updated", 0) or 0),
         document_id=document.document_id if document else None,
         storage_uri=document.storage_uri if document else None,
+        job_id=job_result.get("job_id"),
+        pipeline_status=str(job_result["status"]),
+        version_status=job_result.get("version_status"),
+        target_status=job_result.get("target_status"),
     )
 
 

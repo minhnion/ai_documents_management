@@ -8,6 +8,7 @@ export const SPECIALTY_OPTIONS = [
   'HIV/AIDS',
   'Da liễu - STDs',
   'Thận học',
+  'Thần kinh',
   'Huyết học - Truyền máu',
   'Nhi khoa',
   'Sản phụ khoa',

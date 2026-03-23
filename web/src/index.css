@@ -1363,6 +1363,10 @@ a:hover {
   animation: spin 0.7s linear infinite;
 }
 
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1410,6 +1414,12 @@ a:hover {
   background: #dafbe1;
   border: 1px solid rgba(74, 194, 107, 0.4);
   color: var(--success);
+}
+
+.alert-info {
+  background: #e7f5ff;
+  border: 1px solid rgba(51, 154, 240, 0.28);
+  color: #0b5cab;
 }
 
 /* ── Scrollbars ─────────────────────────────────────────────────── */

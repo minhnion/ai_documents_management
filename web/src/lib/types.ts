@@ -64,6 +64,21 @@ export interface GuidelineVersionListResponse {
   page_size: number
 }
 
+export interface VersionIngestionStatusResponse {
+  job_id: number | null
+  guideline_id: number
+  version_id: number
+  document_id: number | null
+  status: string
+  version_status: string | null
+  target_status: string | null
+  previous_active_versions_updated: number
+  error_message: string | null
+  requested_at: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
 // ── Workspace ─────────────────────────────────────────────────────
 export interface WorkspaceGuidelineInfo {
   guideline_id: number
@@ -123,19 +138,29 @@ export interface VersionWorkspaceResponse {
 
 // ── Mutations ─────────────────────────────────────────────────────
 export interface CreateGuidelineResponse {
+  accepted: boolean
   guideline_id: number
   version_id: number
   document_id: number
   storage_uri: string | null
+  job_id: number | null
+  pipeline_status: string
+  version_status: string | null
+  target_status: string | null
 }
 
 export interface CreateGuidelineVersionResponse {
+  accepted: boolean
   guideline_id: number
   version_id: number
   status: string | null
   previous_active_versions_updated: number
   document_id: number | null
   storage_uri: string | null
+  job_id: number | null
+  pipeline_status: string
+  version_status: string | null
+  target_status: string | null
 }
 
 // ── Admin ─────────────────────────────────────────────────────────

@@ -8,6 +8,7 @@ from app.schemas.guideline import (
     BulkSectionContentUpdateResponse,
     DeleteGuidelineVersionResponse,
     RebuildVersionChunksResponse,
+    VersionIngestionStatusResponse,
     VersionChunkRebuildStatusResponse,
     VersionWorkspaceResponse,
     WorkspaceDocumentInfo,
@@ -21,6 +22,7 @@ from app.services.guideline_edit_service import (
     GuidelineEditService,
     SectionContentUpdate,
 )
+from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
@@ -88,6 +90,21 @@ async def bulk_update_section_content(
         ],
     )
     return BulkSectionContentUpdateResponse(**result)
+
+
+@router.get(
+    '/{version_id}/pipeline/status',
+    response_model=VersionIngestionStatusResponse,
+    summary='Get Version Ingestion Pipeline Status',
+)
+async def get_version_ingestion_status(
+    version_id: int,
+    db: DBSession,
+    _: ActiveUser,
+) -> VersionIngestionStatusResponse:
+    service = GuidelineIngestionJobService(db)
+    result = await service.get_version_ingestion_status(version_id)
+    return VersionIngestionStatusResponse(**result)
 
 
 @router.post(
