@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -78,10 +78,20 @@ class DeleteGuidelineVersionResponse(BaseModel):
     remaining_version_count: int
 
 
-class RebuildVersionChunksResponse(BaseModel):
+class VersionChunkRebuildStatusResponse(BaseModel):
+    job_id: int | None = None
     version_id: int
-    deleted_chunk_count: int
-    created_chunk_count: int
+    status: str
+    deleted_chunk_count: int = 0
+    created_chunk_count: int = 0
+    error_message: str | None = None
+    requested_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class RebuildVersionChunksResponse(VersionChunkRebuildStatusResponse):
+    accepted: bool
 
 
 class WorkspaceGuidelineInfo(BaseModel):

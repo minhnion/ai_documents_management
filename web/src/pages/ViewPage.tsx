@@ -9,6 +9,7 @@ import PdfViewer from '../components/PdfViewer'
 import type {
   GuidelineVersionItem,
   RebuildVersionChunksResponse,
+  VersionChunkRebuildStatusResponse,
   VersionWorkspaceResponse,
   WorkspaceSectionNode,
 } from '../lib/types'
@@ -18,6 +19,8 @@ type SectionEditDraft = {
   content: string
 }
 
+const CHUNK_STATUS_POLL_INTERVAL_MS = 3000
+
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
@@ -25,6 +28,7 @@ export default function ViewPage() {
   const contentPaneRef = useRef<HTMLDivElement | null>(null)
   const contentToggleButtonRef = useRef<HTMLButtonElement | null>(null)
   const focusWasInContentPaneRef = useRef(false)
+  const chunkPollTokenRef = useRef(0)
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
@@ -37,6 +41,7 @@ export default function ViewPage() {
   const [saveError, setSaveError] = useState('')
   const [chunking, setChunking] = useState(false)
   const [chunkError, setChunkError] = useState('')
+  const [chunkProgress, setChunkProgress] = useState('')
   const [chunkSuccess, setChunkSuccess] = useState('')
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
 
@@ -48,10 +53,18 @@ export default function ViewPage() {
   }, [versionId])
 
   useEffect(() => {
+    return () => {
+      chunkPollTokenRef.current += 1
+    }
+  }, [])
+
+  useEffect(() => {
     if (!guidelineId || !targetVersionId) return
 
+    chunkPollTokenRef.current += 1
     setSectionEdits({})
     setChunkError('')
+    setChunkProgress('')
     setChunkSuccess('')
     setLoading(true)
     Promise.all([
@@ -88,6 +101,7 @@ export default function ViewPage() {
     setSavingSections(prev => ({ ...prev, [sectionId]: true }))
     setSaveError('')
     setChunkError('')
+    setChunkProgress('')
     setChunkSuccess('')
     try {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, {
@@ -126,6 +140,7 @@ export default function ViewPage() {
     setSaving(true)
     setSaveError('')
     setChunkError('')
+    setChunkProgress('')
     setChunkSuccess('')
     try {
       await api.patch(`/versions/${workspace.version.version_id}/sections/content`, { updates })
@@ -144,27 +159,147 @@ export default function ViewPage() {
     }
   }
 
+  const waitForNextChunkStatusPoll = async () => {
+    await new Promise(resolve => window.setTimeout(resolve, CHUNK_STATUS_POLL_INTERVAL_MS))
+  }
+
+  const formatChunkSuccessMessage = (status: VersionChunkRebuildStatusResponse) => (
+    `Đã tạo chunks thành công. Xóa ${status.deleted_chunk_count} chunks cũ, tạo ${status.created_chunk_count} chunks mới.`
+  )
+
+  const applyChunkStatusState = (status: VersionChunkRebuildStatusResponse) => {
+    if (status.status === 'queued') {
+      setChunking(true)
+      setChunkError('')
+      setChunkSuccess('')
+      setChunkProgress('Yêu cầu tạo chunks đã được xếp hàng. Hệ thống sẽ tự bắt đầu xử lý trong giây lát.')
+      return
+    }
+
+    if (status.status === 'running') {
+      setChunking(true)
+      setChunkError('')
+      setChunkSuccess('')
+      setChunkProgress('Đang tạo chunks từ dữ liệu sections hiện tại...')
+      return
+    }
+
+    if (status.status === 'succeeded') {
+      setChunking(false)
+      setChunkError('')
+      setChunkProgress('')
+      setChunkSuccess(formatChunkSuccessMessage(status))
+      return
+    }
+
+    if (status.status === 'failed') {
+      setChunking(false)
+      setChunkProgress('')
+      setChunkSuccess('')
+      setChunkError(status.error_message || 'Tạo chunks thất bại.')
+      return
+    }
+
+    setChunking(false)
+    setChunkProgress('')
+  }
+
+  const pollChunkRebuildStatus = async (
+    versionIdToPoll: number,
+    initialStatus?: VersionChunkRebuildStatusResponse,
+  ) => {
+    const pollToken = ++chunkPollTokenRef.current
+    let currentStatus = initialStatus
+
+    try {
+      while (true) {
+        if (currentStatus) {
+          if (pollToken !== chunkPollTokenRef.current) return
+          applyChunkStatusState(currentStatus)
+          if (currentStatus.status === 'succeeded' || currentStatus.status === 'failed' || currentStatus.status === 'idle') {
+            return
+          }
+        }
+
+        await waitForNextChunkStatusPoll()
+        if (pollToken !== chunkPollTokenRef.current) return
+
+        const response = await api.get<VersionChunkRebuildStatusResponse>(`/versions/${versionIdToPoll}/chunks/status`)
+        currentStatus = response.data
+      }
+    } catch (err: any) {
+      if (pollToken !== chunkPollTokenRef.current) return
+      setChunking(false)
+      setChunkProgress('')
+      setChunkSuccess('')
+      setChunkError(err.response?.data?.detail || 'Không thể kiểm tra trạng thái tạo chunks.')
+    }
+  }
+
+  useEffect(() => {
+    if (!workspace) return
+
+    let isActive = true
+    const currentVersionId = workspace.version.version_id
+
+    api.get<VersionChunkRebuildStatusResponse>(`/versions/${currentVersionId}/chunks/status`)
+      .then(response => {
+        if (!isActive) return
+        if (response.data.status === 'queued' || response.data.status === 'running') {
+          setChunkError('')
+          setChunkSuccess('')
+          void pollChunkRebuildStatus(currentVersionId, response.data)
+        }
+      })
+      .catch(console.error)
+
+    return () => {
+      isActive = false
+    }
+  }, [workspace?.version.version_id])
+
   const handleRebuildChunks = async () => {
     if (!workspace) return
     if (unsavedEditCount > 0) {
       setChunkError('Hãy lưu hoặc hủy các chỉnh sửa hiện tại trước khi tạo chunks.')
+      setChunkProgress('')
       setChunkSuccess('')
       return
     }
+
+    const currentVersionId = workspace.version.version_id
+    chunkPollTokenRef.current += 1
     setChunking(true)
     setChunkError('')
+    setChunkProgress('Đang gửi yêu cầu tạo chunks...')
     setChunkSuccess('')
+
     try {
       const response = await api.post<RebuildVersionChunksResponse>(
-        `/versions/${workspace.version.version_id}/chunks/rebuild`
+        `/versions/${currentVersionId}/chunks/rebuild`
       )
-      setChunkSuccess(
-        `Đã tạo chunks thành công. Xóa ${response.data.deleted_chunk_count} chunks cũ, tạo ${response.data.created_chunk_count} chunks mới.`
-      )
+      const statusPayload: VersionChunkRebuildStatusResponse = {
+        job_id: response.data.job_id,
+        version_id: response.data.version_id,
+        status: response.data.status,
+        deleted_chunk_count: response.data.deleted_chunk_count,
+        created_chunk_count: response.data.created_chunk_count,
+        error_message: response.data.error_message,
+        requested_at: response.data.requested_at,
+        started_at: response.data.started_at,
+        finished_at: response.data.finished_at,
+      }
+
+      if (!response.data.accepted) {
+        setChunkProgress('Đang có một job tạo chunks chạy cho version này. Hệ thống sẽ tiếp tục theo dõi tiến độ.')
+      }
+
+      void pollChunkRebuildStatus(currentVersionId, statusPayload)
     } catch (err: any) {
-      setChunkError(err.response?.data?.detail || 'Lỗi khi tạo chunks từ dữ liệu sections.')
-    } finally {
       setChunking(false)
+      setChunkProgress('')
+      setChunkSuccess('')
+      setChunkError(err.response?.data?.detail || 'Lỗi khi tạo chunks từ dữ liệu sections.')
     }
   }
 
@@ -234,7 +369,6 @@ export default function ViewPage() {
 
   return (
     <div className={isContentPaneCollapsed ? 'view-layout view-layout--content-collapsed' : 'view-layout'}>
-      {/* LEFT PANE: TOC */}
       <div className="toc-sidebar">
         <div className="toc-header">
           <button className="btn btn-ghost btn-xs toc-header-back" onClick={() => navigate('/guidelines')}>
@@ -284,7 +418,6 @@ export default function ViewPage() {
         </div>
       </div>
 
-      {/* CENTER PANE: TEXT */}
       <div
         id="viewer-content-pane"
         ref={contentPaneRef}
@@ -348,6 +481,7 @@ export default function ViewPage() {
         </div>
         {saveError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{saveError}</div>}
         {chunkError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{chunkError}</div>}
+        {chunkProgress && <div className="alert alert-info" style={{ margin: '8px 20px 0' }}>{chunkProgress}</div>}
         {chunkSuccess && <div className="alert alert-success" style={{ margin: '8px 20px 0' }}>{chunkSuccess}</div>}
         <TextContent
           toc={workspace.toc}

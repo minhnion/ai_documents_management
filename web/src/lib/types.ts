@@ -192,8 +192,18 @@ export interface BulkSectionContentUpdateResponse {
   updated_section_ids: number[]
 }
 
-export interface RebuildVersionChunksResponse {
+export interface VersionChunkRebuildStatusResponse {
+  job_id: number | null
   version_id: number
+  status: string
   deleted_chunk_count: number
   created_chunk_count: number
+  error_message: string | null
+  requested_at: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface RebuildVersionChunksResponse extends VersionChunkRebuildStatusResponse {
+  accepted: boolean
 }

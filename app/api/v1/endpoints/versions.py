@@ -8,6 +8,7 @@ from app.schemas.guideline import (
     BulkSectionContentUpdateResponse,
     DeleteGuidelineVersionResponse,
     RebuildVersionChunksResponse,
+    VersionChunkRebuildStatusResponse,
     VersionWorkspaceResponse,
     WorkspaceDocumentInfo,
     WorkspaceGuidelineInfo,
@@ -92,7 +93,8 @@ async def bulk_update_section_content(
 @router.post(
     '/{version_id}/chunks/rebuild',
     response_model=RebuildVersionChunksResponse,
-    summary='Rebuild Version Chunks',
+    status_code=202,
+    summary='Enqueue Version Chunk Rebuild',
 )
 async def rebuild_version_chunks(
     version_id: int,
@@ -100,8 +102,23 @@ async def rebuild_version_chunks(
     _: Annotated[object, Depends(require_roles('editor', 'admin'))],
 ) -> RebuildVersionChunksResponse:
     service = GuidelineChunkService(db)
-    result = await service.rebuild_version_chunks(version_id)
+    result = await service.enqueue_version_chunk_rebuild(version_id)
     return RebuildVersionChunksResponse(**result)
+
+
+@router.get(
+    '/{version_id}/chunks/status',
+    response_model=VersionChunkRebuildStatusResponse,
+    summary='Get Version Chunk Rebuild Status',
+)
+async def get_version_chunk_rebuild_status(
+    version_id: int,
+    db: DBSession,
+    _: ActiveUser,
+) -> VersionChunkRebuildStatusResponse:
+    service = GuidelineChunkService(db)
+    result = await service.get_version_chunk_rebuild_status(version_id)
+    return VersionChunkRebuildStatusResponse(**result)
 
 
 @router.delete(
