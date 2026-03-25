@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import asyncio
 import json
@@ -14,22 +12,23 @@ from openai import OpenAI
 from app.core.exceptions import BadRequestException, UnprocessableEntityException
 
 # ==============================================================================
-# CẤU HÌNH ĐẦU VÀO / ĐẦU RA 
+# CẤU HÌNH ĐẦU VÀO / ĐẦU RA
 # ==============================================================================
 
-# 1. ĐẦU VÀO: Thư mục chứa các file Markdown đã được OCR (Tạo từ Bước 1)
 INPUT_DIR  = Path("./data/02_ocr_markdown")
-
-# 2. ĐẦU RA: Thư mục lưu kết quả Cấu trúc Mục lục (File _toc_structure.json)
 OUTPUT_DIR = Path("./data/03_toc_json")
+MD_FILES   = []
 
-# Danh sách các file cần chạy (Để rỗng [] nếu muốn tự động chạy tất cả file trong INPUT_DIR)
-MD_FILES = []
+PAGE_BREAK                = "<!-- PAGE BREAK -->"
+MODEL                     = "gpt-4.1"
+TOC_SCAN_PAGES            = 40
+MIN_SECTION_DEPTH_SHORT   = 3
+MIN_SECTION_DEPTH_LONG    = 4
+PAGE_THRESHOLD_FOR_DEPTH  = 99
+MIN_SECTION_DEPTH         = MIN_SECTION_DEPTH_LONG
+PHASE2_CHUNK_PAGES        = 50
 
-PAGE_BREAK             = "<!-- PAGE BREAK -->"
-MODEL                  = "gpt-4.1"
-TOC_SCAN_PAGES         = 40
-MIN_SECTIONS_THRESHOLD = 3
+MIN_SECTIONS_THRESHOLD = MIN_SECTION_DEPTH_SHORT
 
 _METADATA_KEYS = [
     "title", "publisher", "decision_number", "specialty",
@@ -38,7 +37,7 @@ _METADATA_KEYS = [
 ]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# PROMPTS
+# PROMPTS — PHASE 1
 # ──────────────────────────────────────────────────────────────────────────────
 
 _METADATA_SCHEMA = """\
@@ -107,121 +106,229 @@ TRƯỜNG HỢP 1 — TÌM THẤY PHẦN MỤC LỤC/TABLE OF CONTENTS:
   - Nếu MỤC LỤC chỉ có 2 cấp → chỉ trả về 2 cấp, không tự thêm cấp 3.
   - Kết quả nông (ít sections) là ĐÚNG nếu MỤC LỤC gốc nông — hệ thống sẽ tự bổ sung ở bước tiếp theo.
 
+  ⚠ MỤC LỤC PHÂN TRANG — CỰC KỲ QUAN TRỌNG:
+  Bảng MỤC LỤC trong PDF OCR (Landing AI) thường bị TÁCH thành nhiều trang vật lý,
+  phân cách bởi <!-- PAGE BREAK -->. Các trang tiếp theo không có tiêu đề "MỤC LỤC"
+  nhưng ĐƯỢC ĐÁNH NHÃN [MỤC LỤC - tiếp theo, trang N] bởi hệ thống.
+  - Đọc VÀ SỬ DỤNG tất cả các trang mang nhãn [MỤC LỤC - tiếp theo, trang N].
+  - Ghép nội dung toàn bộ các trang đó vào cùng một bảng MỤC LỤC thống nhất.
+  - TUYỆT ĐỐI KHÔNG bỏ qua bất kỳ hàng nào trong các trang tiếp theo này.
+
 TRƯỜNG HỢP 2 — KHÔNG TÌM THẤY MỤC LỤC:
   - Suy luận từ các tiêu đề lớn trong phần văn bản đã cung cấp.
   - Áp dụng quy tắc nhận diện tiêu đề bên dưới.
 
 {_STRUCTURE_RULES}"""
 
-PROMPT_PHASE2 = f"""\
-Bạn là hệ thống xây dựng cây TOC tài liệu y tế từ outline tiêu đề đã được trích xuất bằng regex. Trả về DUY NHẤT một JSON hợp lệ, không markdown, không giải thích.
+# ──────────────────────────────────────────────────────────────────────────────
+# PROMPTS — PHASE 2
+# ──────────────────────────────────────────────────────────────────────────────
 
-OUTPUT SCHEMA: giống hệt Phase 1 (metadata + chapters đầy đủ).
+_DEPTH_CHILD_KEYS: dict[int, str] = {
+    1: "sections",
+    2: "subsections",
+    3: "subsubsections",
+    4: "subsubsubsections",
+    5: "subsubsubsubsections",
+}
 
-NHIỆM VỤ: nhận METADATA đã biết + OUTLINE TIÊU ĐỀ trích từ toàn văn bản,
-xây dựng cây chapters đầy đủ chiều sâu.
+_PHASE2_SCHEMA = """\
+{
+  "chapters": [
+    {
+      "title": "...",
+      "sections": [
+        {
+          "title": "...",
+          "subsections": [
+            {
+              "title": "...",
+              "subsubsections": [
+                {
+                  "title": "...",
+                  "subsubsubsections": [
+                    {
+                      "title": "...",
+                      "subsubsubsubsections": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}"""
 
-{_STRUCTURE_RULES}
+_PHASE2_READING_RULES = """\
+══════════════════════════════════════════════
+FORMAT OCR (Landing AI) — LƯU Ý TRƯỚC KHI ĐỌC
+══════════════════════════════════════════════
+  • = ngắt trang vật lý, KHÔNG phải ranh giới cấu trúc.
+  • <a id='...'></a> = anchor kỹ thuật, bỏ qua hoàn toàn.
+  • Heading xuất hiện dưới dạng Markdown ##/### HOẶC plain ALL CAPS.
+  • Chữ hoa hay vị trí đầu trang KHÔNG xác định cấp — chỉ nội dung và định dạng đánh số xác định cấp.
+  • Số trang in (dạng "123" đơn hoặc "Tên tài liệu / 123") → loại bỏ.
 
-═══════════════════════════════════════════════════════════════
-ĐẶC ĐIỂM ĐỊNH DẠNG CỦA OUTLINE (quan trọng — đọc kỹ trước khi xử lý)
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════
+BƯỚC 1: XÁC ĐỊNH CẤP BẬC TỪNG HEADING (LINH HOẠT THEO TÀI LIỆU)
+══════════════════════════════════════════════
+Tài liệu y tế có nhiều định dạng (Hướng dẫn lâm sàng, Quyết định, Sách chuyên khảo). Phân cấp như sau:
 
-Outline được sinh tự động từ Markdown OCR của Landing AI. Có các đặc điểm sau:
+CẤP 1 — chapters (Phần lớn nhất của tài liệu):
+  Từ khoá: "PHẦN X", "CHƯƠNG X", hoặc các tiêu đề ALL CAPS cực lớn, độc lập không phụ thuộc ai.
+  Ví dụ: "LỜI GIỚI THIỆU", "QUYẾT ĐỊNH", "PHỤ LỤC" (nếu là phụ lục độc lập, không gắn với Phần nào).
 
-1. TIÊU ĐỀ MARKDOWN (`## text`):
-   - Dòng bắt đầu bằng `##`, `###` v.v. là tiêu đề markdown.
-   - Số dấu `#` chỉ cấp tương đối, KHÔNG phải cấp tuyệt đối trong TOC.
-   - Ví dụ: `## BƯỚC 1. HỎI BỆNH` → section cấp Bước; `## Điều 2.` → section Điều.
+CẤP 2 — sections (Chia nhỏ Chapter):
+  Từ khoá: "MỤC X", "BƯỚC X", Số La Mã (I, II, III...), hoặc tiêu đề in đậm/ALL CAPS là chủ đề con của Cấp 1.
+  Ví dụ: "BƯỚC 1. HỎI BỆNH", "BƯỚC 5. ĐIỀU TRỊ", "I. ĐẠI CƯƠNG".
+  ⚠ LƯU Ý QUAN TRỌNG: Sections hoàn toàn CÓ THỂ CÓ ngay đoạn văn nội dung bên dưới nó.
 
-2. TIÊU ĐỀ PHẲNG (đã strip `**bold**`):
-   - Tiêu đề in đậm `**Điều X.**` trong nguồn đã được strip dấu `**`, xuất hiện là plain text.
-   - Cần nhận diện qua từ khoá: "Chương", "Điều", "Mục", "Phần", "Bước", "Phụ lục", "Chuyên đề".
+CẤP 3, 4+ — subsections, subsubsections... (Chi tiết hoá Section):
+  Từ khoá: Đánh số chữ cái in hoa (A., B., C.), Đánh số thập phân (1.1, 1.1.1...).
+  Đánh số Ả rập (1., 2., 3.) CHỈ được coi là heading khi đồng thời thoả MỌI điều kiện:
+    (a) Tiêu đề ngắn (≤ 60 ký tự).
+    (b) KHÔNG kết thúc bằng dấu ";" hoặc ",".
+    (c) KHÔNG xuất hiện ngay sau một câu dẫn nhập kết thúc bằng ":" (ví dụ: "... có các nhiệm vụ sau:").
+    (d) Các mục cùng cấp trong nhóm đó đều có cùng dạng ngắn gọn (không phải câu văn mô tả).
+  Ví dụ ĐÚNG (là heading): "A. Phân độ THA", "B. Tuyến trên chuyển về", "1. Đại cương".
+  Ví dụ SAI (là nội dung liệt kê, KHÔNG đưa vào TOC):
+    "1. Tham gia phân tích, đánh giá tình hình sử dụng thuốc;"
+    "2. Tham gia tư vấn trong quá trình xây dựng danh mục thuốc của đơn vị, đưa ra ý kiến..."
+    (vì xuất hiện sau câu "Dược sĩ lâm sàng có các nhiệm vụ chung sau:" và kết thúc bằng ";")
+  Các "Phụ lục 1.1", "Phụ lục 1.2" thường là subsections thuộc về "PHẦN 1" tương ứng.
 
-3. TIÊU ĐỀ CHƯƠNG/PHẦN HAI DÒNG — CỰC KỲ QUAN TRỌNG:
-   - Trong OCR, đôi khi tiêu đề chương bị tách thành 2 dòng liên tiếp:
-     * Dòng 1: chỉ có từ khoá + số: "Chương II" / "Phần I." / "PHẦN 1. HƯỚNG DẪN..."
-     * Dòng 2: phần còn lại hoặc toàn bộ tên chương (ALL CAPS): "ĐIỀU KIỆN TRIỂN KHAI..."
-   - Quy tắc: Nếu dòng N là "Chương X" / "Phần X." / "PHẦN X. nửa tên" VÀ dòng N+1 là
-     ALL CAPS tiếp nối → GHÉP hai dòng thành một node chapter duy nhất.
-   - Ví dụ đúng:
-       Outline: "Chương II" + "ĐIỀU KIỆN TRIỂN KHAI HOẠT ĐỘNG DƯỢC LÂM SÀNG"
-       → Node: "Chương II ĐIỀU KIỆN TRIỂN KHAI HOẠT ĐỘNG DƯỢC LÂM SÀNG"
-   - KHÔNG tạo node riêng cho dòng all-caps là phần nối tiếp của chương trước đó.
+══════════════════════════════════════════════
+BƯỚC 2: DUY TRÌ HIERARCHY VÀ LOẠI BỎ NHIỄU
+══════════════════════════════════════════════
+  • LUÔN DUY TRÌ TÍNH KẾ THỪA: Khi gặp "BƯỚC 1", ghi nhớ đang ở Bước 1. Các mục "A., B., 1., 2." tiếp theo sẽ là con của Bước 1. Chỉ thoát ra khi gặp "BƯỚC 2" hoặc "PHẦN MỚI".
+  • KHÔNG đưa vào TOC: số trang, anchor tag, tên hình/bảng (Ví dụ: "Bảng 1:", "Hình 2:"), câu hỏi lượng giá, đoạn văn bản nội dung bình thường.
+  • KHÔNG đưa vào TOC — DANH SÁCH LIỆT KÊ NỘI DUNG: Các mục đánh số (1., 2., 3., a., b., c.)
+    xuất hiện ngay sau câu dẫn nhập kết thúc bằng ":" là danh sách liệt kê nội dung của section cha,
+    KHÔNG phải tiêu đề con. Dấu hiệu nhận biết: câu dài (> 80 ký tự), kết thúc bằng ";" hoặc ",",
+    hoặc mang tính mô tả/quy định chi tiết. Những mục này là CONTENT của section, để nguyên.
+  • GHÉP TIÊU ĐỀ BỊ CẮT: Nếu "PHẦN 1" ở dòng trên, "HƯỚNG DẪN..." ở dòng dưới → Ghép thành 1 node ("PHẦN 1. HƯỚNG DẪN...").
 
-4. ALL CAPS ĐỘC LẬP (không nối tiếp):
-   - Dòng in hoa hoàn toàn đứng một mình (không có chương trước) → chapter riêng.
-   - Ví dụ: "LỜI GIỚI THIỆU", "TÀI LIỆU THAM KHẢO", "DANH MỤC CHỮ VIẾT TẮT".
+══════════════════════════════════════════════
+CHUẨN HÓA ĐẦU RA
+══════════════════════════════════════════════
+  • Giữ nguyên tiêu đề gốc (KHÔNG viết lại, KHÔNG dịch).
+  • KHÔNG thêm mục không có trong văn bản.
+  • Mảng con rỗng → [].
+  • Chỉ trả về key "chapters".
+"""
 
-5. SỐ LA MÃ (I., II., III., IV.):
-   - Trong cấu trúc "Phần" → các mục I., II., III. là section cấp 2.
-   - Ví dụ: dưới "Phần IV. Các quy định..." → "I. Trách nhiệm thực hiện..." là section.
 
-═══════════════════════════════════════════════════════════════
-XÁC ĐỊNH CẤP PHÂN CẤPY
-═══════════════════════════════════════════════════════════════
+def _make_phase2_single_prompt() -> str:
+    return (
+        'Bạn là hệ thống xây dựng cây TOC tài liệu y tế từ văn bản OCR (Landing AI format).'
+        ' Trả về DUY NHẤT JSON hợp lệ với key "chapters".\n\n'
+        f'OUTPUT SCHEMA:\n{_PHASE2_SCHEMA}\n\n'
+        f'{_PHASE2_READING_RULES}'
+    )
 
-Cấp 1 (chapters):
-  - "Chương X ...", "Phần X ...", "PHẦN X. ...", "Chuyên đề X ..."
-  - Dòng ALL CAPS độc lập (Lời giới thiệu, Phụ lục không số, v.v.)
-  - Từ khoá không số: "LỜI NÓI ĐẦU", "KẾT LUẬN", "TÀI LIỆU THAM KHẢO"
 
-Cấp 2 (sections):
-  - "Điều X. ...", "Bước X. ...", "Mục X. ...", số La Mã "I.", "II.", "III."
-  - Số thập phân 1 cấp: "1.", "2." CHỈ KHI nằm ngay dưới một Chương/Phần (hiếm)
+def _make_phase2_iterative_prompt() -> str:
+    return (
+        'Bạn là hệ thống build và merge cây TOC tài liệu y tế theo từng chunk.'
+        ' Trả về DUY NHẤT JSON hợp lệ với key "chapters".\n\n'
+        f'OUTPUT SCHEMA:\n{_PHASE2_SCHEMA}\n\n'
+        'NHIỆM VỤ — thực hiện tuần tự:\n'
+        'A) GIỮ NGUYÊN cây TOC tích lũy: KHÔNG xóa, đổi tên, hay di chuyển node đã có.\n'
+        'B) ĐỌC văn bản mới, nhận diện tiêu đề theo quy tắc bên dưới.\n'
+        'C) MERGE SÂU vào TOC tích lũy:\n'
+        '   • Chapter/section/subsection mới → thêm vào đúng vị trí.\n'
+        '   • Title đã tồn tại → KHÔNG tạo node trùng, merge con vào node đó.\n'
+        'D) SỬA HIERARCHY nếu văn bản mới tiết lộ cấp sai từ chunk trước\n'
+        '   (ví dụ: node đang là chapter nhưng thực ra là section của chapter khác).\n\n'
+        f'{_PHASE2_READING_RULES}'
+    )
 
-Cấp 3+ (subsections):
-  - Số thập phân nhiều cấp: "2.1", "2.1.1", "3.4.1"
-  - Ký tự + số hoặc chữ cái dưới Bước/Mục: "A.", "B."
 
-Giữ nguyên tiêu đề gốc. KHÔNG thêm mục không có trong outline.
+_PROMPT_PHASE2_SINGLE:    str = ""
+_PROMPT_PHASE2_ITERATIVE: str = ""
 
-═══════════════════════════════════════════════════════════════
-PHÂN BIỆT TIÊU ĐỀ CẤU TRÚC vs NỘI DUNG ĐÁnh số — BẮT BUỘC
-═══════════════════════════════════════════════════════════════
 
-✔ TIÊU ĐỀ CẤU TRÚC → đưa vào TOC:
-    • Có từ khoá cấp mục ở đầu: Chương, Điều, Mục, Phần, Bước, Phụ lục, Chuyên đề
-    • Số thập phân nhiều cấp (2.1, 3.4.1...)
-    • Số La Mã + dấu chấm (I., II., III., IV.)
-    • Dòng ALL CAPS ngắn gọn (tiêu đề chương/phần)
+def _init_phase2_prompts() -> None:
+    """Gọi một lần sau khi config được xác định (từ args hoặc default)."""
+    global _PROMPT_PHASE2_SINGLE, _PROMPT_PHASE2_ITERATIVE
+    _PROMPT_PHASE2_SINGLE    = _make_phase2_single_prompt()
+    _PROMPT_PHASE2_ITERATIVE = _make_phase2_iterative_prompt()
 
-✘ NỘI DUNG LIỆT KÊ → TUYỆT ĐỐI KHÔNG đưa vào TOC:
-    • Dạng "1. câu văn...", "2. câu văn...", "3. câu văn..." nằm BÊN TRONG một Điều/Bước/Mục.
-    • Dấu hiệu: số đơn (1, 2, 3...) + nội dung không có từ khoá cấu trúc.
-    • Đây là khoản/điểm nội dung liệt kê, không phải mục của tài liệu.
-    • Kể cả khi NGẮN: "1. Tuyển dụng và đào tạo...", "2. Cơ sở vật chất:" vẫn là nội dung.
-    • Kể cả khi XUẤT HIỆN TRONG OUTLINE: regex có thể lọt sót — bạn phải lọc lại.
-
-Quy tắc nhận dạng nhanh:
-    Nếu loại bỏ tất cả dòng "X. ..." (số đơn) khỏi outline mà cây TOC vẫn đầy đủ → đó là nội dung.
-    Điều X là node lá → 1., 2., 3. bên dưới là khoản nội dung của Điều đó, không phải con của nó."""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UTILITIES
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_pages(text: str, n: int) -> str:
-    parts = text.split(PAGE_BREAK)
+    """Trả về n trang đầu của text (phân cách bởi PAGE_BREAK)."""
     if n <= 0:
         return text
+    parts = text.split(PAGE_BREAK)
     return PAGE_BREAK.join(parts[:n]) if len(parts) > n else text
 
 
-def strip_code_fences(text: str) -> str:
+_RE_ANCHOR_STRIP_LEAD = re.compile(r"^(\s*<a\s+[^>]+>\s*</a>\s*)+", re.IGNORECASE)
+_RE_TOC_MARKER        = re.compile(r"MUC\s*LUC|MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", re.IGNORECASE)
+
+
+def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None]:
+    """
+    Trả về (scan_text, toc_start):
+      - scan_text: nội dung gửi cho Phase 1 (n trang đầu, kèm nhãn MỤC LỤC nếu bị phân trang).
+      - toc_start: index trang (0-based) của trang MỤC LỤC đầu tiên, hoặc None nếu không có.
+    """
+    pages = text.split(PAGE_BREAK)
+    total = len(pages)
+
+    toc_start: int | None = None
+    for i in range(min(n_pages, total)):
+        if _RE_TOC_MARKER.search(pages[i]):
+            toc_start = i
+            break
+
+    if toc_start is None:
+        return get_pages(text, n_pages), None
+
+    # Tìm các trang tiếp theo của MỤC LỤC (bắt đầu bằng <table> sau khi strip anchor)
+    toc_end = toc_start
+    for j in range(toc_start + 1, min(toc_start + 15, total)):
+        stripped = _RE_ANCHOR_STRIP_LEAD.sub("", pages[j].lstrip()).lstrip()
+        if stripped.startswith("<table"):
+            toc_end = j
+        else:
+            break
+
+    # Ghép các trang trong scan window, dán nhãn cho trang MỤC LỤC tiếp theo
+    base_pages = list(pages[:min(n_pages, total)])
+    if toc_end > toc_start:
+        for k in range(toc_start + 1, toc_end + 1):
+            labeled = f"\n[MỤC LỤC - tiếp theo, trang {k + 1}]\n" + pages[k]
+            if k < len(base_pages):
+                base_pages[k] = labeled
+            else:
+                base_pages.append(labeled)
+        print(
+            f"  Phase 1: MỤC LỤC trang {toc_start + 1}–{toc_end + 1} "
+            f"({toc_end - toc_start} trang tiếp theo được ghép)"
+        )
+
+    return PAGE_BREAK.join(base_pages), toc_start
+
+
+def parse_json_response(text: str) -> dict:
     s = text.strip()
     if s.startswith("```"):
         s = re.sub(r"^```(?:json)?\s*", "", s)
         s = re.sub(r"\s*```$", "", s)
-    return s.strip()
-
-
-def parse_json_response(text: str) -> dict:
-    raw = strip_code_fences(text)
+        s = s.strip()
     try:
-        return json.loads(raw)
+        return json.loads(s)
     except json.JSONDecodeError:
-        m = re.search(r"\{[\s\S]*\}", raw)
+        # Fallback: tìm JSON object đầu tiên trong chuỗi
+        m = re.search(r"\{[\s\S]*\}", s)
         if not m:
             raise
         return json.loads(m.group(0))
@@ -234,66 +341,44 @@ def call_ai(client: OpenAI, system: str, user: str) -> dict:
             {"role": "system", "content": system},
             {"role": "user",   "content": user},
         ],
-        max_output_tokens=12000,
+        text={"format": {"type": "json_object"}},
+        temperature=0.0,
+        max_output_tokens=32000,
     )
     return parse_json_response(response.output_text or "")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # NORMALIZATION
 # ──────────────────────────────────────────────────────────────────────────────
 
-def normalize_node_list(value) -> list:
-    return value if isinstance(value, list) else []
-
-
-def normalize_subsections(items) -> list:
+def _normalize_nodes(items: list, depth: int) -> list:
+    """Chuẩn hóa đệ quy danh sách node TOC tại depth cho trước (1 = chapters)."""
+    if not isinstance(items, list):
+        return []
+    child_key = _DEPTH_CHILD_KEYS.get(depth)
     out = []
-    for item in normalize_node_list(items):
+    for item in items:
         if isinstance(item, str):
             if item.strip():
                 out.append({"title": item.strip()})
-        elif isinstance(item, dict):
-            node = {"title": str(item.get("title", "")).strip()}
-            for k, v in item.items():
-                if k in ("title", "subsections"):
-                    continue
-                if isinstance(v, list) and (k.endswith("sections") or k.startswith("sub")):
-                    node[k] = normalize_subsections(v)
-            if "subsections" in item:
-                node["subsections"] = normalize_subsections(item["subsections"])
-            out.append(node)
-    return out
-
-
-def normalize_sections(sections) -> list:
-    out = []
-    for sec in normalize_node_list(sections):
-        if isinstance(sec, dict):
-            node = {"title": str(sec.get("title", "")).strip()}
-            node["subsections"] = normalize_subsections(sec.get("subsections", []))
-            out.append(node)
-    return out
-
-
-def normalize_chapters(chapters) -> list:
-    out = []
-    for ch in normalize_node_list(chapters):
-        if isinstance(ch, dict):
-            node = {"title": str(ch.get("title", "")).strip()}
-            node["sections"] = normalize_sections(ch.get("sections", []))
-            out.append(node)
+            continue
+        if not isinstance(item, dict):
+            continue
+        node: dict = {"title": str(item.get("title", "")).strip()}
+        if child_key:
+            node[child_key] = _normalize_nodes(item.get(child_key, []), depth + 1)
+        out.append(node)
     return out
 
 
 def ensure_schema(toc: dict, filename: str) -> dict:
-    defaults = {k: None for k in _METADATA_KEYS}
-    defaults["source_file"] = filename
-    defaults["chapters"]    = []
-    for k, v in defaults.items():
+    """Đảm bảo toc có đủ các key metadata và chapters được chuẩn hóa."""
+    for k in _METADATA_KEYS:
         if k not in toc:
-            toc[k] = v
+            toc[k] = None
     toc["source_file"] = filename
-    toc["chapters"]    = normalize_chapters(toc.get("chapters", []))
+    toc["chapters"]    = _normalize_nodes(toc.get("chapters", []), depth=1)
     if toc.get("total_pages") is not None:
         try:
             toc["total_pages"] = int(toc["total_pages"])
@@ -301,202 +386,143 @@ def ensure_schema(toc: dict, filename: str) -> dict:
             toc["total_pages"] = None
     return {k: toc[k] for k in _METADATA_KEYS if k in toc}
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 # TOC QUALITY CHECK
 # ──────────────────────────────────────────────────────────────────────────────
 
 def count_sections(chapters: list) -> int:
+    """Tổng số sections trực tiếp trong tất cả chapters."""
     return sum(len(ch.get("sections", [])) for ch in chapters if isinstance(ch, dict))
 
 
+def get_toc_depth(nodes: list, node_depth: int = 1) -> int:
+    """Trả về độ sâu thực tế tối đa của cây TOC (1-indexed, chapters = 1)."""
+    child_key = _DEPTH_CHILD_KEYS.get(node_depth)
+    if not child_key:
+        return node_depth
+    max_d = node_depth
+    for node in nodes:
+        if isinstance(node, dict):
+            children = node.get(child_key, [])
+            if children:
+                max_d = max(max_d, get_toc_depth(children, node_depth + 1))
+    return max_d
+
+
 def toc_is_shallow(toc: dict) -> bool:
+    """True nếu TOC chưa có chapters hoặc độ sâu thực tế < MIN_SECTION_DEPTH."""
     chapters = toc.get("chapters", [])
-    return not chapters or count_sections(chapters) < MIN_SECTIONS_THRESHOLD
+    return not chapters or get_toc_depth(chapters) < MIN_SECTION_DEPTH
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HEADING OUTLINE EXTRACTOR
+# TEXT CLEANER (Phase 2)
 # ──────────────────────────────────────────────────────────────────────────────
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HEADING OUTLINE EXTRACTOR
-# ──────────────────────────────────────────────────────────────────────────────
-
-_RE_MD_HEADING  = re.compile(r"^(#{1,6})\s+(.+)")
-_RE_NUMBERED    = re.compile(r"^(\d+(?:\.\d+)*)\s*[\.\)]\s*(.+)")
-_RE_HTML_TAG    = re.compile(r"<[^>]+>")
-_RE_PURE_NUM    = re.compile(r"^\s*[\d\s,\.\-/]+\s*$")
-_RE_MD_MARKUP   = re.compile(r"\*{1,3}|_{1,3}")   # strip **bold**, *italic*, __underline__
-
-# Số La Mã đứng đầu dòng (I., II., III., IV., V. ... XV.) — section trong Phần
-_RE_ROMAN_HEADING = re.compile(
-    r"^(XIV|XIII|XII|XI|IX|VIII|VII|VI|IV|III|II|XV|I|X|V)\.\s+\S",
-    re.IGNORECASE,
-)
-
-# Nhận diện từ khoá cấu trúc — dùng lowercase để tránh lỗi IGNORECASE với tiếng Việt có dấu
-# Kiểm tra bằng: _RE_STRUCT_PREFIX.match(clean.lower())
-_RE_STRUCT_PREFIX = re.compile(
-    r"^(chương|phần|bước|mục|điều|phụ lục|phụlục|chuyên đề|chuyênđề|phan|chuong|buoc|muc|dieu)\s+\S"
-)
-
-# Từ khoá cấu trúc ở phần _content_ của numbered item ("Điều" sau "1.")
-_RE_STRUCT_KEYWORD_LOWER = re.compile(
-    r"^(chương|phần|bước|mục|điều|phụ lục|phụlục|chuyên đề|phan|chuong|buoc|muc|dieu)\s+"
-)
+_RE_ANCHOR_EMPTY  = re.compile(r"<a\s+id=['\"][^'\"]*['\"]>\s*</a>", re.IGNORECASE)
+_RE_ATTRIB_BLOCK  = re.compile(r"<::.*?::>", re.DOTALL)
+_RE_TABLE_STRUCT  = re.compile(r"</?(?:table|thead|tbody|tfoot|tr)(?:\s[^>]*)?>", re.IGNORECASE)
+_RE_CELL_OPEN     = re.compile(r"<(?:td|th)(?:\s[^>]*)?>", re.IGNORECASE)
+_RE_CELL_CLOSE    = re.compile(r"</(?:td|th)>", re.IGNORECASE)
+_RE_PAGE_NUM_LINE = re.compile(r"^\s*\d{1,4}\s*$")
+_RE_MULTI_BLANK   = re.compile(r"\n{3,}")
 
 
-def _is_content_list_item(clean_lower: str, clean: str) -> bool:
-    """
-    Trả về True nếu dòng là khoản nội dung liệt kê — KHÔNG phải tiêu đề cấu trúc.
+def clean_text_for_phase2(text: str) -> str:
+    """Làm sạch OCR Markdown cho Phase 2: bỏ anchor, ảnh, cấu trúc HTML bảng, số trang."""
+    text = _RE_ANCHOR_EMPTY.sub("", text)
+    text = _RE_ATTRIB_BLOCK.sub("", text)
+    text = _RE_TABLE_STRUCT.sub("\n", text)
+    text = _RE_CELL_OPEN.sub("", text)
+    text = _RE_CELL_CLOSE.sub("  |  ", text)
+    lines = [ln for ln in text.splitlines() if not (_RE_PAGE_NUM_LINE.match(ln) and ln.strip())]
+    text  = _RE_MULTI_BLANK.sub("\n\n", "\n".join(lines))
+    return text.strip()
 
-    Phase 2 chỉ chạy khi không có MỤC LỤC. Trong các tài liệu đó,
-    tiêu đề thực sự luôn dùng từ khoá cấu trúc (Chương, Điều, Phần, Bước...).
-    Mọi dòng "X. ..." đơn cấp mà không có từ khoá đều là nội dung liệt kê.
-    """
-    m = _RE_NUMBERED.match(clean)
-    if not m:
-        return False
-    num_part = m.group(1)   # vd "1", "2", "2.1"
-    content  = m.group(2).strip()
-
-    # Số thập phân nhiều cấp (2.1, 3.4.1...) → tiêu đề cấu trúc
-    if "." in num_part:
-        return False
-
-    # Số đơn cấp + content có từ khoá cấu trúc → tiêu đề cấu trúc
-    # (vd: "1. Điều 5..." hay "2. Chương III..." — hiếm nhưng có)
-    if _RE_STRUCT_KEYWORD_LOWER.match(content.lower()):
-        return False
-
-    # Mọi trường hợp còn lại: số đơn cấp không có từ khoá → nội dung liệt kê
-    return True
-
-
-def extract_heading_outline(text: str) -> str:
-    """
-    Trích xuất outline tiêu đề từ toàn văn bản OCR Markdown (Landing AI format).
-
-    Xử lý các đặc điểm của OCR output:
-    - Thẻ <a id='uuid'></a> trước mỗi block (bị strip bởi _RE_HTML_TAG)
-    - Tiêu đề in đậm **Điều X.** (bị strip bởi _RE_MD_MARKUP)
-    - Tiêu đề markdown ## heading (giữ nguyên để LLM biết cấp)
-    - Bảng HTML <table>/<td> (stripped, text cell hiện ra)
-    - Ảnh <:: ... ::> (stripped hoàn toàn)
-
-    Output: danh sách tiêu đề, mỗi dòng 1 tiêu đề, đã strip markup.
-    """
-    lines = []
-    for raw in text.splitlines():
-        s = raw.strip()
-        if not s or s == PAGE_BREAK or _RE_PURE_NUM.match(s):
-            continue
-
-        # Bước 1: strip HTML tags (<a id=...>, <table>, <td>, <tr>, <::..::>, v.v.)
-        plain = _RE_HTML_TAG.sub("", s).strip()
-        # Xử lý block đặc biệt của Landing AI: <:: ... ::>
-        plain = re.sub(r"<::.*?::>", "", plain, flags=re.DOTALL).strip()
-        if not plain:
-            continue
-
-        # Bước 2: strip markdown bold/italic (**text**, *text*, __text__)
-        clean = _RE_MD_MARKUP.sub("", plain).strip()
-        if not clean:
-            continue
-
-        clean_lower = clean.lower()
-
-        # ── Ưu tiên 1: Markdown heading (## Chương I, ## BƯỚC 1. ...) ──
-        if _RE_MD_HEADING.match(s):
-            # Lấy nội dung sau ## (đã strip markup) để output sạch hơn
-            md_content = _RE_MD_MARKUP.sub("", _RE_MD_HEADING.match(s).group(2)).strip()
-            if md_content:
-                # Giữ ## prefix để LLM biết đây là markdown heading có cấp
-                hashes = _RE_MD_HEADING.match(s).group(1)
-                lines.append(f"{hashes} {md_content}")
-            continue
-
-        # ── Ưu tiên 2: Từ khoá cấu trúc (Chương, Điều, Phần, Bước...) ──
-        # Dùng lowercase để tránh lỗi IGNORECASE với Unicode tiếng Việt
-        if _RE_STRUCT_PREFIX.match(clean_lower):
-            lines.append(clean)
-            continue
-
-        # ── Ưu tiên 3: Số La Mã đầu dòng (I., II., III. — section trong Phần) ──
-        if _RE_ROMAN_HEADING.match(clean):
-            lines.append(clean)
-            continue
-
-        # ── Ưu tiên 4: Số thập phân (chỉ chấp nhận nếu KHÔNG phải nội dung liệt kê) ──
-        if _RE_NUMBERED.match(clean):
-            if not _is_content_list_item(clean_lower, clean):
-                lines.append(clean)
-            continue
-
-        # ── Ưu tiên 5: ALL CAPS — tiêu đề chương/phần không số ──
-        # Lọc bỏ: dòng số thuần, dòng chỉ có ký tự đặc biệt, dòng quá ngắn
-        if (len(clean) > 4
-                and clean == clean.upper()
-                and not re.fullmatch(r"[\-\=\*\_\s\|/\\\.]+", clean)
-                and not _RE_PURE_NUM.match(clean)):
-            # Lọc thêm: loại bỏ các dòng ALL CAPS là tên người, tổ chức ngắn (< 10 ký tự)
-            # hoặc các cụm viết tắt đơn lẻ (BYT, BGDĐT, THA...)
-            if len(clean) >= 10 or " " in clean:
-                lines.append(clean)
-            continue
-
-    # Dedup liên tiếp
-    deduped, prev = [], None
-    for ln in lines:
-        if ln != prev:
-            deduped.append(ln)
-            prev = ln
-    return "\n".join(deduped)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PHASE RUNNERS
 # ──────────────────────────────────────────────────────────────────────────────
 
-def phase1(client: OpenAI, text: str, filename: str) -> dict:
-    scan = get_pages(text, TOC_SCAN_PAGES)
-    user = (
-        f"source_file = {filename}\n\n"
-        f"Nội dung văn bản ({TOC_SCAN_PAGES} trang đầu):\n{scan}"
-    )
-    print(f"  Phase 1: {len(scan)} chars ...")
+def phase1(client: OpenAI, text: str, filename: str) -> tuple[dict, bool]:
+    """
+    Trả về (toc_dict, found_toc):
+      - toc_dict: kết quả Phase 1.
+      - found_toc: True nếu phát hiện trang MỤC LỤC trong n trang đầu.
+    """
+    scan, toc_start = get_scan_for_phase1(text, TOC_SCAN_PAGES)
+    found_toc = toc_start is not None
+    label = "(trang đầu + MỤC LỤC ghép đủ)" if found_toc else f"({TOC_SCAN_PAGES} trang đầu)"
+    user  = f"source_file = {filename}\n\nNội dung văn bản {label}:\n{scan}"
+    print(f"  Phase 1: {len(scan):,} chars ...")
     try:
-        return call_ai(client, PROMPT_PHASE1, user)
+        return call_ai(client, PROMPT_PHASE1, user), found_toc
     except Exception as e:
         print(f"  Phase 1 failed: {e}")
-        return {"chapters": [], "source_file": filename}
+        return {"chapters": [], "source_file": filename}, found_toc
 
 
 def phase2(client: OpenAI, text: str, metadata: dict, filename: str) -> dict:
-    outline = extract_heading_outline(text)
-    print(f"  Phase 2: {outline.count(chr(10)) + 1} heading lines ...")
-    meta_only = {k: metadata.get(k) for k in _METADATA_KEYS if k != "chapters"}
-    user = (
-        f"source_file = {filename}\n\n"
-        f"METADATA:\n{json.dumps(meta_only, ensure_ascii=False, indent=2)}\n\n"
-        f"OUTLINE TIÊU ĐỀ:\n{outline}"
+    pages    = text.split(PAGE_BREAK)
+    n_pages  = len(pages)
+    meta_str = json.dumps(
+        {k: metadata.get(k) for k in _METADATA_KEYS if k != "chapters"},
+        ensure_ascii=False, indent=2,
     )
+
+    def _user_header() -> str:
+        return f"source_file = {filename}\n\nMETADATA đã biết:\n{meta_str}\n\n"
+
     try:
-        result  = call_ai(client, PROMPT_PHASE2, user)
-        merged  = dict(metadata)
-        merged["chapters"] = result.get("chapters", metadata.get("chapters", []))
-        return merged
+        if n_pages <= PHASE2_CHUNK_PAGES:
+            # ── Single pass ───────────────────────────────────────────────
+            clean = clean_text_for_phase2(text)
+            print(f"  Phase 2 (single pass): {n_pages} trang, {len(clean):,} ký tự")
+            user     = _user_header() + f"TOÀN BỘ VĂN BẢN ({n_pages} trang):\n\n{clean}"
+            result   = call_ai(client, _PROMPT_PHASE2_SINGLE, user)
+            chapters = result.get("chapters", metadata.get("chapters", []))
+
+        else:
+            # ── Iterative chunking ────────────────────────────────────────
+            n_chunks = (n_pages + PHASE2_CHUNK_PAGES - 1) // PHASE2_CHUNK_PAGES
+            print(
+                f"  Phase 2 (iterative): {n_pages} trang → "
+                f"{n_chunks} chunks (≤{PHASE2_CHUNK_PAGES} trang/chunk)"
+            )
+            accumulated: list = []
+
+            for i in range(n_chunks):
+                start = i * PHASE2_CHUNK_PAGES
+                end   = min(start + PHASE2_CHUNK_PAGES, n_pages)
+                clean = clean_text_for_phase2(PAGE_BREAK.join(pages[start:end]))
+                print(
+                    f"    Chunk {i+1}/{n_chunks}: trang {start+1}–{end} / {n_pages},"
+                    f" {len(clean):,} ký tự, TOC tích lũy: {len(accumulated)} chapters"
+                )
+                user = (
+                    _user_header()
+                    + f"CÂY TOC ĐÃ TÍCH LŨY (từ {i} chunk trước):\n"
+                    + json.dumps({"chapters": accumulated}, ensure_ascii=False, indent=2)
+                    + f"\n\nĐOẠN VĂN BẢN MỚI — chunk {i+1}/{n_chunks}"
+                    + f" (trang {start+1}–{end}, tổng {n_pages} trang):\n\n{clean}"
+                )
+                result      = call_ai(client, _PROMPT_PHASE2_ITERATIVE, user)
+                accumulated = result.get("chapters", accumulated)
+
+            chapters = accumulated
+            print(f"  Phase 2 iterative done: {len(chapters)} chapters")
+
+        return {**metadata, "chapters": chapters}
+
     except Exception as e:
-        print(f"  Phase 2 failed: {e} — keeping Phase 1 result")
+        print(f"  Phase 2 failed: {e} — giữ lại kết quả Phase 1")
         return metadata
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN PROCESSING
 # ──────────────────────────────────────────────────────────────────────────────
-
-def has_toc_page(text: str, n_pages: int) -> bool:
-    """Kiểm tra xem N trang đầu có chứa phần MỤC LỤC/TABLE OF CONTENTS không."""
-    scan = get_pages(text, n_pages)
-    return bool(re.search(r"MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", scan, re.IGNORECASE))
-
 
 def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
     if not md_path.exists():
@@ -506,28 +532,48 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
     print(f"Processing: {md_path.name}")
     text = md_path.read_text(encoding="utf-8", errors="ignore")
 
-    # Phát hiện sớm: có MỤC LỤC trong phần đầu không?
-    found_toc_page = has_toc_page(text, TOC_SCAN_PAGES)
-
-    toc = ensure_schema(phase1(client, text, md_path.name), md_path.name)
-    n_ch, n_sec = len(toc.get("chapters", [])), count_sections(toc.get("chapters", []))
+    raw_toc, found_toc = phase1(client, text, md_path.name)
+    toc = ensure_schema(raw_toc, md_path.name)
+    n_ch  = len(toc.get("chapters", []))
+    n_sec = count_sections(toc.get("chapters", []))
     print(f"  Phase 1 result: {n_ch} chapters, {n_sec} sections")
 
-    if not found_toc_page:
-        # Không có MỤC LỤC → Phase 1 chỉ đọc được một phần tài liệu,
-        # luôn chạy Phase 2 để quét toàn bộ văn bản.
-        print(f"  Không có MỤC LỤC → Phase 2 bắt buộc (quét toàn bộ văn bản)")
-        toc = ensure_schema(phase2(client, text, toc, md_path.name), md_path.name)
-        print(f"  Phase 2 result: {len(toc.get('chapters', []))} chapters, {count_sections(toc.get('chapters', []))} sections")
+    global MIN_SECTION_DEPTH
+    total_pages = toc.get("total_pages") or 0
+    MIN_SECTION_DEPTH = (
+        MIN_SECTION_DEPTH_LONG if total_pages >= PAGE_THRESHOLD_FOR_DEPTH
+        else MIN_SECTION_DEPTH_SHORT
+    )
+    print(
+        f"  MIN_SECTION_DEPTH = {MIN_SECTION_DEPTH}"
+        f" (total_pages={total_pages}, ngưỡng={PAGE_THRESHOLD_FOR_DEPTH})"
+    )
+
+    # Phase 2: bắt buộc khi không có MỤC LỤC, hoặc TOC quá nông
+    run_phase2 = not found_toc or toc_is_shallow(toc)
+    if not found_toc:
+        print("  Không có MỤC LỤC → Phase 2 bắt buộc")
     elif toc_is_shallow(toc):
-        # Có MỤC LỤC nhưng kết quả Phase 1 vẫn quá nông → Phase 2 bổ sung
-        print(f"  TOC shallow ({n_sec} sections < {MIN_SECTIONS_THRESHOLD}) → Phase 2")
-        toc = ensure_schema(phase2(client, text, toc, md_path.name), md_path.name)
-        print(f"  Phase 2 result: {len(toc.get('chapters', []))} chapters, {count_sections(toc.get('chapters', []))} sections")
+        print(
+            f"  TOC shallow (depth {get_toc_depth(toc.get('chapters', []))} "
+            f"< {MIN_SECTION_DEPTH}) → Phase 2"
+        )
     else:
         print("  Có MỤC LỤC, TOC đủ sâu → dùng kết quả Phase 1")
 
-    print(f"  title={toc.get('title')!r} | decision={toc.get('decision_number')!r} | pages={toc.get('total_pages')}")
+    if run_phase2:
+        toc = ensure_schema(phase2(client, text, toc, md_path.name), md_path.name)
+        print(
+            f"  Phase 2 result: "
+            f"{len(toc.get('chapters', []))} chapters, "
+            f"{count_sections(toc.get('chapters', []))} sections"
+        )
+
+    print(
+        f"  title={toc.get('title')!r} | "
+        f"decision={toc.get('decision_number')!r} | "
+        f"pages={toc.get('total_pages')}"
+    )
 
     stem = md_path.stem
     if stem.endswith(".extraction"):
@@ -538,28 +584,73 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
     print(f"  Saved → {out_path.name}")
 
 
-def _build_client() -> OpenAI:
+
+def _run_toc_pipeline(client: OpenAI, text: str, filename: str) -> dict[str, Any]:
+    global MIN_SECTION_DEPTH
+
+    raw_toc, found_toc = phase1(client, text, filename)
+    toc = ensure_schema(raw_toc, filename)
+    n_ch = len(toc.get("chapters", []))
+    n_sec = count_sections(toc.get("chapters", []))
+    print(f"  Phase 1 result: {n_ch} chapters, {n_sec} sections")
+
+    total_pages = toc.get("total_pages") or 0
+    MIN_SECTION_DEPTH = (
+        MIN_SECTION_DEPTH_LONG if total_pages >= PAGE_THRESHOLD_FOR_DEPTH
+        else MIN_SECTION_DEPTH_SHORT
+    )
+    print(
+        f"  MIN_SECTION_DEPTH = {MIN_SECTION_DEPTH}"
+        f" (total_pages={total_pages}, ngưỡng={PAGE_THRESHOLD_FOR_DEPTH})"
+    )
+
+    run_phase2 = not found_toc or toc_is_shallow(toc)
+    if not found_toc:
+        print("  Không có MỤC LỤC → Phase 2 bắt buộc")
+    elif toc_is_shallow(toc):
+        print(
+            f"  TOC shallow (depth {get_toc_depth(toc.get('chapters', []))} "
+            f"< {MIN_SECTION_DEPTH}) → Phase 2"
+        )
+    else:
+        print("  Có MỤC LỤC, TOC đủ sâu → dùng kết quả Phase 1")
+
+    if run_phase2:
+        toc = ensure_schema(phase2(client, text, toc, filename), filename)
+        print(
+            f"  Phase 2 result: "
+            f"{len(toc.get('chapters', []))} chapters, "
+            f"{count_sections(toc.get('chapters', []))} sections"
+        )
+
+    return toc
+
+
+def _configure_runtime_from_env() -> None:
     load_dotenv(override=False)
-    api_key = os.getenv("OPENAI_API_KEY", "").strip().strip("\"'")
+
+
+def _build_client() -> OpenAI:
+    _configure_runtime_from_env()
+    api_key = os.getenv("OPENAI_API_KEY", "").strip().strip('"').strip("'")
     if not api_key:
         raise BadRequestException("Missing OPENAI_API_KEY in environment.")
 
-    model_name = os.getenv("OPENAI_MODEL_NAME", "").strip()
+    model_name = os.getenv("OPENAI_MODEL_NAME", "").strip().strip('"').strip("'")
     if model_name:
         global MODEL
         MODEL = model_name
 
+    base_url = os.getenv("OPENAI_API_URL", "").strip().strip('"').strip("'")
+    if base_url:
+        return OpenAI(api_key=api_key, base_url=base_url)
     return OpenAI(api_key=api_key)
 
 
 def build_toc_from_text(text: str, filename: str) -> dict[str, Any]:
+    _init_phase2_prompts()
     client = _build_client()
-    found_toc_page = has_toc_page(text, TOC_SCAN_PAGES)
-
-    toc = ensure_schema(phase1(client, text, filename), filename)
-    if (not found_toc_page) or toc_is_shallow(toc):
-        toc = ensure_schema(phase2(client, text, toc, filename), filename)
-    return toc
+    return _run_toc_pipeline(client, text, filename)
 
 
 class TocBuilderService:
@@ -590,10 +681,15 @@ def run(args) -> None:
         raise RuntimeError("Missing OPENAI_API_KEY in .env")
     client = OpenAI(api_key=api_key)
 
-    global TOC_SCAN_PAGES, MIN_SECTIONS_THRESHOLD, MODEL
-    TOC_SCAN_PAGES         = args.pages
-    MIN_SECTIONS_THRESHOLD = args.min_sections
-    MODEL                  = args.model
+    global TOC_SCAN_PAGES, MIN_SECTION_DEPTH, MIN_SECTION_DEPTH_SHORT, MIN_SECTION_DEPTH_LONG, PAGE_THRESHOLD_FOR_DEPTH, MODEL, PHASE2_CHUNK_PAGES
+    TOC_SCAN_PAGES            = args.pages
+    MIN_SECTION_DEPTH_SHORT   = args.min_depth_short
+    MIN_SECTION_DEPTH_LONG    = args.min_depth_long
+    PAGE_THRESHOLD_FOR_DEPTH  = args.depth_page_threshold
+    MODEL                     = args.model
+    PHASE2_CHUNK_PAGES        = args.chunk_pages
+
+    _init_phase2_prompts()
 
     input_dir  = Path(args.input_dir)
     output_dir = Path(args.output_dir)
@@ -605,7 +701,7 @@ def run(args) -> None:
             print(f"[*] Đã tạo thư mục đầu vào: {input_dir}. Vui lòng copy file Markdown vào đây!")
             return
         file_list = [f.name for f in sorted(input_dir.glob("*.md"))]
-        
+
     if not file_list:
         print("\n  ✗ Không có file Markdown nào để xử lý.")
         return
@@ -616,13 +712,36 @@ def run(args) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-dir",    default=str(INPUT_DIR))
-    parser.add_argument("--output-dir",   default=str(OUTPUT_DIR))
-    parser.add_argument("--files",        nargs="*")
-    parser.add_argument("--pages",        type=int, default=TOC_SCAN_PAGES)
-    parser.add_argument("--min-sections", type=int, default=MIN_SECTIONS_THRESHOLD)
-    parser.add_argument("--model",        default=MODEL)
+    parser = argparse.ArgumentParser(
+        description="Trích xuất cây TOC từ file Markdown OCR (Landing AI format)."
+    )
+    parser.add_argument("--input-dir",    default=str(INPUT_DIR),
+                        help=f"Thư mục chứa file .md (default: {INPUT_DIR})")
+    parser.add_argument("--output-dir",   default=str(OUTPUT_DIR),
+                        help=f"Thư mục xuất file JSON (default: {OUTPUT_DIR})")
+    parser.add_argument("--files",        nargs="*",
+                        help="Danh sách file cụ thể cần xử lý (bỏ qua --input-dir nếu set)")
+    parser.add_argument("--pages",        type=int, default=TOC_SCAN_PAGES,
+                        help=f"Số trang đầu quét ở Phase 1 (default: {TOC_SCAN_PAGES})")
+    parser.add_argument("--min-depth-short",      type=int, default=MIN_SECTION_DEPTH_SHORT,
+                        help=(
+                            f"Độ sâu TOC tối thiểu cho tài liệu < --depth-page-threshold trang "
+                            f"(default: {MIN_SECTION_DEPTH_SHORT})"
+                        ))
+    parser.add_argument("--min-depth-long",       type=int, default=MIN_SECTION_DEPTH_LONG,
+                        help=(
+                            f"Độ sâu TOC tối thiểu cho tài liệu >= --depth-page-threshold trang "
+                            f"(default: {MIN_SECTION_DEPTH_LONG})"
+                        ))
+    parser.add_argument("--depth-page-threshold", type=int, default=PAGE_THRESHOLD_FOR_DEPTH,
+                        help=(
+                            f"Ngưỡng số trang để chọn MIN_SECTION_DEPTH_SHORT hay _LONG "
+                            f"(default: {PAGE_THRESHOLD_FOR_DEPTH})"
+                        ))
+    parser.add_argument("--model",        default=MODEL,
+                        help=f"Model OpenAI (default: {MODEL})")
+    parser.add_argument("--chunk-pages",  type=int, default=PHASE2_CHUNK_PAGES,
+                        help=f"Số trang tối đa mỗi chunk iterative Phase 2 (default: {PHASE2_CHUNK_PAGES})")
     args = parser.parse_args()
     run(args)
 

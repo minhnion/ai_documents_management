@@ -3,9 +3,14 @@ import re
 import sys
 from pathlib import Path
 
-_RE_ANCHOR     = re.compile(r"<a\s[^>]*></a>", re.IGNORECASE)
+# ==============================================================================
+# PATTERNS — khớp hoàn toàn với _preprocess() trong CHUNK6_fixed.py
+# ==============================================================================
+
+_RE_ANCHOR = re.compile(r"<a\s[^>]*></a>", re.IGNORECASE)
 _RE_PAGE_BREAK = re.compile(r"<!--\s*PAGE\s*BREAK\s*-->", re.IGNORECASE)
 
+# Xoá mọi HTML comment NGOẠI TRỪ PAGE_BREAK — regex giống hệt chunk script
 _RE_HTML_CMT_NO_PB = re.compile(
     r"<!--(?!\s*PAGE\s*BREAK\s*-->).*?-->",
     re.DOTALL | re.IGNORECASE,
@@ -15,7 +20,18 @@ PAGE_BREAK_MARKER = "<!-- PAGE_BREAK -->"
 assert len(PAGE_BREAK_MARKER) == 19, "marker length must stay 19 to preserve offsets"
 
 
+# ==============================================================================
+# CORE CLEAN — logic đồng nhất với _preprocess() trong CHUNK6_fixed.py
+# ==============================================================================
+
 def clean_markdown(raw: str) -> str:
+    """
+    Làm sạch markdown gốc, giữ nguyên offset cho start_char/end_char.
+    Thứ tự 3 bước phải khớp với _preprocess() trong CHUNK6_fixed.py:
+      1. Xoá thẻ neo rỗng <a ...></a>
+      2. Xoá HTML comment (trừ PAGE_BREAK)
+      3. Chuẩn hoá mọi biến thể PAGE_BREAK → marker cố định 19 ký tự
+    """
     text = _RE_ANCHOR.sub("", raw)
     text = _RE_HTML_CMT_NO_PB.sub("", text)
     text = _RE_PAGE_BREAK.sub(PAGE_BREAK_MARKER, text)
@@ -27,7 +43,7 @@ def clean_markdown_file(
     out_dir: Path | None = None,
     suffix: str = "_clean",
 ) -> Path:
-    raw  = src.read_text(encoding="utf-8", errors="ignore")
+    raw = src.read_text(encoding="utf-8", errors="ignore")
     clean = clean_markdown(raw)
 
     target_dir = out_dir if out_dir else src.parent
@@ -38,16 +54,36 @@ def clean_markdown_file(
     return out_path
 
 
+# ==============================================================================
+# VERIFY — tính đúng expected_len bằng cách đếm tất cả ký tự bị xoá
+# ==============================================================================
+
 def verify_offsets(raw: str, clean: str) -> dict:
+    # Ký tự bị xoá bởi bước 1: thẻ neo
     anchor_chars = sum(len(m.group()) for m in _RE_ANCHOR.finditer(raw))
-    pb_raw       = len(_RE_PAGE_BREAK.findall(raw))
-    pb_clean     = clean.count(PAGE_BREAK_MARKER)
-    expected_len = len(raw) - anchor_chars
+
+    # Ký tự bị xoá bởi bước 2: HTML comment (không phải PAGE_BREAK)
+    # Phải tính trên raw đã qua bước 1 để chính xác, nhưng ở đây tính gần đúng
+    # trên raw gốc vì anchor không thể nằm bên trong HTML comment hợp lệ
+    html_cmt_chars = sum(len(m.group()) for m in _RE_HTML_CMT_NO_PB.finditer(raw))
+
+    # Bước 3 chỉ thay thế (không thêm/bớt ký tự tổng), TRỪ khi biến thể gốc
+    # có độ dài khác 19 → tính delta
+    pb_delta = 0
+    for m in _RE_PAGE_BREAK.finditer(raw):
+        pb_delta += len(PAGE_BREAK_MARKER) - len(m.group())
+
+    expected_len = len(raw) - anchor_chars - html_cmt_chars + pb_delta
+
+    pb_raw   = len(_RE_PAGE_BREAK.findall(raw))
+    pb_clean = clean.count(PAGE_BREAK_MARKER)
 
     return {
         "raw_len":        len(raw),
         "clean_len":      len(clean),
         "anchor_chars":   anchor_chars,
+        "html_cmt_chars": html_cmt_chars,
+        "pb_delta":       pb_delta,
         "expected_len":   expected_len,
         "len_ok":         len(clean) == expected_len,
         "null_bytes":     clean.count("\x00"),
@@ -58,18 +94,23 @@ def verify_offsets(raw: str, clean: str) -> dict:
 
 
 # ==============================================================================
-# CẤU HÌNH ĐẦU VÀO / ĐẦU RA 
+# CẤU HÌNH ĐẦU VÀO / ĐẦU RA
 # ==============================================================================
 
-# 1. ĐẦU VÀO: Thư mục chứa các file Markdown OCR thô ban đầu (Tạo từ Bước 1)
+# 1. ĐẦU VÀO: Thư mục chứa các file Markdown OCR thô (đầu ra Bước 1 / 02_ocr_markdown)
 INPUT_DIR = Path("./data/02_ocr_markdown")
 
-# 2. ĐẦU RA: Thư mục lưu các file Markdown Sạch phục vụ hiển thị web
+# 2. ĐẦU RA: Thư mục chứa Markdown sạch — CHUNK6_fixed.py có thể đọc trực tiếp từ đây
+#    (thay MD_INPUT_DIR trong chunk script thành thư mục này nếu muốn dùng file đã clean sẵn)
 OUTPUT_DIR_DEFAULT: str = "./data/05_clean_markdown"
 
-# Danh sách file cụ thể (Để rỗng [] để chạy toàn bộ thư mục INPUT_DIR)
+# Danh sách file cụ thể (để rỗng [] để chạy toàn bộ INPUT_DIR)
 INPUT_FILES: list[str] = []
 
+
+# ==============================================================================
+# CLI
+# ==============================================================================
 
 def _parse_args() -> tuple[list[Path], Path | None]:
     import argparse
@@ -86,7 +127,7 @@ def _parse_args() -> tuple[list[Path], Path | None]:
         help="Thư mục lưu file đầu ra. Nếu bỏ trống, dùng OUTPUT_DIR_DEFAULT trong config.",
     )
     args = parser.parse_args()
-    
+
     if args.files:
         files = [Path(f) for f in args.files]
     elif INPUT_FILES:
@@ -98,7 +139,7 @@ def _parse_args() -> tuple[list[Path], Path | None]:
             files = []
         else:
             files = list(INPUT_DIR.glob("*.md"))
-            
+
     out_dir = Path(args.out_dir) if args.out_dir else Path(OUTPUT_DIR_DEFAULT)
     return files, out_dir
 
@@ -125,11 +166,20 @@ def main() -> None:
             )
             err += 1
 
+        if not stats["pb_ok"]:
+            print(
+                f"[WARN] {src.name}: số PAGE_BREAK không khớp "
+                f"(raw {stats['pb_raw']}, clean {stats['pb_clean']})",
+                file=sys.stderr,
+            )
+
         out_path = clean_markdown_file(src, out_dir=out_dir)
         print(
             f"[OK] {src.name} → {out_path.name}"
             f"  ({stats['raw_len']:,} → {stats['clean_len']:,} chars,"
             f"  -{stats['anchor_chars']:,} anchors,"
+            f"  -{stats['html_cmt_chars']:,} html_cmt,"
+            f"  {stats['pb_delta']:+d} pb_delta,"
             f"  {stats['pb_clean']} page breaks)"
         )
         ok += 1

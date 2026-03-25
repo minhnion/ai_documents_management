@@ -90,6 +90,26 @@ _RE_HTML_NON_TABLE = re.compile(
     re.IGNORECASE,
 )
 
+_RE_FOOTER_PAGE_TITLE = re.compile(
+    r"^\s*\d{1,4}\s*[|]\s*[A-ZÀ-Ỵ]",
+    re.IGNORECASE,
+)
+
+_RE_FOOTER_PAGE_TITLE2 = re.compile(
+    r"^\s*\d{1,4}\s*[-–:]\s*(BÀI|CHƯƠNG|PHẦN|MỤC)\b",
+    re.IGNORECASE,
+)
+
+def _is_footer_line(s: str) -> bool:
+    x = s.strip()
+    if _RE_PURE_NUM.match(x):
+        return True
+    if _RE_FOOTER_PAGE_TITLE.match(x):
+        return True
+    if _RE_FOOTER_PAGE_TITLE2.match(x):
+        return True
+    return False
+
 _CHILD_KEYS = (
     "chapters", "sections", "subsections",
     "subsubsections", "subsubsubsections", "children",
@@ -209,13 +229,15 @@ def _effective_inter(toc_word_list: List[str], cand_words: set) -> int:
         for start in range(len(unmatched)):
             for length in range(2, len(unmatched) - start + 1):
                 subseq = unmatched[start : start + length]
-                if (len(cw) == length
-                        and all(cw[i] == subseq[i][0] for i in range(length))):
-                    matched.update(subseq)
-                    for w in subseq:
-                        try: unmatched.remove(w)
-                        except ValueError: pass
-                    break
+                if len(cw) == length:
+                    match_count = sum(1 for i in range(length) if cw[i] == subseq[i][0])
+                    # Cho phép sai 1 ký tự đối với acronym dài (>= 4 ký tự)
+                    if match_count == length or (length >= 4 and match_count >= length - 1):
+                        matched.update(subseq)
+                        for w in subseq:
+                            try: unmatched.remove(w)
+                            except ValueError: pass
+                        break
 
     expanded_cnt = len(matched)
 
@@ -265,16 +287,16 @@ def _clean_candidate(raw: str) -> Optional[str]:
         return None
     return s
 
-def _extract_candidates(text: str, body_start: int) -> List[Tuple[int, int, str]]:
+def _extract_candidates(text: str, body_start: int, total_pages: int = 0, num_sections: int = 1) -> List[Tuple[int, int, str]]:
     """Trích xuất các vị trí nghi ngờ là tiêu đề từ text và bảng HTML."""
     seen:       set = set()
-    candidates: List[Tuple[int, int, str]] = []
+    raw_candidates: List[Tuple[int, int, str]] = []
 
     def _add(s: int, e: int, t: str, key=None) -> None:
         k = key if key is not None else s
         if k not in seen:
             seen.add(k)
-            candidates.append((s, e, t))
+            raw_candidates.append((s, e, t))
 
     # Nguồn 1: Các dòng text đơn lẻ
     pos = body_start
@@ -286,6 +308,10 @@ def _extract_candidates(text: str, body_start: int) -> List[Tuple[int, int, str]
             continue
         md_m = _RE_MD_HDG.match(stripped)
         txt  = md_m.group(1).strip() if md_m else stripped
+        
+        if _is_footer_line(txt):
+            continue
+            
         cleaned = _clean_candidate(txt)
         if cleaned:
             _add(line_start, pos, cleaned)
@@ -300,6 +326,9 @@ def _extract_candidates(text: str, body_start: int) -> List[Tuple[int, int, str]
         cstart = base + cell_m.start()
         cend   = base + cell_m.end()
         cell_t = _RE_HTML_TAG.sub("", cell_m.group(1)).replace("\n", " ")
+        
+        if _is_footer_line(cell_t):
+            continue
 
         cleaned = _clean_candidate(cell_t)
         if cleaned:
@@ -325,29 +354,79 @@ def _extract_candidates(text: str, body_start: int) -> List[Tuple[int, int, str]
             if cleaned_suffix:
                 _add(cstart + m_split.start() + 1, cend, cleaned_suffix, key=(cstart, "suffix"))
 
-    # Nguồn 3: Tiêu đề bị ngắt dòng do Page Break → merge 2 dòng liền kề
-    line_list: List[Tuple[int, int, str]] = []
+    # Nguồn 3: Tiêu đề bị ngắt dòng do Page Break → merge các dòng liền kề
+    line_list: List[Tuple[int, int, str, bool]] = []
     pos2 = body_start
     for raw in text[body_start:].splitlines(keepends=True):
         stripped = raw.strip()
         if stripped and not stripped.startswith("<") and stripped != "<!-- PAGE_BREAK -->":
             md_m = _RE_MD_HDG.match(stripped)
+            is_md_hdg = bool(md_m)
             txt  = md_m.group(1).strip() if md_m else stripped
-            cleaned = _clean_candidate(txt)
-            if cleaned:
-                line_list.append((pos2, pos2 + len(raw), cleaned))
+            if not _is_footer_line(txt):
+                cleaned = _clean_candidate(txt)
+                if cleaned:
+                    line_list.append((pos2, pos2 + len(raw), cleaned, is_md_hdg))
         pos2 += len(raw)
 
     for i in range(len(line_list) - 1):
-        s1, e1, t1 = line_list[i]
-        s2, e2, t2 = line_list[i + 1]
+        s1, e1, t1, is_hdg1 = line_list[i]
+        s2, e2, t2, is_hdg2 = line_list[i + 1]
         if len(t1) < 90 and len(t2) < 90:
             merged = t1 + " " + t2
             if len(merged) <= MAX_HEADING_LEN:
                 _add(s1, e2, merged, key=(s1, e2))
+                
+    # Ghép 3 dòng liên tiếp (bất kể có ### hay không) để bắt các tiêu đề bị vỡ quá nhỏ
+    for i in range(len(line_list) - 2):
+        s1, e1, t1, is_hdg1 = line_list[i]
+        s2, e2, t2, is_hdg2 = line_list[i + 1]
+        s3, e3, t3, is_hdg3 = line_list[i + 2]
+        if len(t1) < 90 and len(t2) < 90 and len(t3) < 90:
+            merged = t1 + " " + t2 + " " + t3
+            if len(merged) <= MAX_HEADING_LEN:
+                _add(s1, e3, merged, key=(s1, e3))
+                
+    # Nối 3 dòng ### liên tiếp trở lên
+    i = 0
+    while i < len(line_list):
+        if line_list[i][3]: # Nếu là thẻ md heading
+            j = i + 1
+            merged_text = line_list[i][2]
+            s_start = line_list[i][0]
+            e_end = line_list[i][1]
+            while j < len(line_list) and line_list[j][3] and len(line_list[j][2]) < 90:
+                merged_text += " " + line_list[j][2]
+                e_end = line_list[j][1]
+                j += 1
+            
+            if j - i >= 2:
+                if len(merged_text) <= MAX_HEADING_LEN:
+                    _add(s_start, e_end, merged_text, key=(s_start, e_end))
+            i = j
+        else:
+            i += 1
 
-    candidates.sort(key=lambda x: x[0])
-    return candidates
+    raw_candidates.sort(key=lambda x: x[0])
+    
+    # Lọc các candidate có tính chất lặp lại (Footer/Header)
+    if total_pages > 0 and num_sections > 0:
+        short_threshold = max(4, total_pages // num_sections)
+        long_threshold = 4
+        from collections import Counter
+        counts = Counter(t for _, _, t in raw_candidates)
+        
+        candidates = []
+        for s, e, t in raw_candidates:
+            freq = counts[t]
+            if len(t) > 25 and freq >= long_threshold:
+                continue
+            if len(t) <= 25 and freq >= short_threshold:
+                continue
+            candidates.append((s, e, t))
+        return candidates
+    else:
+        return raw_candidates
 
 # ──────────────────────────────────────────────────────────────────────────────
 # HIERARCHICAL MATCHING
@@ -364,15 +443,22 @@ def _match_unordered(nodes: List[Dict], candidates: List[Tuple[int, int, str]], 
             if score >= MIN_MATCH_SCORE:
                 pairs.append((score, cand[0], node, cand))
     pairs.sort(key=lambda x: (-x[0], x[1]))
-    assigned_nodes, assigned_cands = set(), set()
+    assigned_nodes: set = set()
+    assigned_ranges: List[Tuple[int, int]] = []  # (start, end) của các candidate đã gán
+
+    def _overlaps(cs: int, ce: int) -> bool:
+        """Kiểm tra xem [cs, ce) có chồng lấp với bất kỳ range đã gán không."""
+        return any(cs < ae and ce > as_ for as_, ae in assigned_ranges)
+
     for score, _cpos, node, cand in pairs:
-        if id(node) not in assigned_nodes and cand[0] not in assigned_cands:
-            node["_match_start"]   = cand[0]
-            node["_match_end"]     = cand[1]
+        cstart, cend = cand[0], cand[1]
+        if id(node) not in assigned_nodes and not _overlaps(cstart, cend):
+            node["_match_start"]   = cstart
+            node["_match_end"]     = cend
             node["_match_heading"] = cand[2]
             node["_match_score"]   = round(score, 3)
             assigned_nodes.add(id(node))
-            assigned_cands.add(cand[0])
+            assigned_ranges.append((cstart, cend))
     for node in nodes:
         if "_match_start" not in node:
             node["_match_start"] = node["_match_end"] = node["_match_heading"] = node["_match_score"] = None
@@ -515,7 +601,12 @@ def process_pair(md_path: Path, toc_path: Path, out_path: Path) -> None:
     body_start = _find_body_start(clean_text)
     logging.info("Body starts at char %d in %s", body_start, md_path.name)
 
-    candidates = _extract_candidates(clean_text, body_start)
+    total_pages = toc_data.get("total_pages", 0)
+    num_sections = sum(len(toc_data.get(k, [])) for k in _CHILD_KEYS)
+    if num_sections == 0:
+        num_sections = 1
+
+    candidates = _extract_candidates(clean_text, body_start, total_pages, num_sections)
     logging.info("Extracted %d heading candidates", len(candidates))
 
     _assign_all(toc_data, candidates, len(clean_text))
@@ -556,7 +647,13 @@ def build_chunk_payload_from_text(clean_text: str, toc_data: Dict[str, Any], min
         toc_copy = json.loads(json.dumps(toc_data, ensure_ascii=False))
         prepared_text = _preprocess(clean_text)
         body_start = _find_body_start(prepared_text)
-        candidates = _extract_candidates(prepared_text, body_start)
+
+        total_pages = toc_copy.get("total_pages") or 0
+        num_sections = sum(len(toc_copy.get(k, [])) for k in _CHILD_KEYS)
+        if num_sections == 0:
+            num_sections = 1
+
+        candidates = _extract_candidates(prepared_text, body_start, total_pages, num_sections)
         _assign_all(toc_copy, candidates, len(prepared_text))
         page_map = _build_page_map(prepared_text)
 
@@ -567,16 +664,16 @@ def build_chunk_payload_from_text(clean_text: str, toc_data: Dict[str, Any], min
                     top_chunks.append(_build_chunk_node(child, prepared_text, page_map))
 
         return {
-            "title":           toc_copy.get("title", None),
-            "publisher":       toc_copy.get("publisher", None),
+            "title": toc_copy.get("title", None),
+            "publisher": toc_copy.get("publisher", None),
             "decision_number": toc_copy.get("decision_number", None),
-            "specialty":       toc_copy.get("specialty", None),
-            "date":            toc_copy.get("date", None),
+            "specialty": toc_copy.get("specialty", None),
+            "date": toc_copy.get("date", None),
             "isbn_electronic": toc_copy.get("isbn_electronic", None),
-            "isbn_print":      toc_copy.get("isbn_print", None),
-            "total_pages":     toc_copy.get("total_pages", None),
-            "source_file":     toc_copy.get("source_file", None),
-            "chapters":        top_chunks,
+            "isbn_print": toc_copy.get("isbn_print", None),
+            "total_pages": toc_copy.get("total_pages", None),
+            "source_file": toc_copy.get("source_file", None),
+            "chapters": top_chunks,
         }
     finally:
         MIN_MATCH_SCORE = previous_threshold
@@ -585,6 +682,9 @@ def build_chunk_payload_from_text(clean_text: str, toc_data: Dict[str, Any], min
 class FuzzyChunkingService:
     def __init__(self, markdown_service=None) -> None:
         self._markdown_service = markdown_service
+
+    def _match_score(self, toc_title: str, candidate: str) -> float:
+        return _match_score(toc_title, candidate)
 
     def build_chunk_payload(self, clean_text: str, toc: dict[str, Any], score_threshold: float) -> dict[str, Any]:
         try:
@@ -595,6 +695,7 @@ class FuzzyChunkingService:
             )
         except Exception as exc:
             raise UnprocessableEntityException(f"Chunking failed: {exc}") from exc
+
 
 def main() -> None:
     pairs = get_file_pairs()

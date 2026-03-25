@@ -100,14 +100,16 @@ class DocumentIngestionPipelineService:
 
     def _hydrate_core_pipeline_env(self) -> None:
         if settings.LANDINGAI_API_KEY.strip():
-            os.environ.setdefault("LANDINGAI_API_KEY", settings.LANDINGAI_API_KEY.strip())
-            os.environ.setdefault("VISION_AGENT_API_KEY", settings.LANDINGAI_API_KEY.strip())
+            os.environ["LANDINGAI_API_KEY"] = settings.LANDINGAI_API_KEY.strip()
+            os.environ["VISION_AGENT_API_KEY"] = settings.LANDINGAI_API_KEY.strip()
         if settings.LANDINGAI_MODEL_NAME.strip():
-            os.environ.setdefault("LANDINGAI_MODEL_NAME", settings.LANDINGAI_MODEL_NAME.strip())
+            os.environ["LANDINGAI_MODEL_NAME"] = settings.LANDINGAI_MODEL_NAME.strip()
         if settings.OPENAI_API_KEY.strip():
-            os.environ.setdefault("OPENAI_API_KEY", settings.OPENAI_API_KEY.strip())
+            os.environ["OPENAI_API_KEY"] = settings.OPENAI_API_KEY.strip()
+        if settings.OPENAI_API_URL.strip():
+            os.environ["OPENAI_API_URL"] = settings.OPENAI_API_URL.strip().strip('"').strip("'")
         if settings.OPENAI_MODEL_NAME.strip():
-            os.environ.setdefault("OPENAI_MODEL_NAME", settings.OPENAI_MODEL_NAME.strip())
+            os.environ["OPENAI_MODEL_NAME"] = settings.OPENAI_MODEL_NAME.strip()
 
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():
