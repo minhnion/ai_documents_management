@@ -22,7 +22,7 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 async def get_document_file(
     document_id: int,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles("viewer", "editor", "admin"))],
+    #_: Annotated[object, Depends(require_roles("viewer", "editor", "admin"))],
     range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> StreamingResponse:
     service = DocumentFileService(db)
