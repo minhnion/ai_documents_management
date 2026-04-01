@@ -91,6 +91,43 @@ class CreateGuidelineVersionResponse(BaseModel):
     target_status: str | None = None
 
 
+class UpdateGuidelineMetadataRequest(BaseModel):
+    title: str | None = None
+    ten_benh: str | None = None
+    publisher: str | None = None
+    chuyen_khoa: str | None = None
+
+
+class UpdateGuidelineMetadataResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    guideline_id: int
+    title: str
+    ten_benh: str | None = None
+    publisher: str | None = None
+    chuyen_khoa: str | None = None
+
+
+class UpdateGuidelineVersionMetadataRequest(BaseModel):
+    version_label: str | None = None
+    release_date: date | None = None
+    status: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+
+
+class UpdateGuidelineVersionMetadataResponse(BaseModel):
+    guideline_id: int
+    version_id: int
+    version_label: str | None = None
+    release_date: date | None = None
+    status: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    promoted_version_id: int | None = None
+    previous_active_versions_updated: int = 0
+
+
 class DeleteGuidelineResponse(BaseModel):
     guideline_id: int
     deleted_version_count: int

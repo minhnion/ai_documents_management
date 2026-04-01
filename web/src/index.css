@@ -1529,6 +1529,38 @@ a:hover {
   flex-shrink: 0;
 }
 
+.metadata-modal {
+  max-width: 760px;
+}
+
+.metadata-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.metadata-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.metadata-modal-footnote {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.metadata-modal-footnote code {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.metadata-modal-footer {
+  padding: 0;
+  border-top: none;
+}
+
 @container (max-width: 260px) {
   .toc-header {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -1548,6 +1580,10 @@ a:hover {
   .modal-container {
     max-height: 90vh;
     margin: 0 12px;
+  }
+
+  .metadata-form-grid {
+    grid-template-columns: 1fr;
   }
 
   .section-rich-table {

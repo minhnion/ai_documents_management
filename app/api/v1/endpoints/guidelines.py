@@ -14,9 +14,12 @@ from app.schemas.guideline import (
     GuidelineVersionItem,
     GuidelineVersionListResponse,
     GuidelineVersionSummary,
+    UpdateGuidelineMetadataRequest,
+    UpdateGuidelineMetadataResponse,
 )
 from app.services.guideline_command_service import GuidelineCommandService
 from app.services.guideline_delete_service import GuidelineDeleteService
+from app.services.guideline_metadata_service import GuidelineMetadataService
 from app.services.guideline_query_service import GuidelineQueryService
 
 router = APIRouter(prefix="/guidelines", tags=["Guidelines"])
@@ -119,6 +122,25 @@ async def create_guideline(
         version_status=job_result.get("version_status"),
         target_status=job_result.get("target_status"),
     )
+
+
+@router.patch(
+    "/{guideline_id}",
+    response_model=UpdateGuidelineMetadataResponse,
+    summary="Update Guideline Metadata",
+)
+async def update_guideline_metadata(
+    guideline_id: int,
+    payload: UpdateGuidelineMetadataRequest,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles("editor", "admin"))],
+) -> UpdateGuidelineMetadataResponse:
+    service = GuidelineMetadataService(db)
+    guideline = await service.update_guideline_metadata(
+        guideline_id=guideline_id,
+        patch=payload.model_dump(exclude_unset=True),
+    )
+    return UpdateGuidelineMetadataResponse.model_validate(guideline)
 
 
 @router.delete(

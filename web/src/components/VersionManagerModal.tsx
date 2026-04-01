@@ -1,7 +1,13 @@
 import { useEffect, useState, useCallback } from 'react'
-import { X, Trash2 } from 'lucide-react'
+import { X, Trash2, Edit2 } from 'lucide-react'
 import { api } from '../lib/api'
-import type { GuidelineVersionItem, DeleteGuidelineVersionResponse, GuidelineVersionListResponse } from '../lib/types'
+import type {
+  GuidelineVersionItem,
+  DeleteGuidelineVersionResponse,
+  GuidelineVersionListResponse,
+  UpdateGuidelineVersionMetadataResponse,
+} from '../lib/types'
+import VersionMetadataModal from './VersionMetadataModal'
 
 interface Props {
   guidelineId: number
@@ -14,6 +20,7 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
   const [versions, setVersions] = useState<GuidelineVersionItem[]>([])
   const [loading, setLoading] = useState(true)
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [editingVersion, setEditingVersion] = useState<GuidelineVersionItem | null>(null)
   const [error, setError] = useState('')
 
   const fetchVersions = useCallback(() => {
@@ -30,10 +37,12 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
   }, [fetchVersions])
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && editingVersion === null) onClose()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [editingVersion, onClose])
 
   const handleDelete = async (version: GuidelineVersionItem) => {
     const label = version.version_label || `v${version.version_id}`
@@ -56,8 +65,16 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
     }
   }
 
+  const handleVersionSaved = async (_updated: UpdateGuidelineVersionMetadataResponse) => {
+    setEditingVersion(null)
+    fetchVersions()
+    onVersionsChanged()
+  }
+
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" onClick={() => {
+      if (editingVersion === null) onClose()
+    }}>
       <div className="modal-container" onClick={e => e.stopPropagation()}>
         <div className="modal-header">
           <span className="modal-title">Quản lý phiên bản</span>
@@ -79,7 +96,7 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
                   <th>Phiên bản</th>
                   <th>Ngày phát hành</th>
                   <th>Trạng thái</th>
-                  <th className="text-right">Thao tác</th>
+                  <th className="text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
@@ -95,6 +112,14 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
                     </td>
                     <td>
                       <div className="actions-cell" style={{ justifyContent: 'flex-end' }}>
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          title="Sửa metadata phiên bản"
+                          disabled={deletingId !== null}
+                          onClick={() => setEditingVersion(v)}
+                        >
+                          <Edit2 size={14} />
+                        </button>
                         <button
                           className="btn btn-danger btn-sm"
                           title="Xóa phiên bản"
@@ -118,6 +143,14 @@ export default function VersionManagerModal({ guidelineId, guidelineTitle, onClo
           <button className="btn btn-secondary btn-sm" onClick={onClose}>Đóng</button>
         </div>
       </div>
+      {editingVersion && (
+        <VersionMetadataModal
+          guidelineTitle={guidelineTitle}
+          version={editingVersion}
+          onClose={() => setEditingVersion(null)}
+          onSaved={handleVersionSaved}
+        />
+      )}
     </div>
   )
 }

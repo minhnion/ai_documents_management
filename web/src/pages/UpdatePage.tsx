@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { useNavigate, useParams, Link } from 'react-router-dom'
 import { ChevronLeft, Save } from 'lucide-react'
 import { api } from '../lib/api'
@@ -10,6 +10,8 @@ export default function UpdatePage() {
 
   const [versionLabel, setVersionLabel] = useState('')
   const [releaseDate, setReleaseDate] = useState('')
+  const [effectiveFrom, setEffectiveFrom] = useState('')
+  const [effectiveTo, setEffectiveTo] = useState('')
   const [deactivateOld, setDeactivateOld] = useState(true)
   const [file, setFile] = useState<File | null>(null)
 
@@ -27,11 +29,10 @@ export default function UpdatePage() {
       if (file) formData.append('file', file)
       if (versionLabel) formData.append('version_label', versionLabel)
       if (releaseDate) formData.append('release_date', releaseDate)
+      if (effectiveFrom) formData.append('effective_from', effectiveFrom)
+      if (effectiveTo) formData.append('effective_to', effectiveTo)
 
-      // By default backend sets status='active'.
-      // If we want to keep old versions active, we need a special param or backend support.
-      // Based on current backend implementation, it deactivates old active versions if status="active" is sent.
-      formData.append('status', deactivateOld ? 'active' : 'draft') // Rough proxy behavior for now
+      formData.append('status', deactivateOld ? 'active' : 'inactive')
 
       const res = await api.post<CreateGuidelineVersionResponse>(`/guidelines/${guidelineId}/versions`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
@@ -50,9 +51,9 @@ export default function UpdatePage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">
-            Cập nhật Guideline
+            Tạo phiên bản mới
           </h1>
-          <p className="page-subtitle">Tạo bản cập nhật/thay thế cho văn bản hiện tại</p>
+          <p className="page-subtitle">Tạo phiên bản tài liệu mới cho guideline hiện tại</p>
         </div>
         <Link to="/guidelines" className="btn btn-secondary">
           <ChevronLeft size={16} /> Quay lại
@@ -86,6 +87,24 @@ export default function UpdatePage() {
                   onChange={e => setReleaseDate(e.target.value)}
                 />
               </div>
+              <div className="form-group">
+                <label className="form-label">Hiệu lực từ</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  value={effectiveFrom}
+                  onChange={e => setEffectiveFrom(e.target.value)}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Hiệu lực đến</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  value={effectiveTo}
+                  onChange={e => setEffectiveTo(e.target.value)}
+                />
+              </div>
             </div>
             <div className="form-group mt-4">
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
@@ -95,10 +114,10 @@ export default function UpdatePage() {
                   checked={deactivateOld}
                   onChange={e => setDeactivateOld(e.target.checked)}
                 />
-                Thay thế (hết hiệu lực) phiên bản cũ
+                Đặt phiên bản mới là hiện hành
               </label>
               <span className="form-hint" style={{ marginLeft: 24 }}>
-                Nếu chọn, các phiên bản trước sẽ bị đánh dấu hết hiệu lực.
+                Nếu chọn, các phiên bản active trước đó sẽ bị hạ xuống inactive.
               </span>
             </div>
           </div>
@@ -120,7 +139,7 @@ export default function UpdatePage() {
 
           <div className="form-actions">
             <button type="submit" className="btn btn-primary" disabled={loading}>
-              {loading ? <span className="loading-spinner" style={{ width: 14, height: 14 }} /> : <><Save size={16} /> Tạo bản cập nhật</>}
+              {loading ? <span className="loading-spinner" style={{ width: 14, height: 14 }} /> : <><Save size={16} /> Tạo phiên bản mới</>}
             </button>
           </div>
         </form>

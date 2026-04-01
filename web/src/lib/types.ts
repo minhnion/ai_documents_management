@@ -163,6 +163,41 @@ export interface CreateGuidelineVersionResponse {
   target_status: string | null
 }
 
+export interface UpdateGuidelineMetadataRequest {
+  title?: string | null
+  ten_benh?: string | null
+  publisher?: string | null
+  chuyen_khoa?: string | null
+}
+
+export interface UpdateGuidelineMetadataResponse {
+  guideline_id: number
+  title: string
+  ten_benh: string | null
+  publisher: string | null
+  chuyen_khoa: string | null
+}
+
+export interface UpdateGuidelineVersionMetadataRequest {
+  version_label?: string | null
+  release_date?: string | null
+  status?: string | null
+  effective_from?: string | null
+  effective_to?: string | null
+}
+
+export interface UpdateGuidelineVersionMetadataResponse {
+  guideline_id: number
+  version_id: number
+  version_label: string | null
+  release_date: string | null
+  status: string | null
+  effective_from: string | null
+  effective_to: string | null
+  promoted_version_id: number | null
+  previous_active_versions_updated: number
+}
+
 // ── Admin ─────────────────────────────────────────────────────────
 export interface AvailableRoleResponse {
   name: string

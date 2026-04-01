@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom'
 import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
-import type { GuidelineListResponse } from '../lib/types'
+import type { GuidelineListItem, GuidelineListResponse, UpdateGuidelineMetadataResponse } from '../lib/types'
 import { useAuth } from '../store/auth'
 import VersionManagerModal from '../components/VersionManagerModal'
+import GuidelineMetadataModal from '../components/GuidelineMetadataModal'
 
 interface FilterOptions {
   publishers: string[]
@@ -25,6 +26,7 @@ export default function ListPage() {
   const [page, setPage] = useState(1)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
+  const [editingGuideline, setEditingGuideline] = useState<GuidelineListItem | null>(null)
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({ publishers: [], ten_benhs: [] })
 
   const fetchFilterOptions = useCallback(async () => {
@@ -81,6 +83,11 @@ export default function ListPage() {
   useEffect(() => {
     fetchGuidelines()
   }, [fetchGuidelines])
+
+  const handleGuidelineSaved = async (_updated: UpdateGuidelineMetadataResponse) => {
+    setEditingGuideline(null)
+    await fetchGuidelines()
+  }
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
 
@@ -181,7 +188,7 @@ export default function ListPage() {
                   <th>Đơn vị ban hành</th>
                   <th>Chuyên khoa</th>
                   <th>Phiên bản hiện hành</th>
-                  <th className="text-right">Thao tác</th>
+                  <th className="text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
@@ -217,12 +224,21 @@ export default function ListPage() {
                           </button>
                         )}
                         {canEdit && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            title="Cập nhật metadata guideline"
+                            onClick={() => setEditingGuideline(item)}
+                          >
+                            <Edit2 size={14} /> Cập nhật
+                          </button>
+                        )}
+                        {canEdit && (
                           <Link
                             to={`/guidelines/${item.guideline_id}/update`}
                             className="btn btn-secondary btn-sm"
-                            title="Cập nhật phiên bản mới"
+                            title="Tạo phiên bản mới"
                           >
-                            <Edit2 size={14} /> Cập nhật
+                            <Plus size={14} /> Tạo phiên bản mới
                           </Link>
                         )}
                         {canEdit && (
@@ -286,6 +302,13 @@ export default function ListPage() {
           guidelineTitle={versionModalGuideline.title}
           onClose={() => setVersionModalGuideline(null)}
           onVersionsChanged={fetchGuidelines}
+        />
+      )}
+      {editingGuideline && (
+        <GuidelineMetadataModal
+          guideline={editingGuideline}
+          onClose={() => setEditingGuideline(null)}
+          onSaved={handleGuidelineSaved}
         />
       )}
     </div>

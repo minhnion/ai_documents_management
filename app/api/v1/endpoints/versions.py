@@ -8,6 +8,8 @@ from app.schemas.guideline import (
     BulkSectionContentUpdateResponse,
     DeleteGuidelineVersionResponse,
     RebuildVersionChunksResponse,
+    UpdateGuidelineVersionMetadataRequest,
+    UpdateGuidelineVersionMetadataResponse,
     VersionIngestionStatusResponse,
     VersionChunkRebuildStatusResponse,
     VersionWorkspaceResponse,
@@ -23,6 +25,7 @@ from app.services.guideline_edit_service import (
     SectionContentUpdate,
 )
 from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
+from app.services.guideline_metadata_service import GuidelineMetadataService
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
@@ -64,6 +67,25 @@ async def get_version_workspace(
         suspect_section_count=int(workspace_data['suspect_section_count']),
         full_text=workspace_data['full_text'],
     )
+
+
+@router.patch(
+    '/{version_id}',
+    response_model=UpdateGuidelineVersionMetadataResponse,
+    summary='Update Guideline Version Metadata',
+)
+async def update_guideline_version_metadata(
+    version_id: int,
+    payload: UpdateGuidelineVersionMetadataRequest,
+    db: DBSession,
+    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+) -> UpdateGuidelineVersionMetadataResponse:
+    service = GuidelineMetadataService(db)
+    result = await service.update_version_metadata(
+        version_id=version_id,
+        patch=payload.model_dump(exclude_unset=True),
+    )
+    return UpdateGuidelineVersionMetadataResponse(**result)
 
 
 @router.patch(
