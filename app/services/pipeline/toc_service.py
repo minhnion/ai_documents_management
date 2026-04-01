@@ -114,10 +114,6 @@ TRƯỜNG HỢP 1 — TÌM THẤY PHẦN MỤC LỤC/TABLE OF CONTENTS:
   - Ghép nội dung toàn bộ các trang đó vào cùng một bảng MỤC LỤC thống nhất.
   - TUYỆT ĐỐI KHÔNG bỏ qua bất kỳ hàng nào trong các trang tiếp theo này.
 
-TRƯỜNG HỢP 2 — KHÔNG TÌM THẤY MỤC LỤC:
-  - Suy luận từ các tiêu đề lớn trong phần văn bản đã cung cấp.
-  - Áp dụng quy tắc nhận diện tiêu đề bên dưới.
-
 {_STRUCTURE_RULES}"""
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -218,6 +214,21 @@ CHUẨN HÓA ĐẦU RA
   • KHÔNG thêm mục không có trong văn bản.
   • Mảng con rỗng → [].
   • Chỉ trả về key "chapters".
+
+
+══════════════════════════════════════════════
+QUY TẮC BẮT BUỘC KHI CÓ CÂY TOC NỀN (Phase 1)
+══════════════════════════════════════════════
+  • GIỮ NGUYÊN HOÀN TOÀN title của mọi node đã có trong cây TOC nền.
+    TUYỆT ĐỐI không đổi tên, không tách, không gộp node đã có.
+  • KHÔNG TÁCH TIÊU ĐỀ CHAPTER ĐÃ XÁC LẬP: Nếu TOC nền đã có chapter
+    "CHƯƠNG 7 CAN THIỆP DỰ PHÒNG TIÊN PHÁT Ở CẤP ĐỘ CỘNG ĐỒNG",
+    TUYỆT ĐỐI không tách thành chapter "CHƯƠNG 7" + section "CAN THIỆP...".
+    Dù văn bản OCR in "CHƯƠNG 7" trên 1 dòng và phần còn lại ở dòng sau,
+    title chapter phải giữ nguyên y hệt TOC nền.
+  • CHỈ THÊM mục con (subsections, subsubsections…) vào đúng chapter/section
+    tương ứng khi tìm thấy trong văn bản, không làm gì khác.
+
 """
 
 
@@ -273,12 +284,49 @@ def get_pages(text: str, n: int) -> str:
 _RE_ANCHOR_STRIP_LEAD = re.compile(r"^(\s*<a\s+[^>]+>\s*</a>\s*)+", re.IGNORECASE)
 _RE_TOC_MARKER        = re.compile(r"MUC\s*LUC|MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", re.IGNORECASE)
 
+# Nhận dạng dòng dạng "16. Tên mục ... 207" hoặc "16) Tên mục ... 207" (dòng mục lục)
+_RE_TOC_ENTRY_LINE = re.compile(r"^\s*\d+[\.\)]\s+\S.{3,}\s+\d{1,4}\s*$", re.MULTILINE)
+# Nhận dạng heading mục lục dạng "PHẦN X ... 87" hoặc "**PHẦN X ...**" có số cuối
+_RE_TOC_HEADING_LINE = re.compile(
+    r"^\s*(?:\*{1,2})?(?:PHẦN|CHƯƠNG|PHỤ LỤC)\s+\d+.{0,80}\d{1,4}\s*(?:\*{1,2})?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 
-def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None]:
+
+def _is_toc_continuation(page_text: str) -> bool:
     """
-    Trả về (scan_text, toc_start):
+    Kiểm tra một trang có phải là trang tiếp theo của MỤC LỤC không.
+    Hỗ trợ cả hai dạng OCR Landing AI:
+      - Dạng HTML: trang bắt đầu bằng <table ...>
+      - Dạng plain/bold text: có nhiều dòng "số. tên mục ... số trang"
+        hoặc heading PHẦN/CHƯƠNG + danh sách mục có số trang cuối.
+    """
+    stripped = _RE_ANCHOR_STRIP_LEAD.sub("", page_text.lstrip()).lstrip()
+
+    # Trường hợp 1 (cũ): trang bắt đầu bằng <table
+    if stripped.startswith("<table"):
+        return True
+
+    # Trường hợp 2: có ≥ 3 dòng dạng "N. text ... <số trang>"
+    entry_matches = _RE_TOC_ENTRY_LINE.findall(stripped)
+    if len(entry_matches) >= 3:
+        return True
+
+    # Trường hợp 3: có heading PHẦN/CHƯƠNG kèm số trang VÀ ít nhất 1 dòng mục
+    heading_matches = _RE_TOC_HEADING_LINE.findall(stripped)
+    if heading_matches and len(entry_matches) >= 1:
+        return True
+
+    return False
+
+
+def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None, int | None]:
+    """
+    Trả về (scan_text, toc_start, toc_end):
       - scan_text: nội dung gửi cho Phase 1 (n trang đầu, kèm nhãn MỤC LỤC nếu bị phân trang).
       - toc_start: index trang (0-based) của trang MỤC LỤC đầu tiên, hoặc None nếu không có.
+      - toc_end:   index trang (0-based) của trang MỤC LỤC cuối cùng, hoặc None nếu không có.
+                   Phase 2 sẽ bỏ qua tất cả trang <= toc_end để tránh nhầm nội dung MỤC LỤC.
     """
     pages = text.split(PAGE_BREAK)
     total = len(pages)
@@ -290,13 +338,13 @@ def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None]:
             break
 
     if toc_start is None:
-        return get_pages(text, n_pages), None
+        return get_pages(text, n_pages), None, None
 
-    # Tìm các trang tiếp theo của MỤC LỤC (bắt đầu bằng <table> sau khi strip anchor)
+    # Tìm các trang tiếp theo của MỤC LỤC bằng heuristic mở rộng
+    # (hỗ trợ cả dạng <table> và plain/bold text có số trang)
     toc_end = toc_start
     for j in range(toc_start + 1, min(toc_start + 15, total)):
-        stripped = _RE_ANCHOR_STRIP_LEAD.sub("", pages[j].lstrip()).lstrip()
-        if stripped.startswith("<table"):
+        if _is_toc_continuation(pages[j]):
             toc_end = j
         else:
             break
@@ -315,7 +363,7 @@ def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None]:
             f"({toc_end - toc_start} trang tiếp theo được ghép)"
         )
 
-    return PAGE_BREAK.join(base_pages), toc_start
+    return PAGE_BREAK.join(base_pages), toc_start, toc_end
 
 
 def parse_json_response(text: str) -> dict:
@@ -416,6 +464,59 @@ def toc_is_shallow(toc: dict) -> bool:
     return not chapters or get_toc_depth(chapters) < MIN_SECTION_DEPTH
 
 
+def _merge_nodes(base: list, updated: list, depth: int) -> list:
+    """
+    Recursive merge tại bất kỳ cấp nào của cây TOC.
+
+    Quy tắc:
+      • Node khớp title (base ∩ updated):
+          - Base đã có con ở cấp này → đệ quy sâu hơn, KHÔNG thêm anh em mới từ AI
+            (ngăn body-text noise ghi đè cấu trúc Phase 1 đã đúng)
+          - Base chưa có con      → AI fill tự do (đây là mục đích của Phase 2)
+      • Node chỉ có trong base       → giữ nguyên.
+      • Node chỉ có trong updated:
+          - base rỗng → thêm vào (chapter/section mới khám phá)
+          - base đã có nội dung → BỎ QUA (Phase 1 là nguồn tin cậy ở cấp này)
+    """
+    if not updated:
+        return base
+
+    child_key        = _DEPTH_CHILD_KEYS.get(depth)
+    updated_by_title = {n.get("title", ""): n for n in updated if isinstance(n, dict)}
+    base_titles      = {n.get("title", "") for n in base    if isinstance(n, dict)}
+
+    merged: list = []
+    for node in base:
+        if not isinstance(node, dict):
+            continue
+        title = node.get("title", "")
+        if title in updated_by_title and child_key:
+            base_children    = node.get(child_key, [])
+            updated_children = updated_by_title[title].get(child_key, [])
+            if base_children:
+                # Đã có con → chỉ đệ quy sâu hơn, không thêm sibling mới
+                merged_children = _merge_nodes(base_children, updated_children, depth + 1)
+            else:
+                # Chưa có con → AI được fill
+                merged_children = updated_children
+            merged.append({**node, child_key: merged_children})
+        else:
+            merged.append(node)
+
+    # Thêm node mới chỉ khi base rỗng (không có Phase 1 content ở cấp này)
+    if not base:
+        for node in updated:
+            if isinstance(node, dict) and node.get("title", "") not in base_titles:
+                merged.append(node)
+
+    return merged
+
+
+def _merge_chapters(base: list, updated: list) -> list:
+    """Entry point: merge chapter list từ AI vào TOC tích lũy."""
+    return _merge_nodes(base, updated, depth=1)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # TEXT CLEANER (Phase 2)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -445,26 +546,51 @@ def clean_text_for_phase2(text: str) -> str:
 # PHASE RUNNERS
 # ──────────────────────────────────────────────────────────────────────────────
 
-def phase1(client: OpenAI, text: str, filename: str) -> tuple[dict, bool]:
+def phase1(client: OpenAI, text: str, filename: str) -> tuple[dict, bool, int | None]:
     """
-    Trả về (toc_dict, found_toc):
-      - toc_dict: kết quả Phase 1.
-      - found_toc: True nếu phát hiện trang MỤC LỤC trong n trang đầu.
+    Trả về (toc_dict, found_toc, toc_end):
+      - toc_dict:   kết quả Phase 1.
+      - found_toc:  True nếu phát hiện trang MỤC LỤC trong n trang đầu.
+      - toc_end:    index trang (0-based) của trang MỤC LỤC cuối cùng, hoặc None.
     """
-    scan, toc_start = get_scan_for_phase1(text, TOC_SCAN_PAGES)
+    scan, toc_start, toc_end = get_scan_for_phase1(text, TOC_SCAN_PAGES)
     found_toc = toc_start is not None
     label = "(trang đầu + MỤC LỤC ghép đủ)" if found_toc else f"({TOC_SCAN_PAGES} trang đầu)"
     user  = f"source_file = {filename}\n\nNội dung văn bản {label}:\n{scan}"
     print(f"  Phase 1: {len(scan):,} chars ...")
     try:
-        return call_ai(client, PROMPT_PHASE1, user), found_toc
+        return call_ai(client, PROMPT_PHASE1, user), found_toc, toc_end
     except Exception as e:
         print(f"  Phase 1 failed: {e}")
-        return {"chapters": [], "source_file": filename}, found_toc
+        return {"chapters": [], "source_file": filename}, found_toc, toc_end
 
 
-def phase2(client: OpenAI, text: str, metadata: dict, filename: str) -> dict:
-    pages    = text.split(PAGE_BREAK)
+def phase2(
+    client: OpenAI,
+    text: str,
+    metadata: dict,
+    filename: str,
+    body_start_page: int | None = None,
+) -> dict:
+    """
+    Phase 2: đọc nội dung thực để xây TOC chi tiết.
+
+    body_start_page (0-based, inclusive): index trang MỤC LỤC cuối cùng.
+      - Nếu được cung cấp (tài liệu có MỤC LỤC): bỏ qua tất cả trang <= body_start_page
+        để tránh nhầm nội dung trong MỤC LỤC thành chapters thật.
+      - Nếu None (không có MỤC LỤC): đọc toàn bộ văn bản.
+    """
+    pages = text.split(PAGE_BREAK)
+
+    if body_start_page is not None:
+        skip = body_start_page + 1          # số trang bị bỏ (0 .. toc_end)
+        pages = pages[skip:]
+        print(
+            f"  Phase 2: có MỤC LỤC → bỏ {skip} trang đầu (trang 1–{skip}), "
+            f"đọc từ trang {skip + 1} trở xuống ({len(pages)} trang còn lại)"
+        )
+    else:
+        print(f"  Phase 2: không có MỤC LỤC → đọc toàn bộ {len(pages)} trang")
     n_pages  = len(pages)
     meta_str = json.dumps(
         {k: metadata.get(k) for k in _METADATA_KEYS if k != "chapters"},
@@ -477,9 +603,29 @@ def phase2(client: OpenAI, text: str, metadata: dict, filename: str) -> dict:
     try:
         if n_pages <= PHASE2_CHUNK_PAGES:
             # ── Single pass ───────────────────────────────────────────────
-            clean = clean_text_for_phase2(text)
+            # Dùng pages (đã slice bỏ phần MỤC LỤC), KHÔNG dùng text gốc toàn file
+            clean = clean_text_for_phase2(PAGE_BREAK.join(pages))
             print(f"  Phase 2 (single pass): {n_pages} trang, {len(clean):,} ký tự")
-            user     = _user_header() + f"TOÀN BỘ VĂN BẢN ({n_pages} trang):\n\n{clean}"
+
+            shallow_chapters = metadata.get("chapters", [])
+            if shallow_chapters:
+                # Có shallow TOC từ Phase 1 → truyền vào để AI dùng làm nền,
+                # chỉ bổ sung mục con, KHÔNG rebuild lại toàn bộ.
+                shallow_toc_str = json.dumps(
+                    {"chapters": shallow_chapters}, ensure_ascii=False, indent=2
+                )
+                user = (
+                    _user_header()
+                    + "CÂY TOC NÔNG (Phase 1 — DÙNG LÀM NỀN, GIỮ NGUYÊN title mọi node đã có):\n"
+                    + shallow_toc_str
+                    + "\n\nNHIỆM VỤ: Giữ nguyên tất cả chapter/section đã có ở trên."
+                    " Đọc văn bản để TÌM VÀ THÊM các mục con còn thiếu (subsections, subsubsections…)"
+                    " vào đúng chỗ. TUYỆT ĐỐI không đổi tên, tách, hay gộp node đã có.\n\n"
+                    + f"TOÀN BỘ VĂN BẢN ({n_pages} trang):\n\n{clean}"
+                )
+            else:
+                user = _user_header() + f"TOÀN BỘ VĂN BẢN ({n_pages} trang):\n\n{clean}"
+
             result   = call_ai(client, _PROMPT_PHASE2_SINGLE, user)
             chapters = result.get("chapters", metadata.get("chapters", []))
 
@@ -490,25 +636,33 @@ def phase2(client: OpenAI, text: str, metadata: dict, filename: str) -> dict:
                 f"  Phase 2 (iterative): {n_pages} trang → "
                 f"{n_chunks} chunks (≤{PHASE2_CHUNK_PAGES} trang/chunk)"
             )
-            accumulated: list = []
+            # Khởi tạo từ shallow TOC (Phase 1) thay vì rỗng,
+            # để AI dùng làm nền và chỉ thêm mục con, không rebuild lại từ đầu.
+            accumulated: list = list(metadata.get("chapters", []))
 
             for i in range(n_chunks):
                 start = i * PHASE2_CHUNK_PAGES
                 end   = min(start + PHASE2_CHUNK_PAGES, n_pages)
                 clean = clean_text_for_phase2(PAGE_BREAK.join(pages[start:end]))
+                toc_label = (
+                    "TOC NỀN (Phase 1)" if i == 0
+                    else f"TOC tích lũy (sau {i} chunk)"
+                )
                 print(
                     f"    Chunk {i+1}/{n_chunks}: trang {start+1}–{end} / {n_pages},"
                     f" {len(clean):,} ký tự, TOC tích lũy: {len(accumulated)} chapters"
                 )
                 user = (
                     _user_header()
-                    + f"CÂY TOC ĐÃ TÍCH LŨY (từ {i} chunk trước):\n"
+                    + f"CÂY TOC ĐÃ TÍCH LŨY ({toc_label} — GIỮ NGUYÊN title mọi node đã có, chỉ thêm mục con):\n"
                     + json.dumps({"chapters": accumulated}, ensure_ascii=False, indent=2)
                     + f"\n\nĐOẠN VĂN BẢN MỚI — chunk {i+1}/{n_chunks}"
                     + f" (trang {start+1}–{end}, tổng {n_pages} trang):\n\n{clean}"
                 )
                 result      = call_ai(client, _PROMPT_PHASE2_ITERATIVE, user)
-                accumulated = result.get("chapters", accumulated)
+                # Dùng merge thay vì ghi đè trực tiếp — đảm bảo chapters từ
+                # base không bao giờ bị mất dù AI trả về danh sách thiếu.
+                accumulated = _merge_chapters(accumulated, result.get("chapters", []))
 
             chapters = accumulated
             print(f"  Phase 2 iterative done: {len(chapters)} chapters")
@@ -532,7 +686,7 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
     print(f"Processing: {md_path.name}")
     text = md_path.read_text(encoding="utf-8", errors="ignore")
 
-    raw_toc, found_toc = phase1(client, text, md_path.name)
+    raw_toc, found_toc, toc_end = phase1(client, text, md_path.name)
     toc = ensure_schema(raw_toc, md_path.name)
     n_ch  = len(toc.get("chapters", []))
     n_sec = count_sections(toc.get("chapters", []))
@@ -562,7 +716,10 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
         print("  Có MỤC LỤC, TOC đủ sâu → dùng kết quả Phase 1")
 
     if run_phase2:
-        toc = ensure_schema(phase2(client, text, toc, md_path.name), md_path.name)
+        toc = ensure_schema(
+            phase2(client, text, toc, md_path.name, body_start_page=toc_end),
+            md_path.name,
+        )
         print(
             f"  Phase 2 result: "
             f"{len(toc.get('chapters', []))} chapters, "
@@ -585,10 +742,28 @@ def process_file(md_path: Path, client: OpenAI, output_dir: Path) -> None:
 
 
 
+def _coerce_phase1_result(result: object) -> tuple[dict[str, Any], bool, int | None]:
+    if (
+        isinstance(result, tuple)
+        and len(result) == 3
+        and isinstance(result[0], dict)
+        and isinstance(result[1], bool)
+    ):
+        return result[0], result[1], result[2]
+    if (
+        isinstance(result, tuple)
+        and len(result) == 2
+        and isinstance(result[0], dict)
+        and isinstance(result[1], bool)
+    ):
+        return result[0], result[1], None
+    raise ValueError("phase1() must return (toc_dict, found_toc[, toc_end]).")
+
+
 def _run_toc_pipeline(client: OpenAI, text: str, filename: str) -> dict[str, Any]:
     global MIN_SECTION_DEPTH
 
-    raw_toc, found_toc = phase1(client, text, filename)
+    raw_toc, found_toc, toc_end = _coerce_phase1_result(phase1(client, text, filename))
     toc = ensure_schema(raw_toc, filename)
     n_ch = len(toc.get("chapters", []))
     n_sec = count_sections(toc.get("chapters", []))
@@ -616,7 +791,10 @@ def _run_toc_pipeline(client: OpenAI, text: str, filename: str) -> dict[str, Any
         print("  Có MỤC LỤC, TOC đủ sâu → dùng kết quả Phase 1")
 
     if run_phase2:
-        toc = ensure_schema(phase2(client, text, toc, filename), filename)
+        toc = ensure_schema(
+            phase2(client, text, toc, filename, body_start_page=toc_end),
+            filename,
+        )
         print(
             f"  Phase 2 result: "
             f"{len(toc.get('chapters', []))} chapters, "
@@ -672,7 +850,6 @@ class TocBuilderService:
             raise
         except Exception as exc:
             raise UnprocessableEntityException(f"OpenAI completion failed: {exc}") from exc
-
 
 def run(args) -> None:
     load_dotenv(override=False)

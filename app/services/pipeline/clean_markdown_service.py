@@ -4,34 +4,31 @@ import sys
 from pathlib import Path
 
 # ==============================================================================
-# PATTERNS — khớp hoàn toàn với _preprocess() trong CHUNK6_fixed.py
+# PATTERNS — khớp hoàn toàn với _preprocess() trong chunking_service.py
 # ==============================================================================
 
+# Bước 1: xoá thẻ neo rỗng
 _RE_ANCHOR = re.compile(r"<a\s[^>]*></a>", re.IGNORECASE)
-_RE_PAGE_BREAK = re.compile(r"<!--\s*PAGE\s*BREAK\s*-->", re.IGNORECASE)
 
-# Xoá mọi HTML comment NGOẠI TRỪ PAGE_BREAK — regex giống hệt chunk script
+# Bước 2: xoá HTML comment trừ PAGE_BREAK — regex giống hệt chunk script
 _RE_HTML_CMT_NO_PB = re.compile(
     r"<!--(?!\s*PAGE\s*BREAK\s*-->).*?-->",
     re.DOTALL | re.IGNORECASE,
 )
+
+# Bước 3: chuẩn hoá PAGE_BREAK → marker cố định 19 ký tự
+_RE_PAGE_BREAK = re.compile(r"<!--\s*PAGE\s*BREAK\s*-->", re.IGNORECASE)
 
 PAGE_BREAK_MARKER = "<!-- PAGE_BREAK -->"
 assert len(PAGE_BREAK_MARKER) == 19, "marker length must stay 19 to preserve offsets"
 
 
 # ==============================================================================
-# CORE CLEAN — logic đồng nhất với _preprocess() trong CHUNK6_fixed.py
+# CORE CLEAN — logic đồng nhất với _preprocess() trong chunking_service.py
 # ==============================================================================
 
 def clean_markdown(raw: str) -> str:
-    """
-    Làm sạch markdown gốc, giữ nguyên offset cho start_char/end_char.
-    Thứ tự 3 bước phải khớp với _preprocess() trong CHUNK6_fixed.py:
-      1. Xoá thẻ neo rỗng <a ...></a>
-      2. Xoá HTML comment (trừ PAGE_BREAK)
-      3. Chuẩn hoá mọi biến thể PAGE_BREAK → marker cố định 19 ký tự
-    """
+
     text = _RE_ANCHOR.sub("", raw)
     text = _RE_HTML_CMT_NO_PB.sub("", text)
     text = _RE_PAGE_BREAK.sub(PAGE_BREAK_MARKER, text)
@@ -55,22 +52,22 @@ def clean_markdown_file(
 
 
 # ==============================================================================
-# VERIFY — tính đúng expected_len bằng cách đếm tất cả ký tự bị xoá
+# VERIFY — tính expected_len theo đúng thứ tự 3 bước của _preprocess()
 # ==============================================================================
 
 def verify_offsets(raw: str, clean: str) -> dict:
-    # Ký tự bị xoá bởi bước 1: thẻ neo
+    """
+    Kiểm tra độ dài và số PAGE_BREAK của clean text.
+    Tính toán theo đúng thứ tự 3 bước: anchor → html_comment → page_break.
+    """
     anchor_chars = sum(len(m.group()) for m in _RE_ANCHOR.finditer(raw))
 
-    # Ký tự bị xoá bởi bước 2: HTML comment (không phải PAGE_BREAK)
-    # Phải tính trên raw đã qua bước 1 để chính xác, nhưng ở đây tính gần đúng
-    # trên raw gốc vì anchor không thể nằm bên trong HTML comment hợp lệ
-    html_cmt_chars = sum(len(m.group()) for m in _RE_HTML_CMT_NO_PB.finditer(raw))
+    text_after_anchor = _RE_ANCHOR.sub("", raw)
+    html_cmt_chars = sum(len(m.group()) for m in _RE_HTML_CMT_NO_PB.finditer(text_after_anchor))
 
-    # Bước 3 chỉ thay thế (không thêm/bớt ký tự tổng), TRỪ khi biến thể gốc
-    # có độ dài khác 19 → tính delta
+    text_after_cmt = _RE_HTML_CMT_NO_PB.sub("", text_after_anchor)
     pb_delta = 0
-    for m in _RE_PAGE_BREAK.finditer(raw):
+    for m in _RE_PAGE_BREAK.finditer(text_after_cmt):
         pb_delta += len(PAGE_BREAK_MARKER) - len(m.group())
 
     expected_len = len(raw) - anchor_chars - html_cmt_chars + pb_delta
@@ -94,14 +91,15 @@ def verify_offsets(raw: str, clean: str) -> dict:
 
 
 # ==============================================================================
-# CẤU HÌNH ĐẦU VÀO / ĐẦU RA
+# CẤU HÌNH ĐẦU VÀO / ĐẦU RA (WEB SERVICE)
 # ==============================================================================
 
-# 1. ĐẦU VÀO: Thư mục chứa các file Markdown OCR thô (đầu ra Bước 1 / 02_ocr_markdown)
+# 1. ĐẦU VÀO: Thư mục chứa các file Markdown OCR thô
+#    Trỏ vào thư mục mà web service đọc file OCR từ đó
 INPUT_DIR = Path("./data/02_ocr_markdown")
 
-# 2. ĐẦU RA: Thư mục chứa Markdown sạch — CHUNK6_fixed.py có thể đọc trực tiếp từ đây
-#    (thay MD_INPUT_DIR trong chunk script thành thư mục này nếu muốn dùng file đã clean sẵn)
+# 2. ĐẦU RA: Thư mục lưu Markdown sạch
+#    chunking_service_fixed.py sẽ đọc từ đây nếu MD_INPUT_DIR được trỏ vào thư mục này
 OUTPUT_DIR_DEFAULT: str = "./data/05_clean_markdown"
 
 # Danh sách file cụ thể (để rỗng [] để chạy toàn bộ INPUT_DIR)
@@ -115,7 +113,7 @@ INPUT_FILES: list[str] = []
 def _parse_args() -> tuple[list[Path], Path | None]:
     import argparse
     parser = argparse.ArgumentParser(
-        description="Làm sạch markdown gốc để start_char/end_char trong chunk JSON chính xác.",
+        description="Làm sạch markdown gốc để start_char/end_char trong chunk JSON (web) chính xác.",
     )
     parser.add_argument(
         "files", nargs="*",
