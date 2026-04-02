@@ -3,10 +3,13 @@ import { useNavigate, Link } from 'react-router-dom'
 import { ChevronLeft, Save } from 'lucide-react'
 import { api } from '../lib/api'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
+import SelectOrCustomInputField from '../components/SelectOrCustomInputField'
+import useGuidelineFilterOptions from '../hooks/useGuidelineFilterOptions'
 import type { CreateGuidelineResponse } from '../lib/types'
 
 export default function InsertPage() {
   const navigate = useNavigate()
+  const filterOptions = useGuidelineFilterOptions()
 
   const [title, setTitle] = useState('')
   const [tenBenh, setTenBenh] = useState('')
@@ -83,26 +86,22 @@ export default function InsertPage() {
                   placeholder="Ví dụ: Hướng dẫn chẩn đoán và điều trị hen phế quản"
                 />
               </div>
-              <div className="form-group">
-                <label className="form-label">Tên bệnh</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={tenBenh}
-                  onChange={e => setTenBenh(e.target.value)}
-                  placeholder="Ví dụ: Tăng huyết áp"
-                />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Đơn vị ban hành</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={publisher}
-                  onChange={e => setPublisher(e.target.value)}
-                  placeholder="Ví dụ: Bộ Y tế"
-                />
-              </div>
+              <SelectOrCustomInputField
+                label="Tên bệnh"
+                options={filterOptions.ten_benhs}
+                value={tenBenh}
+                onChange={setTenBenh}
+                selectPlaceholder="-- Chọn tên bệnh --"
+                customPlaceholder="Nhập tên bệnh"
+              />
+              <SelectOrCustomInputField
+                label="Đơn vị ban hành"
+                options={filterOptions.publishers}
+                value={publisher}
+                onChange={setPublisher}
+                selectPlaceholder="-- Chọn đơn vị ban hành --"
+                customPlaceholder="Nhập đơn vị ban hành"
+              />
               <div className="form-group">
                 <label className="form-label">Chuyên khoa</label>
                 <select className="form-select" value={chuyenKhoa} onChange={e => setChuyenKhoa(e.target.value)}>

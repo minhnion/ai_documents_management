@@ -7,6 +7,7 @@ interface TextContentProps {
   toc: WorkspaceSectionNode[]
   canEdit: boolean
   activeSectionId: number | null
+  activeSectionScrollBehavior?: ScrollBehavior
   sectionEdits: Record<number, { heading: string; content: string }>
   savingSections: Record<number, boolean>
   onSectionEditStart: (
@@ -38,6 +39,7 @@ export default function TextContent({
   toc,
   canEdit,
   activeSectionId,
+  activeSectionScrollBehavior = 'smooth',
   sectionEdits,
   savingSections,
   onSectionEditStart,
@@ -52,9 +54,9 @@ export default function TextContent({
     if (activeSectionId == null) return
     const el = sectionRefs.current.get(activeSectionId)
     if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      el.scrollIntoView({ behavior: activeSectionScrollBehavior, block: 'start' })
     }
-  }, [activeSectionId])
+  }, [activeSectionId, activeSectionScrollBehavior])
 
   const setRef = useCallback((sectionId: number) => (el: HTMLDivElement | null) => {
     if (el) {

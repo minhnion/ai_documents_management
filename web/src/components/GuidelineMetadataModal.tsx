@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Save, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
+import SelectOrCustomInputField from './SelectOrCustomInputField'
+import useGuidelineFilterOptions from '../hooks/useGuidelineFilterOptions'
 import type { GuidelineListItem, UpdateGuidelineMetadataResponse } from '../lib/types'
 
 interface Props {
@@ -11,6 +13,7 @@ interface Props {
 }
 
 export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: Props) {
+  const filterOptions = useGuidelineFilterOptions()
   const [title, setTitle] = useState(guideline.title)
   const [tenBenh, setTenBenh] = useState(guideline.ten_benh ?? '')
   const [publisher, setPublisher] = useState(guideline.publisher ?? '')
@@ -81,26 +84,24 @@ export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: 
                 disabled={submitting}
               />
             </div>
-            <div className="form-group">
-              <label className="form-label">Tên bệnh</label>
-              <input
-                type="text"
-                className="form-input"
-                value={tenBenh}
-                onChange={event => setTenBenh(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
-            <div className="form-group">
-              <label className="form-label">Đơn vị ban hành</label>
-              <input
-                type="text"
-                className="form-input"
-                value={publisher}
-                onChange={event => setPublisher(event.target.value)}
-                disabled={submitting}
-              />
-            </div>
+            <SelectOrCustomInputField
+              label="Tên bệnh"
+              options={filterOptions.ten_benhs}
+              value={tenBenh}
+              onChange={setTenBenh}
+              disabled={submitting}
+              selectPlaceholder="-- Chọn tên bệnh --"
+              customPlaceholder="Nhập tên bệnh"
+            />
+            <SelectOrCustomInputField
+              label="Đơn vị ban hành"
+              options={filterOptions.publishers}
+              value={publisher}
+              onChange={setPublisher}
+              disabled={submitting}
+              selectPlaceholder="-- Chọn đơn vị ban hành --"
+              customPlaceholder="Nhập đơn vị ban hành"
+            />
             <div className="form-group">
               <label className="form-label">Chuyên khoa</label>
               <select

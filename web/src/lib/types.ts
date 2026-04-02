@@ -46,6 +46,11 @@ export interface GuidelineListResponse {
   page_size: number
 }
 
+export interface GuidelineFilterOptionsResponse {
+  publishers: string[]
+  ten_benhs: string[]
+}
+
 export interface GuidelineVersionItem {
   version_id: number
   guideline_id: number

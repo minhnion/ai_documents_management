@@ -21,6 +21,69 @@ type SectionEditDraft = {
 }
 
 const JOB_POLL_INTERVAL_MS = 3000
+const PDF_SYNC_SUPPRESS_MS = 1200
+
+function flattenSectionNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
+  const result: WorkspaceSectionNode[] = []
+  for (const node of nodes) {
+    result.push(node)
+    if (node.children.length > 0) {
+      result.push(...flattenSectionNodes(node.children))
+    }
+  }
+  return result
+}
+
+function getPageSpan(node: WorkspaceSectionNode): number {
+  const start = node.page_start ?? Number.MAX_SAFE_INTEGER
+  const end = node.page_end ?? node.page_start ?? Number.MAX_SAFE_INTEGER
+  return end - start
+}
+
+function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): WorkspaceSectionNode | null {
+  const pagedNodes = nodes.filter(node => node.page_start !== null && node.page_start !== undefined)
+  if (pagedNodes.length === 0) {
+    return null
+  }
+
+  const containingNodes = pagedNodes
+    .filter(node => {
+      const start = node.page_start ?? 0
+      const end = node.page_end ?? node.page_start ?? start
+      return start <= page && page <= end
+    })
+    .sort((left, right) => {
+      const spanDiff = getPageSpan(left) - getPageSpan(right)
+      if (spanDiff !== 0) return spanDiff
+      const levelDiff = (right.level ?? 0) - (left.level ?? 0)
+      if (levelDiff !== 0) return levelDiff
+      return (right.page_start ?? 0) - (left.page_start ?? 0)
+    })
+
+  if (containingNodes.length > 0) {
+    return containingNodes[0]
+  }
+
+  const precedingNodes = pagedNodes
+    .filter(node => (node.page_start ?? 0) <= page)
+    .sort((left, right) => {
+      const startDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      if (startDiff !== 0) return startDiff
+      return (right.level ?? 0) - (left.level ?? 0)
+    })
+  if (precedingNodes.length > 0) {
+    return precedingNodes[0]
+  }
+
+  const followingNodes = pagedNodes
+    .filter(node => (node.page_start ?? Number.MAX_SAFE_INTEGER) >= page)
+    .sort((left, right) => {
+      const startDiff = (left.page_start ?? Number.MAX_SAFE_INTEGER) - (right.page_start ?? Number.MAX_SAFE_INTEGER)
+      if (startDiff !== 0) return startDiff
+      return (right.level ?? 0) - (left.level ?? 0)
+    })
+  return followingNodes[0] ?? null
+}
 
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
@@ -31,6 +94,7 @@ export default function ViewPage() {
   const focusWasInContentPaneRef = useRef(false)
   const pipelinePollTimerRef = useRef<number | null>(null)
   const chunkPollTimerRef = useRef<number | null>(null)
+  const suppressPdfSyncUntilRef = useRef(0)
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
@@ -48,11 +112,14 @@ export default function ViewPage() {
   const [pipelineProgress, setPipelineProgress] = useState<VersionIngestionStatusResponse | null>(null)
   const [pipelineError, setPipelineError] = useState('')
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
+  const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior>('smooth')
+  const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; key: number | null }>({ page: undefined, key: null })
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
   const unsavedEditCount = useMemo(() => Object.keys(sectionEdits).length, [sectionEdits])
   const pipelineStatus = pipelineProgress?.status ?? 'idle'
   const pipelineIsActive = pipelineStatus === 'queued' || pipelineStatus === 'running'
+  const flattenedSections = useMemo(() => flattenSectionNodes(workspace?.toc ?? []), [workspace?.toc])
 
   const clearPipelinePolling = useCallback(() => {
     if (pipelinePollTimerRef.current !== null) {
@@ -71,6 +138,18 @@ export default function ViewPage() {
   useEffect(() => {
     setTargetVersionId(versionId)
   }, [versionId])
+
+  const handleTocSelect = useCallback((node: WorkspaceSectionNode) => {
+    setContentScrollBehavior('smooth')
+    setActiveSection(node)
+    if (node.page_start && node.page_start > 0) {
+      suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
+      setPdfJumpState({
+        page: node.page_start,
+        key: node.section_id,
+      })
+    }
+  }, [])
 
   const loadWorkspaceData = useCallback(async (
     nextVersionId: string,
@@ -202,6 +281,9 @@ export default function ViewPage() {
     setPipelineError('')
     setPipelineProgress(null)
     setChunkProgress(null)
+    setPdfJumpState({ page: undefined, key: null })
+    setContentScrollBehavior('smooth')
+    suppressPdfSyncUntilRef.current = 0
     clearPipelinePolling()
     clearChunkPolling()
 
@@ -218,6 +300,16 @@ export default function ViewPage() {
       clearChunkPolling()
     }
   }, [guidelineId, targetVersionId, loadWorkspaceData, pollPipelineStatus, pollChunkRebuildStatus, clearPipelinePolling, clearChunkPolling])
+
+  const handlePdfVisiblePageChange = useCallback((visiblePage: number) => {
+    if (Date.now() < suppressPdfSyncUntilRef.current) return
+    if (unsavedEditCount > 0) return
+    const nextSection = findBestSectionForPage(flattenedSections, visiblePage)
+    if (!nextSection) return
+    if (nextSection.section_id === activeSection?.section_id) return
+    setContentScrollBehavior('auto')
+    setActiveSection(nextSection)
+  }, [activeSection?.section_id, flattenedSections, unsavedEditCount])
 
   useEffect(() => {
     const pane = contentPaneRef.current
@@ -436,7 +528,7 @@ export default function ViewPage() {
             <TocTree
               nodes={workspace.toc}
               activeId={activeSection?.section_id ?? null}
-              onSelect={setActiveSection}
+              onSelect={handleTocSelect}
             />
           )}
         </div>
@@ -538,6 +630,7 @@ export default function ViewPage() {
             toc={workspace.toc}
             canEdit={canEdit && !pipelineIsActive}
             activeSectionId={activeSection?.section_id ?? null}
+            activeSectionScrollBehavior={contentScrollBehavior}
             sectionEdits={sectionEdits}
             savingSections={
               saving
@@ -555,8 +648,9 @@ export default function ViewPage() {
       <div className="pdf-pane">
         <PdfViewer
           documentId={documentId}
-          page={activeSection?.page_start ?? undefined}
-          pageJumpKey={activeSection?.section_id ?? null}
+          page={pdfJumpState.page}
+          pageJumpKey={pdfJumpState.key}
+          onVisiblePageChange={handlePdfVisiblePageChange}
         />
       </div>
     </div>

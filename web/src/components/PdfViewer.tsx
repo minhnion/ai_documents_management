@@ -38,6 +38,7 @@ interface PdfViewerProps {
   documentId: number | null
   page?: number
   pageJumpKey?: number | null
+  onVisiblePageChange?: (page: number) => void
 }
 
 const isExpectedPdfLoadAbort = (error: unknown) => {
@@ -50,7 +51,7 @@ const isExpectedPdfLoadAbort = (error: unknown) => {
   )
 }
 
-export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerProps) {
+export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePageChange }: PdfViewerProps) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -70,8 +71,13 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
   const queuedRenderRef = useRef<{ doc: PDFDocumentProxy; scale: number } | null>(null)
   const currentDocRef = useRef<PDFDocumentProxy | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
+  const currentPageRef = useRef(1)
 
   const renderScale = getZoomScale(fitScale, zoomLevel)
+
+  useEffect(() => {
+    currentPageRef.current = currentPage
+  }, [currentPage])
 
   const loadPdfBlob = useCallback(async () => {
     if (!documentId) return null
@@ -310,8 +316,12 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
         })
 
         const nextPage = maxIdx + 1
-        setCurrentPage(nextPage)
-        setPageInputValue(String(nextPage))
+        if (nextPage !== currentPageRef.current) {
+          currentPageRef.current = nextPage
+          setCurrentPage(nextPage)
+          setPageInputValue(String(nextPage))
+          onVisiblePageChange?.(nextPage)
+        }
       },
       { root: containerRef.current, threshold: [0, 0.25, 0.5, 0.75, 1.0] }
     )
@@ -323,7 +333,7 @@ export default function PdfViewer({ documentId, page, pageJumpKey }: PdfViewerPr
     })
 
     return () => observerRef.current?.disconnect()
-  }, [renderedPages])
+  }, [onVisiblePageChange, renderedPages])
 
   useEffect(() => {
     if (!page || page < 1) return
