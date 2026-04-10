@@ -1,10 +1,32 @@
 services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: guideline-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-guideline_management}
+    ports:
+      - "${DB_PORT:-5436}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-guideline_management}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: guideline-backend
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -13,10 +35,12 @@ services:
       HOST: "0.0.0.0"
       PORT: "8000"
       LOCAL_STORAGE_ROOT: /app/uploads
-      DB_HOST: ${DB_HOST_DOCKER:-host.docker.internal}
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      DB_HOST: db
+      DB_PORT: "5432"
     ports:
       - "8000:8000"
     volumes:
       - ./uploads:/app/uploads
+
+volumes:
+  postgres_data:
