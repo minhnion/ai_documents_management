@@ -28,7 +28,7 @@ PAGE_THRESHOLD_FOR_DEPTH  = 99
 MIN_SECTION_DEPTH         = MIN_SECTION_DEPTH_LONG
 PHASE2_CHUNK_PAGES        = 50
 
-MIN_SECTIONS_THRESHOLD = MIN_SECTION_DEPTH_SHORT
+
 
 _METADATA_KEYS = [
     "title", "publisher", "decision_number", "specialty",

@@ -47,6 +47,8 @@ alembic/versions/__pycache__/
 # Uploads / storage (configure per deployment)
 uploads/
 examples/
+*.sql
+*.gz
 
 # Temporary files (IDE / tooling)
 tmpclaude*
