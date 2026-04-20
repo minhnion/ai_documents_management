@@ -35,6 +35,8 @@ class Section(Base):
     order_index: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    start_y: Mapped[float | None] = mapped_column(Float, nullable=True)
+    end_y: Mapped[float | None] = mapped_column(Float, nullable=True)
     match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_suspect: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"

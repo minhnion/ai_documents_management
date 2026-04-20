@@ -115,6 +115,22 @@ async def migrate_sections_quality_schema() -> None:
             text(
                 """
                 ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS start_y DOUBLE PRECISION
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS end_y DOUBLE PRECISION
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
                 ADD COLUMN IF NOT EXISTS match_score DOUBLE PRECISION
                 """
             )

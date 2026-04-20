@@ -37,7 +37,8 @@ class PipelinePersistenceService:
         version_id: int,
         document: Document,
         chunk_payload: dict[str, Any],
-        clean_text: str,
+        clean_text: str | None,
+        page_count: int | None = None,
     ) -> dict[str, int]:
         await self.db.execute(delete(Section).where(Section.version_id == version_id))
         await self.db.flush()
@@ -54,7 +55,7 @@ class PipelinePersistenceService:
             )
             section_count += inserted
 
-        document.page_count = self._estimate_page_count(clean_text)
+        document.page_count = page_count if page_count is not None else self._estimate_page_count(clean_text)
         return {
             'section_count': section_count,
             'chunk_count': 0,
@@ -89,6 +90,8 @@ class PipelinePersistenceService:
             end_char=node.get('end_char'),
             page_start=node.get('page_start'),
             page_end=node.get('page_end'),
+            start_y=node.get('start_y'),
+            end_y=node.get('end_y'),
             match_score=score,
             is_suspect=is_suspect,
             content=node.get('content'),
@@ -114,13 +117,15 @@ class PipelinePersistenceService:
         self,
         *,
         artifact_dir: Path,
-        raw_md: str,
-        clean_md: str,
-        toc: dict[str, Any],
+        raw_md: str | None,
+        clean_md: str | None,
+        toc: Any,
         chunk_payload: dict[str, Any],
     ) -> None:
-        (artifact_dir / OCR_MD_FILENAME).write_text(raw_md, encoding='utf-8')
-        (artifact_dir / CLEAN_MD_FILENAME).write_text(clean_md, encoding='utf-8')
+        if raw_md is not None:
+            (artifact_dir / OCR_MD_FILENAME).write_text(raw_md, encoding='utf-8')
+        if clean_md is not None:
+            (artifact_dir / CLEAN_MD_FILENAME).write_text(clean_md, encoding='utf-8')
         (artifact_dir / TOC_FILENAME).write_text(
             json.dumps(toc, ensure_ascii=False, indent=2),
             encoding='utf-8',
@@ -141,5 +146,7 @@ class PipelinePersistenceService:
                     children.append(child)
         return children
 
-    def _estimate_page_count(self, clean_text: str) -> int:
+    def _estimate_page_count(self, clean_text: str | None) -> int:
+        if not clean_text:
+            return 0
         return clean_text.count(PAGE_BREAK_MARKER) + 1

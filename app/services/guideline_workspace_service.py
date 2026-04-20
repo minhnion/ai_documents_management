@@ -123,6 +123,8 @@ class GuidelineWorkspaceService:
                 "end_char": section.end_char,
                 "page_start": section.page_start,
                 "page_end": section.page_end,
+                "start_y": section.start_y,
+                "end_y": section.end_y,
                 "score": score,
                 "is_suspect": bool(section.is_suspect)
                 if score is None

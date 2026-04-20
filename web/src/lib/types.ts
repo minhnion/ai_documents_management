@@ -124,6 +124,8 @@ export interface WorkspaceSectionNode {
   end_char: number | null
   page_start: number | null
   page_end: number | null
+  start_y: number | null
+  end_y: number | null
   score: number | null
   is_suspect: boolean
   content: string | null

@@ -201,6 +201,8 @@ class WorkspaceSectionNode(BaseModel):
     end_char: int | None = None
     page_start: int | None = None
     page_end: int | None = None
+    start_y: float | None = None
+    end_y: float | None = None
     score: float | None = None
     is_suspect: bool = False
     content: str | None = None

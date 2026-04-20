@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_ROOT: str = "uploads"
     SCORE_THRESHOLD: float = 0.65
     CHUNK_MAX_CHARS: int = 3000
+    DOCUMENT_PIPELINE_MODE: str = "ocr_llm"
 
     # API
     API_V1_PREFIX: str = "/api/v1"
