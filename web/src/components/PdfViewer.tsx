@@ -37,8 +37,10 @@ export const getZoomScale = (fitScale: number, zoomLevel: number) => {
 interface PdfViewerProps {
   documentId: number | null
   page?: number
+  pageY?: number | null
   pageJumpKey?: number | null
   onVisiblePageChange?: (page: number) => void
+  onVisibleLocationChange?: (page: number, normalizedY: number) => void
 }
 
 const isExpectedPdfLoadAbort = (error: unknown) => {
@@ -51,7 +53,19 @@ const isExpectedPdfLoadAbort = (error: unknown) => {
   )
 }
 
-export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePageChange }: PdfViewerProps) {
+function clampNormalizedY(value: number | null | undefined): number {
+  if (value == null || Number.isNaN(value)) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
+export default function PdfViewer({
+  documentId,
+  page,
+  pageY,
+  pageJumpKey,
+  onVisiblePageChange,
+  onVisibleLocationChange,
+}: PdfViewerProps) {
   const [pdfDoc, setPdfDoc] = useState<PDFDocumentProxy | null>(null)
   const [numPages, setNumPages] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -72,8 +86,37 @@ export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePage
   const currentDocRef = useRef<PDFDocumentProxy | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
   const currentPageRef = useRef(1)
+  const lastReportedLocationRef = useRef<{ page: number; y: number } | null>(null)
 
   const renderScale = getZoomScale(fitScale, zoomLevel)
+
+  const getNormalizedVisibleY = useCallback((pageNumber: number) => {
+    const container = containerRef.current
+    const pageElement = pageRefs.current[pageNumber - 1]
+    if (!container || !pageElement || pageElement.offsetHeight <= 0) {
+      return 0
+    }
+
+    const offsetWithinPage = container.scrollTop - pageElement.offsetTop
+    return clampNormalizedY(offsetWithinPage / pageElement.offsetHeight)
+  }, [])
+
+  const emitVisibleLocation = useCallback((pageNumber: number) => {
+    if (!onVisibleLocationChange) return
+
+    const normalizedY = getNormalizedVisibleY(pageNumber)
+    const previous = lastReportedLocationRef.current
+    if (
+      previous
+      && previous.page === pageNumber
+      && Math.abs(previous.y - normalizedY) < 0.01
+    ) {
+      return
+    }
+
+    lastReportedLocationRef.current = { page: pageNumber, y: normalizedY }
+    onVisibleLocationChange(pageNumber, normalizedY)
+  }, [getNormalizedVisibleY, onVisibleLocationChange])
 
   useEffect(() => {
     currentPageRef.current = currentPage
@@ -215,6 +258,7 @@ export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePage
     setPageInputValue('1')
     setFitScale(DEFAULT_SCALE)
     setZoomLevel(0)
+    lastReportedLocationRef.current = null
     currentDocRef.current = null
     pageRefs.current = []
     canvasRefs.current = []
@@ -321,6 +365,7 @@ export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePage
           setCurrentPage(nextPage)
           setPageInputValue(String(nextPage))
           onVisiblePageChange?.(nextPage)
+          emitVisibleLocation(nextPage)
         }
       },
       { root: containerRef.current, threshold: [0, 0.25, 0.5, 0.75, 1.0] }
@@ -333,17 +378,51 @@ export default function PdfViewer({ documentId, page, pageJumpKey, onVisiblePage
     })
 
     return () => observerRef.current?.disconnect()
-  }, [onVisiblePageChange, renderedPages])
+  }, [emitVisibleLocation, onVisiblePageChange, renderedPages])
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container || !onVisibleLocationChange) return
+
+    let frameId: number | null = null
+
+    const handleScroll = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null
+        emitVisibleLocation(currentPageRef.current)
+      })
+    }
+
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    handleScroll()
+
+    return () => {
+      container.removeEventListener('scroll', handleScroll)
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [emitVisibleLocation, onVisibleLocationChange, renderedPages])
 
   useEffect(() => {
     if (!page || page < 1) return
     setCurrentPage(page)
     setPageInputValue(String(page))
     const el = pageRefs.current[page - 1]
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    const container = containerRef.current
+    if (el && container) {
+      const normalizedTargetY = pageY == null ? null : clampNormalizedY(pageY)
+      if (normalizedTargetY == null) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      } else {
+        const targetTop = Math.max(el.offsetTop + el.offsetHeight * normalizedTargetY - 12, 0)
+        container.scrollTo({ top: targetTop, behavior: 'smooth' })
+      }
     }
-  }, [page, pageJumpKey, renderedPages])
+  }, [page, pageJumpKey, pageY, renderedPages])
 
   const reload = () => {
     setReloadKey((value) => value + 1)

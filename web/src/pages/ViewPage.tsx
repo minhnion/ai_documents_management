@@ -23,6 +23,11 @@ type SectionEditDraft = {
 const JOB_POLL_INTERVAL_MS = 3000
 const PDF_SYNC_SUPPRESS_MS = 1200
 
+function clampNormalizedY(value: number | null | undefined): number {
+  if (value == null || Number.isNaN(value)) return 0
+  return Math.max(0, Math.min(1, value))
+}
+
 function flattenSectionNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
   const result: WorkspaceSectionNode[] = []
   for (const node of nodes) {
@@ -38,6 +43,67 @@ function getPageSpan(node: WorkspaceSectionNode): number {
   const start = node.page_start ?? Number.MAX_SAFE_INTEGER
   const end = node.page_end ?? node.page_start ?? Number.MAX_SAFE_INTEGER
   return end - start
+}
+
+function workspaceHasRenderableSections(data: VersionWorkspaceResponse | null | undefined): boolean {
+  return Boolean(data && (data.section_count > 0 || data.toc.length > 0))
+}
+
+function nodeContainsLocation(
+  node: WorkspaceSectionNode,
+  page: number,
+  normalizedY: number,
+): boolean {
+  if (node.page_start == null) {
+    return false
+  }
+
+  const startPage = node.page_start
+  const endPage = node.page_end ?? startPage
+  if (page < startPage || page > endPage) {
+    return false
+  }
+
+  const hasStartY = node.start_y != null
+  const hasEndY = node.end_y != null
+  const startY = clampNormalizedY(node.start_y)
+  const endY = clampNormalizedY(node.end_y)
+  const currentY = clampNormalizedY(normalizedY)
+
+  if (startPage === endPage) {
+    if (!hasStartY && !hasEndY) {
+      return true
+    }
+    return startY <= currentY && currentY <= endY
+  }
+
+  if (page === startPage && hasStartY && currentY < startY) {
+    return false
+  }
+
+  if (page === endPage && hasEndY && currentY > endY) {
+    return false
+  }
+
+  return true
+}
+
+function getLocationSpan(node: WorkspaceSectionNode): number {
+  if (node.page_start == null) {
+    return Number.MAX_SAFE_INTEGER
+  }
+
+  const startPage = node.page_start
+  const endPage = node.page_end ?? startPage
+  if (startPage !== endPage) {
+    return endPage - startPage + 1
+  }
+
+  if (node.start_y == null && node.end_y == null) {
+    return 1
+  }
+
+  return Math.max(clampNormalizedY(node.end_y) - clampNormalizedY(node.start_y), 0)
 }
 
 function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): WorkspaceSectionNode | null {
@@ -85,6 +151,41 @@ function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): Wo
   return followingNodes[0] ?? null
 }
 
+function findBestSectionForLocation(
+  nodes: WorkspaceSectionNode[],
+  page: number,
+  normalizedY: number,
+): WorkspaceSectionNode | null {
+  const pagedNodes = nodes.filter(node => node.page_start != null)
+  if (pagedNodes.length === 0) {
+    return null
+  }
+
+  const containingNodes = pagedNodes
+    .filter(node => nodeContainsLocation(node, page, normalizedY))
+    .sort((left, right) => {
+      const pageSpanDiff = getPageSpan(left) - getPageSpan(right)
+      if (pageSpanDiff !== 0) return pageSpanDiff
+
+      const locationSpanDiff = getLocationSpan(left) - getLocationSpan(right)
+      if (locationSpanDiff !== 0) return locationSpanDiff
+
+      const levelDiff = (right.level ?? 0) - (left.level ?? 0)
+      if (levelDiff !== 0) return levelDiff
+
+      const startPageDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      if (startPageDiff !== 0) return startPageDiff
+
+      return clampNormalizedY(right.start_y) - clampNormalizedY(left.start_y)
+    })
+
+  if (containingNodes.length > 0) {
+    return containingNodes[0]
+  }
+
+  return findBestSectionForPage(nodes, page)
+}
+
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
@@ -95,6 +196,7 @@ export default function ViewPage() {
   const pipelinePollTimerRef = useRef<number | null>(null)
   const chunkPollTimerRef = useRef<number | null>(null)
   const suppressPdfSyncUntilRef = useRef(0)
+  const workspaceRef = useRef<VersionWorkspaceResponse | null>(null)
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
@@ -113,7 +215,11 @@ export default function ViewPage() {
   const [pipelineError, setPipelineError] = useState('')
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
   const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior>('smooth')
-  const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; key: number | null }>({ page: undefined, key: null })
+  const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; y?: number | null; key: number | null }>({
+    page: undefined,
+    y: null,
+    key: null,
+  })
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
   const unsavedEditCount = useMemo(() => Object.keys(sectionEdits).length, [sectionEdits])
@@ -139,6 +245,10 @@ export default function ViewPage() {
     setTargetVersionId(versionId)
   }, [versionId])
 
+  useEffect(() => {
+    workspaceRef.current = workspace
+  }, [workspace])
+
   const handleTocSelect = useCallback((node: WorkspaceSectionNode) => {
     setContentScrollBehavior('smooth')
     setActiveSection(node)
@@ -146,6 +256,7 @@ export default function ViewPage() {
       suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
       setPdfJumpState({
         page: node.page_start,
+        y: node.start_y,
         key: node.section_id,
       })
     }
@@ -154,8 +265,8 @@ export default function ViewPage() {
   const loadWorkspaceData = useCallback(async (
     nextVersionId: string,
     options?: { suppressLoading?: boolean },
-  ) => {
-    if (!guidelineId) return
+  ): Promise<VersionWorkspaceResponse | null> => {
+    if (!guidelineId) return null
 
     const suppressLoading = options?.suppressLoading ?? false
     if (!suppressLoading) {
@@ -185,9 +296,11 @@ export default function ViewPage() {
       if (nextVersionId !== versionId) {
         navigate(`/guidelines/${guidelineId}/versions/${nextVersionId}`, { replace: true })
       }
+      return wsRes.data
     } catch (error) {
       console.error(error)
       setWorkspace(null)
+      return null
     } finally {
       if (!suppressLoading) {
         setLoading(false)
@@ -211,13 +324,36 @@ export default function ViewPage() {
       setPipelineError(data.status === 'failed' ? (data.error_message || 'Xử lý tài liệu thất bại.') : '')
 
       if (data.status === 'queued' || data.status === 'running') {
+        if (workspaceHasRenderableSections(workspaceRef.current)) {
+          setPipelineProgress({
+            ...data,
+            status: 'succeeded',
+            version_status: workspaceRef.current?.version.status ?? data.version_status,
+          })
+          setPipelineError('')
+          return
+        }
+
+        if (refreshWorkspaceOnFinish) {
+          const refreshedWorkspace = await loadWorkspaceData(nextVersionId, { suppressLoading: true })
+          if (workspaceHasRenderableSections(refreshedWorkspace)) {
+            setPipelineProgress({
+              ...data,
+              status: 'succeeded',
+              version_status: refreshedWorkspace?.version.status ?? data.version_status,
+            })
+            setPipelineError('')
+            return
+          }
+        }
+
         pipelinePollTimerRef.current = window.setTimeout(() => {
           void pollPipelineStatus(nextVersionId, { refreshWorkspaceOnFinish: true })
         }, JOB_POLL_INTERVAL_MS)
         return
       }
 
-      if ((data.status === 'succeeded' || data.status === 'failed') && refreshWorkspaceOnFinish) {
+      if (data.status === 'succeeded' || data.status === 'failed') {
         await loadWorkspaceData(nextVersionId, { suppressLoading: true })
       }
     } catch (error: any) {
@@ -281,7 +417,7 @@ export default function ViewPage() {
     setPipelineError('')
     setPipelineProgress(null)
     setChunkProgress(null)
-    setPdfJumpState({ page: undefined, key: null })
+    setPdfJumpState({ page: undefined, y: null, key: null })
     setContentScrollBehavior('smooth')
     suppressPdfSyncUntilRef.current = 0
     clearPipelinePolling()
@@ -301,15 +437,27 @@ export default function ViewPage() {
     }
   }, [guidelineId, targetVersionId, loadWorkspaceData, pollPipelineStatus, pollChunkRebuildStatus, clearPipelinePolling, clearChunkPolling])
 
-  const handlePdfVisiblePageChange = useCallback((visiblePage: number) => {
+  const handlePdfVisibleLocationChange = useCallback((visiblePage: number, normalizedY: number) => {
     if (Date.now() < suppressPdfSyncUntilRef.current) return
     if (unsavedEditCount > 0) return
-    const nextSection = findBestSectionForPage(flattenedSections, visiblePage)
+    const nextSection = findBestSectionForLocation(flattenedSections, visiblePage, normalizedY)
     if (!nextSection) return
     if (nextSection.section_id === activeSection?.section_id) return
     setContentScrollBehavior('auto')
     setActiveSection(nextSection)
   }, [activeSection?.section_id, flattenedSections, unsavedEditCount])
+
+  useEffect(() => {
+    if (!pipelineIsActive || !workspaceHasRenderableSections(workspace)) return
+
+    clearPipelinePolling()
+    setPipelineError('')
+    setPipelineProgress(prev => prev ? ({
+      ...prev,
+      status: 'succeeded',
+      version_status: workspace?.version.status ?? prev.version_status,
+    }) : prev)
+  }, [clearPipelinePolling, pipelineIsActive, workspace])
 
   useEffect(() => {
     const pane = contentPaneRef.current
@@ -549,12 +697,12 @@ export default function ViewPage() {
           {workspace.version.status === 'active' && (
             <span className="badge badge-active" style={{ marginLeft: 8 }}>Active</span>
           )}
-          {workspace.version.status === 'processing' && (
+          {pipelineIsActive && (
             <span className="badge badge-draft" style={{ marginLeft: 8 }}>
               <LoaderCircle size={11} className="spin" /> Đang xử lý
             </span>
           )}
-          {workspace.version.status === 'failed' && (
+          {!pipelineIsActive && (pipelineStatus === 'failed' || workspace.version.status === 'failed') && (
             <span className="badge badge-draft" style={{ marginLeft: 8 }}>Xử lý lỗi</span>
           )}
           {workspace.suspect_section_count > 0 && (
@@ -649,8 +797,9 @@ export default function ViewPage() {
         <PdfViewer
           documentId={documentId}
           page={pdfJumpState.page}
+          pageY={pdfJumpState.y}
           pageJumpKey={pdfJumpState.key}
-          onVisiblePageChange={handlePdfVisiblePageChange}
+          onVisibleLocationChange={handlePdfVisibleLocationChange}
         />
       </div>
     </div>
