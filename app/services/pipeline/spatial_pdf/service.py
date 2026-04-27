@@ -43,7 +43,7 @@ def _node_to_toc_dict(node: TocNode, depth: int = 0) -> dict[str, Any]:
     data: dict[str, Any] = {
         "title": node.title,
         "page": node.page,
-        "target_y": round(node.target_y, 2),
+        "target_y": round(node.target_y, 10),
     }
     child_key = _child_key(depth)
     data[child_key] = [_node_to_toc_dict(child, depth + 1) for child in node.children]
@@ -84,8 +84,8 @@ def _node_to_chunk_dict(
             {
                 "page_start": node.page,
                 "page_end": node.page,
-                "start_y": round(node.target_y, 2),
-                "end_y": round(node.target_y, 2),
+                "start_y": round(node.target_y, 10),
+                "end_y": round(node.target_y, 10),
                 "content": "",
             }
         )

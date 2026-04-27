@@ -135,7 +135,16 @@ class SpatialPDFProcessor:
                 to = dest.get("to")
                 if to is not None:
                     try:
-                        target_y = float(to.y)
+                        raw_y = float(to.y)
+                        if raw_y != 0.0:
+                            # PDF bookmark destinations use PDF coordinate space:
+                            # y=0 at the BOTTOM of the page, increasing UPWARD.
+                            # PyMuPDF block coordinates use y=0 at the TOP, increasing DOWNWARD.
+                            # Convert: y_mupdf = page_height - y_pdf
+                            h = self._page_height(page)
+                            target_y = max(0.0, h - raw_y)
+                        # else: raw_y == 0.0 means a /Fit destination — leave as 0.0
+                        # so _resolve_fit_positions() will locate it via text search.
                     except (AttributeError, TypeError):
                         target_y = 0.0
             flat.append(TocNode(level=level, title=title, page=page, target_y=target_y))  # raw — normalised below
@@ -313,7 +322,7 @@ class SpatialPDFProcessor:
                 blk_y1_norm = self._norm_y(blk.y1, start_pg)
                 if blk_y0_norm + tol_start < y_start:
                     continue
-                if start_pg == end_pg and node_b and blk_y1_norm > y_end + tol_start:
+                if start_pg == end_pg and node_b and blk_y0_norm >= y_end - tol_start:
                     break
                 parts.append(blk.text)
                 actual_end_y_norm = blk_y1_norm
@@ -329,8 +338,12 @@ class SpatialPDFProcessor:
                 h_end = self._page_height(end_pg)
                 tol_end = TOLERANCE / h_end if h_end > 0 else 0.0
                 for blk in by_page.get(end_pg, []):
+                    blk_y0_norm = self._norm_y(blk.y0, end_pg)
                     blk_y1_norm = self._norm_y(blk.y1, end_pg)
-                    if blk_y1_norm > y_end + tol_end:
+                    # Stop at the first block that STARTS at or after the next heading.
+                    # Using blk_y0 (top of block) is correct: a block that starts before
+                    # y_end belongs to this chunk even if its bottom extends past y_end.
+                    if blk_y0_norm >= y_end - tol_end:
                         break
                     parts.append(blk.text)
                     actual_end_y_norm = blk_y1_norm
@@ -485,8 +498,11 @@ class SpatialPDFProcessor:
         # target_y is normalised [0.0, 1.0]; fitz.set_toc needs raw pixel y
         toc = []
         for node in flat:
-            raw_y = node.target_y * self._page_height(node.page)
-            toc.append([node.level, node.title, node.page, raw_y])
+            h = self._page_height(node.page)
+            # target_y is normalised PyMuPDF [0=top, 1=bottom]; fitz.set_toc expects
+            # PDF coordinates (y=0 at bottom, increasing up), so invert:
+            raw_y_pdf = h - (node.target_y * h)
+            toc.append([node.level, node.title, node.page, raw_y_pdf])
         self.doc.set_toc(toc)
         self.doc.save(output_path, deflate=True, garbage=3)
         log.info("Saved interactive PDF → %s (%d entries)", output_path, len(flat))
