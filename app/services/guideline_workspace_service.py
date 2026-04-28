@@ -116,6 +116,7 @@ class GuidelineWorkspaceService:
                 "version_id": section.version_id,
                 "parent_id": section.parent_id,
                 "heading": section.heading,
+                "node_id": section.node_id,
                 "section_path": section.section_path,
                 "level": section.level,
                 "order_index": section.order_index,
@@ -130,6 +131,10 @@ class GuidelineWorkspaceService:
                 if score is None
                 else bool(score < score_threshold),
                 "content": section.content,
+                "intro_content": section.intro_content,
+                "heading_bbox": section.heading_bbox,
+                "content_bboxes": section.content_bboxes or [],
+                "landing_chunks": section.landing_chunks or [],
                 "children": [],
             }
 

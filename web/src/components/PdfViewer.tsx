@@ -12,6 +12,73 @@ import {
 } from 'lucide-react'
 import { api } from '../lib/api'
 
+function installPdfJsCollectionPolyfills() {
+  const mapProto = Map.prototype as Map<unknown, unknown> & {
+    getOrInsert?: (key: unknown, value: unknown) => unknown
+    getOrInsertComputed?: (key: unknown, factory: (key: unknown) => unknown) => unknown
+  }
+  const weakMapProto = WeakMap.prototype as WeakMap<object, unknown> & {
+    getOrInsert?: (key: object, value: unknown) => unknown
+    getOrInsertComputed?: (key: object, factory: (key: object) => unknown) => unknown
+  }
+
+  if (typeof mapProto.getOrInsert !== 'function') {
+    Object.defineProperty(Map.prototype, 'getOrInsert', {
+      value(this: Map<unknown, unknown>, key: unknown, value: unknown) {
+        if (this.has(key)) return this.get(key)
+        this.set(key, value)
+        return value
+      },
+      configurable: true,
+      writable: true,
+    })
+  }
+
+  if (typeof mapProto.getOrInsertComputed !== 'function') {
+    Object.defineProperty(Map.prototype, 'getOrInsertComputed', {
+      value(this: Map<unknown, unknown>, key: unknown, factory: (key: unknown) => unknown) {
+        if (this.has(key)) return this.get(key)
+        const value = factory(key)
+        this.set(key, value)
+        return value
+      },
+      configurable: true,
+      writable: true,
+    })
+  }
+
+  if (typeof weakMapProto.getOrInsert !== 'function') {
+    Object.defineProperty(WeakMap.prototype, 'getOrInsert', {
+      value(this: WeakMap<object, unknown>, key: object, value: unknown) {
+        if (this.has(key)) return this.get(key)
+        this.set(key, value)
+        return value
+      },
+      configurable: true,
+      writable: true,
+    })
+  }
+
+  if (typeof weakMapProto.getOrInsertComputed !== 'function') {
+    Object.defineProperty(WeakMap.prototype, 'getOrInsertComputed', {
+      value(
+        this: WeakMap<object, unknown>,
+        key: object,
+        factory: (key: object) => unknown
+      ) {
+        if (this.has(key)) return this.get(key)
+        const value = factory(key)
+        this.set(key, value)
+        return value
+      },
+      configurable: true,
+      writable: true,
+    })
+  }
+}
+
+installPdfJsCollectionPolyfills()
+
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
 const PDFJS_VERSION = '5.5.207'
