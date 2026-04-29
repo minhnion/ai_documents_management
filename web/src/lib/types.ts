@@ -117,6 +117,7 @@ export interface WorkspaceSectionNode {
   version_id: number
   parent_id: number | null
   heading: string | null
+  node_id?: string | null
   section_path: string | null
   level: number | null
   order_index: number | null
@@ -124,9 +125,15 @@ export interface WorkspaceSectionNode {
   end_char: number | null
   page_start: number | null
   page_end: number | null
+  start_y: number | null
+  end_y: number | null
   score: number | null
   is_suspect: boolean
   content: string | null
+  intro_content?: string | null
+  heading_bbox?: Record<string, unknown> | null
+  content_bboxes?: Record<string, unknown>[]
+  landing_chunks?: Record<string, unknown>[]
   children: WorkspaceSectionNode[]
 }
 

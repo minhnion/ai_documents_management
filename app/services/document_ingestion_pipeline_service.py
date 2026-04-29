@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,7 @@ from app.core.config import settings
 from app.core.exceptions import BadRequestException, UnprocessableEntityException
 from app.models.document import Document
 from app.services.pipeline import (
+    ExtractImageService,
     FuzzyChunkingService,
     LandingAIOcrService,
     MarkdownProcessingService,
@@ -18,6 +20,9 @@ from app.services.pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.services.pipeline.spatial_pdf import SpatialPdfPipelineResult, SpatialPdfPipelineService
 
 
 class DocumentIngestionPipelineService:
@@ -34,7 +39,9 @@ class DocumentIngestionPipelineService:
         self._ocr_service = LandingAIOcrService()
         self._toc_service = TocBuilderService(markdown_service=self._markdown_service)
         self._chunking_service = FuzzyChunkingService(markdown_service=self._markdown_service)
+        self._extract_image_service = ExtractImageService()
         self._persistence_service = PipelinePersistenceService(db=db)
+        self._spatial_pdf_service: SpatialPdfPipelineService | None = None
 
     async def process_document(
         self,
@@ -54,28 +61,65 @@ class DocumentIngestionPipelineService:
             pdf_path.name,
         )
 
-        raw_md = await self._ocr_markdown(pdf_path)
-        clean_md = self._clean_markdown(raw_md)
-        toc = await self._build_toc(raw_md, source_file=pdf_path.name)
-        chunk_payload = self._chunk_with_fuzzy_matching(raw_md, toc)
+        pipeline_mode = self._resolve_pipeline_mode()
 
-        self._write_artifacts(
-            artifact_dir=artifact_dir,
-            raw_md=raw_md,
-            clean_md=clean_md,
-            toc=toc,
-            chunk_payload=chunk_payload,
-        )
-        persist_stats = await self._persist_chunk_payload(
-            version_id=version_id,
-            document=document,
-            chunk_payload=chunk_payload,
-            clean_text=clean_md,
-        )
+        if pipeline_mode == "spatial_pdf":
+            spatial_result = await self._process_with_spatial_pdf(
+                pdf_path=pdf_path,
+                artifact_dir=artifact_dir,
+            )
+            self._write_artifacts(
+                artifact_dir=artifact_dir,
+                raw_md=None,
+                clean_md=None,
+                ade_chunks=None,
+                toc=spatial_result.toc,
+                chunk_payload=spatial_result.chunk_payload,
+            )
+            persist_stats = await self._persist_chunk_payload(
+                version_id=version_id,
+                document=document,
+                chunk_payload=spatial_result.chunk_payload,
+                clean_text=None,
+                page_count=spatial_result.page_count,
+            )
+        else:
+            ocr_result = await self._ocr_document(pdf_path)
+            toc = await self._build_toc(
+                ocr_result.raw_markdown,
+                source_file=pdf_path.name,
+                ade_chunks=ocr_result.ade_chunks,
+            )
+            chunk_payload = self._chunk_with_fuzzy_matching(
+                ocr_result.raw_markdown,
+                ocr_result.ade_chunks,
+                toc,
+            )
+
+            self._write_artifacts(
+                artifact_dir=artifact_dir,
+                raw_md=ocr_result.raw_markdown,
+                clean_md=None,
+                ade_chunks=ocr_result.ade_chunks,
+                toc=toc,
+                chunk_payload=chunk_payload,
+            )
+            await self._extract_images_best_effort(
+                pdf_path=pdf_path,
+                artifact_dir=artifact_dir,
+            )
+            persist_stats = await self._persist_chunk_payload(
+                version_id=version_id,
+                document=document,
+                chunk_payload=chunk_payload,
+                clean_text=None,
+                page_count=ocr_result.page_count,
+            )
         logger.info(
-            "Pipeline done | guideline_id=%s version_id=%s sections=%s db_chunks=%s artifacts=%s",
+            "Pipeline done | guideline_id=%s version_id=%s mode=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,
             version_id,
+            pipeline_mode,
             persist_stats.get("section_count"),
             persist_stats.get("chunk_count"),
             artifact_dir.as_posix(),
@@ -86,6 +130,13 @@ class DocumentIngestionPipelineService:
         }
 
     def _validate_pipeline_settings(self) -> None:
+        pipeline_mode = self._resolve_pipeline_mode()
+        if pipeline_mode == "spatial_pdf":
+            return
+        if pipeline_mode != "ocr_llm":
+            raise BadRequestException(
+                "DOCUMENT_PIPELINE_MODE must be one of: ocr_llm, spatial_pdf."
+            )
         self._hydrate_core_pipeline_env()
         if not settings.LANDINGAI_API_KEY.strip():
             raise BadRequestException("LANDINGAI_API_KEY is required for OCR pipeline.")
@@ -111,6 +162,14 @@ class DocumentIngestionPipelineService:
         if settings.OPENAI_MODEL_NAME.strip():
             os.environ["OPENAI_MODEL_NAME"] = settings.OPENAI_MODEL_NAME.strip()
 
+    def _resolve_pipeline_mode(self) -> str:
+        raw_mode = str(settings.DOCUMENT_PIPELINE_MODE).strip().lower()
+        if raw_mode in {"ocr", "ocr_llm"}:
+            return "ocr_llm"
+        if raw_mode in {"spatial", "spatial_pdf", "native_pdf", "pymupdf"}:
+            return "spatial_pdf"
+        return raw_mode
+
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():
             raise UnprocessableEntityException("Document storage_uri is missing.")
@@ -131,20 +190,52 @@ class DocumentIngestionPipelineService:
             storage_root = storage_root.resolve()
         return storage_root / "guidelines" / str(guideline_id) / str(version_id) / "pipeline"
 
+    async def _process_with_spatial_pdf(
+        self,
+        *,
+        pdf_path: Path,
+        artifact_dir: Path,
+    ) -> SpatialPdfPipelineResult:
+        if self._spatial_pdf_service is None:
+            from app.services.pipeline.spatial_pdf import SpatialPdfPipelineService
+
+            self._spatial_pdf_service = SpatialPdfPipelineService()
+        return await self._spatial_pdf_service.process_pdf(
+            pdf_path=pdf_path,
+            artifact_dir=artifact_dir,
+        )
+
+    async def _ocr_document(self, pdf_path: Path):
+        return await self._ocr_service.process_pdf(pdf_path)
+
     async def _ocr_markdown(self, pdf_path: Path) -> str:
         return await self._ocr_service.ocr_markdown(pdf_path)
 
-    async def _build_toc(self, clean_text: str, source_file: str) -> dict:
-        return await self._toc_service.build_toc(clean_text=clean_text, source_file=source_file)
+    async def _build_toc(
+        self,
+        clean_text: str,
+        source_file: str,
+        ade_chunks: list[dict] | None = None,
+    ) -> dict:
+        return await self._toc_service.build_toc(
+            clean_text=clean_text,
+            source_file=source_file,
+            ade_chunks=ade_chunks,
+        )
 
     def _clean_markdown(self, raw_text: str) -> str:
         return self._markdown_service.clean_markdown(raw_text)
 
-    def _chunk_with_fuzzy_matching(self, clean_text: str, toc: dict) -> dict:
+    def _chunk_with_fuzzy_matching(
+        self,
+        clean_text: str,
+        ade_chunks: list[dict],
+        toc: dict,
+    ) -> dict:
         return self._chunking_service.build_chunk_payload(
-            clean_text=clean_text,
-            toc=toc,
-            score_threshold=float(settings.SCORE_THRESHOLD),
+            ocr_md_text=clean_text,
+            ade_chunks=ade_chunks,
+            toc_data=toc,
         )
 
     async def _persist_chunk_payload(
@@ -152,30 +243,57 @@ class DocumentIngestionPipelineService:
         version_id: int,
         document: Document,
         chunk_payload: dict,
-        clean_text: str,
+        clean_text: str | None,
+        page_count: int | None = None,
     ) -> dict[str, int]:
         return await self._persistence_service.persist_chunk_payload(
             version_id=version_id,
             document=document,
             chunk_payload=chunk_payload,
             clean_text=clean_text,
+            page_count=page_count,
         )
 
     def _write_artifacts(
         self,
         artifact_dir: Path,
-        raw_md: str,
-        clean_md: str,
-        toc: dict,
+        raw_md: str | None,
+        clean_md: str | None,
+        ade_chunks: list[dict] | None,
+        toc: object,
         chunk_payload: dict,
     ) -> None:
         self._persistence_service.write_artifacts(
             artifact_dir=artifact_dir,
             raw_md=raw_md,
             clean_md=clean_md,
+            ade_chunks=ade_chunks,
             toc=toc,
             chunk_payload=chunk_payload,
         )
+
+    async def _extract_images_best_effort(
+        self,
+        *,
+        pdf_path: Path,
+        artifact_dir: Path,
+    ) -> None:
+        chunks_json_path = artifact_dir / "chunks.json"
+        if not chunks_json_path.exists():
+            return
+        try:
+            await self._extract_image_service.extract_toc_images(
+                pdf_path=pdf_path,
+                chunks_json_path=chunks_json_path,
+                output_dir=artifact_dir / "images",
+            )
+        except Exception:
+            logger.warning(
+                "Pipeline image extraction failed | file=%s artifact_dir=%s",
+                pdf_path.name,
+                artifact_dir.as_posix(),
+                exc_info=True,
+            )
 
     async def _openai_json_completion(self, prompt: str) -> dict:
         # Backward-compatible helper used by diagnostics/tests.

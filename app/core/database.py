@@ -115,6 +115,22 @@ async def migrate_sections_quality_schema() -> None:
             text(
                 """
                 ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS start_y DOUBLE PRECISION
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS end_y DOUBLE PRECISION
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
                 ADD COLUMN IF NOT EXISTS match_score DOUBLE PRECISION
                 """
             )
@@ -125,6 +141,51 @@ async def migrate_sections_quality_schema() -> None:
                 ALTER TABLE sections
                 ADD COLUMN IF NOT EXISTS is_suspect BOOLEAN
                 NOT NULL DEFAULT FALSE
+                """
+            )
+        )
+
+
+async def migrate_sections_enriched_schema() -> None:
+    """Add richer OCR/TOC metadata columns for section-level grounding."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS node_id TEXT
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS intro_content TEXT
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS heading_bbox JSONB
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS content_bboxes JSONB
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE sections
+                ADD COLUMN IF NOT EXISTS landing_chunks JSONB
                 """
             )
         )

@@ -16,6 +16,7 @@ from app.core.database import (
     init_db_schema,
     migrate_chunks_text_abstract_schema,
     migrate_guidelines_ten_benh_schema,
+    migrate_sections_enriched_schema,
     migrate_sections_quality_schema,
     migrate_auth_schema_to_single_role,
 )
@@ -63,6 +64,7 @@ async def lifespan(app: FastAPI):
         await migrate_auth_schema_to_single_role()
         await migrate_guidelines_ten_benh_schema()
         await migrate_sections_quality_schema()
+        await migrate_sections_enriched_schema()
         await migrate_chunks_text_abstract_schema()
         logger.info("Database schema ready.")
 

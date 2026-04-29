@@ -116,6 +116,7 @@ class GuidelineWorkspaceService:
                 "version_id": section.version_id,
                 "parent_id": section.parent_id,
                 "heading": section.heading,
+                "node_id": section.node_id,
                 "section_path": section.section_path,
                 "level": section.level,
                 "order_index": section.order_index,
@@ -123,11 +124,17 @@ class GuidelineWorkspaceService:
                 "end_char": section.end_char,
                 "page_start": section.page_start,
                 "page_end": section.page_end,
+                "start_y": section.start_y,
+                "end_y": section.end_y,
                 "score": score,
                 "is_suspect": bool(section.is_suspect)
                 if score is None
                 else bool(score < score_threshold),
                 "content": section.content,
+                "intro_content": section.intro_content,
+                "heading_bbox": section.heading_bbox,
+                "content_bboxes": section.content_bboxes or [],
+                "landing_chunks": section.landing_chunks or [],
                 "children": [],
             }
 

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -194,6 +195,7 @@ class WorkspaceSectionNode(BaseModel):
     version_id: int
     parent_id: int | None = None
     heading: str | None = None
+    node_id: str | None = None
     section_path: str | None = None
     level: int | None = None
     order_index: int | None = None
@@ -201,9 +203,15 @@ class WorkspaceSectionNode(BaseModel):
     end_char: int | None = None
     page_start: int | None = None
     page_end: int | None = None
+    start_y: float | None = None
+    end_y: float | None = None
     score: float | None = None
     is_suspect: bool = False
     content: str | None = None
+    intro_content: str | None = None
+    heading_bbox: dict[str, Any] | None = None
+    content_bboxes: list[dict[str, Any]] = Field(default_factory=list)
+    landing_chunks: list[dict[str, Any]] = Field(default_factory=list)
     children: list['WorkspaceSectionNode'] = Field(default_factory=list)
 
 
