@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import BadRequestException, UnprocessableEntityException
 from app.models.document import Document
+from app.services.document_pipeline_selector_service import (
+    DocumentPipelineSelection,
+    DocumentPipelineSelectorService,
+)
 from app.services.pipeline import (
     ExtractImageService,
     FuzzyChunkingService,
@@ -41,6 +45,7 @@ class DocumentIngestionPipelineService:
         self._chunking_service = FuzzyChunkingService(markdown_service=self._markdown_service)
         self._extract_image_service = ExtractImageService()
         self._persistence_service = PipelinePersistenceService(db=db)
+        self._pipeline_selector_service = DocumentPipelineSelectorService()
         self._spatial_pdf_service: SpatialPdfPipelineService | None = None
 
     async def process_document(
@@ -49,8 +54,6 @@ class DocumentIngestionPipelineService:
         version_id: int,
         document: Document,
     ) -> dict[str, object]:
-        self._validate_pipeline_settings()
-
         pdf_path = self._resolve_pdf_path(document)
         artifact_dir = self._build_artifact_dir(guideline_id=guideline_id, version_id=version_id)
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -61,29 +64,65 @@ class DocumentIngestionPipelineService:
             pdf_path.name,
         )
 
-        pipeline_mode = self._resolve_pipeline_mode()
+        requested_mode = self._resolve_pipeline_mode()
+        selection = await self._select_pipeline_mode(
+            requested_mode=requested_mode,
+            pdf_path=pdf_path,
+        )
+        logger.info(
+            "Pipeline mode selected | requested=%s selected=%s reason=%s metrics=%s",
+            requested_mode,
+            selection.mode,
+            selection.reason,
+            selection.metrics,
+        )
 
-        if pipeline_mode == "spatial_pdf":
-            spatial_result = await self._process_with_spatial_pdf(
-                pdf_path=pdf_path,
-                artifact_dir=artifact_dir,
-            )
-            self._write_artifacts(
-                artifact_dir=artifact_dir,
-                raw_md=None,
-                clean_md=None,
-                ade_chunks=None,
-                toc=spatial_result.toc,
-                chunk_payload=spatial_result.chunk_payload,
-            )
-            persist_stats = await self._persist_chunk_payload(
-                version_id=version_id,
-                document=document,
-                chunk_payload=spatial_result.chunk_payload,
-                clean_text=None,
-                page_count=spatial_result.page_count,
-            )
-        else:
+        effective_mode = selection.mode
+        persist_stats: dict[str, int]
+
+        if effective_mode == "spatial_pdf":
+            self._validate_pipeline_settings("spatial_pdf")
+            try:
+                spatial_result = await self._process_with_spatial_pdf(
+                    pdf_path=pdf_path,
+                    artifact_dir=artifact_dir,
+                )
+            except Exception:
+                if requested_mode == "auto":
+                    logger.warning(
+                        "Spatial pipeline failed in auto mode; falling back to ocr_llm | file=%s",
+                        pdf_path.name,
+                        exc_info=True,
+                    )
+                    effective_mode = "ocr_llm"
+                else:
+                    raise
+            else:
+                if requested_mode == "auto" and not self._is_spatial_result_usable(spatial_result):
+                    logger.warning(
+                        "Spatial pipeline result deemed low-confidence; falling back to ocr_llm | file=%s",
+                        pdf_path.name,
+                    )
+                    effective_mode = "ocr_llm"
+                else:
+                    self._write_artifacts(
+                        artifact_dir=artifact_dir,
+                        raw_md=None,
+                        clean_md=None,
+                        ade_chunks=None,
+                        toc=spatial_result.toc,
+                        chunk_payload=spatial_result.chunk_payload,
+                    )
+                    persist_stats = await self._persist_chunk_payload(
+                        version_id=version_id,
+                        document=document,
+                        chunk_payload=spatial_result.chunk_payload,
+                        clean_text=None,
+                        page_count=spatial_result.page_count,
+                    )
+
+        if effective_mode == "ocr_llm":
+            self._validate_pipeline_settings("ocr_llm")
             ocr_result = await self._ocr_document(pdf_path)
             toc = await self._build_toc(
                 ocr_result.raw_markdown,
@@ -119,7 +158,7 @@ class DocumentIngestionPipelineService:
             "Pipeline done | guideline_id=%s version_id=%s mode=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,
             version_id,
-            pipeline_mode,
+            effective_mode,
             persist_stats.get("section_count"),
             persist_stats.get("chunk_count"),
             artifact_dir.as_posix(),
@@ -129,13 +168,12 @@ class DocumentIngestionPipelineService:
             **persist_stats,
         }
 
-    def _validate_pipeline_settings(self) -> None:
-        pipeline_mode = self._resolve_pipeline_mode()
+    def _validate_pipeline_settings(self, pipeline_mode: str) -> None:
         if pipeline_mode == "spatial_pdf":
             return
-        if pipeline_mode != "ocr_llm":
+        if pipeline_mode not in {"ocr_llm"}:
             raise BadRequestException(
-                "DOCUMENT_PIPELINE_MODE must be one of: ocr_llm, spatial_pdf."
+                "DOCUMENT_PIPELINE_MODE must be one of: auto, ocr_llm, spatial_pdf."
             )
         self._hydrate_core_pipeline_env()
         if not settings.LANDINGAI_API_KEY.strip():
@@ -164,11 +202,31 @@ class DocumentIngestionPipelineService:
 
     def _resolve_pipeline_mode(self) -> str:
         raw_mode = str(settings.DOCUMENT_PIPELINE_MODE).strip().lower()
+        if raw_mode in {"", "auto"}:
+            return "auto"
         if raw_mode in {"ocr", "ocr_llm"}:
             return "ocr_llm"
         if raw_mode in {"spatial", "spatial_pdf", "native_pdf", "pymupdf"}:
             return "spatial_pdf"
         return raw_mode
+
+    async def _select_pipeline_mode(
+        self,
+        *,
+        requested_mode: str,
+        pdf_path: Path,
+    ) -> DocumentPipelineSelection:
+        if requested_mode == "auto":
+            return await self._pipeline_selector_service.select_mode(pdf_path)
+        if requested_mode in {"ocr_llm", "spatial_pdf"}:
+            return DocumentPipelineSelection(
+                mode=requested_mode,
+                reason="manual_override",
+                metrics={},
+            )
+        raise BadRequestException(
+            "DOCUMENT_PIPELINE_MODE must be one of: auto, ocr_llm, spatial_pdf."
+        )
 
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():
@@ -294,6 +352,75 @@ class DocumentIngestionPipelineService:
                 artifact_dir.as_posix(),
                 exc_info=True,
             )
+
+    def _is_spatial_result_usable(self, spatial_result: SpatialPdfPipelineResult) -> bool:
+        chapters = []
+        if isinstance(spatial_result.chunk_payload, dict):
+            maybe_chapters = spatial_result.chunk_payload.get("chapters")
+            if isinstance(maybe_chapters, list):
+                chapters = maybe_chapters
+
+        if not chapters:
+            return False
+
+        stats = self._summarize_chunk_tree(chapters)
+        total_nodes = stats["total_nodes"]
+        grounded_nodes = stats["grounded_nodes"]
+        textual_nodes = stats["textual_nodes"]
+
+        if total_nodes <= 0 or grounded_nodes <= 0 or textual_nodes <= 0:
+            return False
+
+        if spatial_result.page_count >= 5:
+            grounded_ratio = grounded_nodes / total_nodes
+            textual_ratio = textual_nodes / total_nodes
+            if grounded_ratio < 0.4 or textual_ratio < 0.25:
+                logger.warning(
+                    "Spatial validation ratios too low | total=%s grounded=%s textual=%s grounded_ratio=%.3f textual_ratio=%.3f",
+                    total_nodes,
+                    grounded_nodes,
+                    textual_nodes,
+                    grounded_ratio,
+                    textual_ratio,
+                )
+                return False
+        return True
+
+    def _summarize_chunk_tree(self, nodes: list[dict]) -> dict[str, int]:
+        total_nodes = 0
+        grounded_nodes = 0
+        textual_nodes = 0
+
+        def walk(items: list[dict]) -> None:
+            nonlocal total_nodes, grounded_nodes, textual_nodes
+            for node in items:
+                total_nodes += 1
+                if node.get("page_start") is not None and node.get("page_end") is not None:
+                    grounded_nodes += 1
+                if (
+                    isinstance(node.get("content"), str) and node.get("content", "").strip()
+                ) or (
+                    isinstance(node.get("intro_content"), str) and node.get("intro_content", "").strip()
+                ):
+                    textual_nodes += 1
+                for child_key in (
+                    "sections",
+                    "subsections",
+                    "subsubsections",
+                    "subsubsubsections",
+                    "subsubsubsubsections",
+                    "children",
+                ):
+                    children = node.get(child_key)
+                    if isinstance(children, list) and children:
+                        walk(children)
+
+        walk(nodes)
+        return {
+            "total_nodes": total_nodes,
+            "grounded_nodes": grounded_nodes,
+            "textual_nodes": textual_nodes,
+        }
 
     async def _openai_json_completion(self, prompt: str) -> dict:
         # Backward-compatible helper used by diagnostics/tests.
