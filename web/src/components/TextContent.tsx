@@ -1,5 +1,5 @@
 // web/src/components/TextContent.tsx
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useCallback } from 'react'
 import { type WorkspaceSectionNode } from '../lib/types'
 import SectionCard from './SectionCard'
 
@@ -7,7 +7,7 @@ interface TextContentProps {
   toc: WorkspaceSectionNode[]
   canEdit: boolean
   activeSectionId: number | null
-  activeSectionScrollBehavior?: ScrollBehavior
+  activeSectionScrollBehavior?: ScrollBehavior | 'none'
   sectionEdits: Record<number, { heading: string; content: string }>
   savingSections: Record<number, boolean>
   onSectionEditStart: (
@@ -22,7 +22,10 @@ interface TextContentProps {
   ) => void
   onSaveSection: (sectionId: number) => Promise<void>
   onCancelSection: (sectionId: number) => void
+  onVisibleSectionChange?: (sectionId: number) => void
 }
+
+const EXTERNAL_SCROLL_EMISSION_SUPPRESS_MS = 700
 
 function flattenNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
   const result: WorkspaceSectionNode[] = []
@@ -46,20 +49,88 @@ export default function TextContent({
   onSectionEditChange,
   onSaveSection,
   onCancelSection,
+  onVisibleSectionChange,
 }: TextContentProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null)
   const sectionRefs = useRef<Map<number, HTMLDivElement>>(new Map())
+  const lastReportedSectionRef = useRef<number | null>(null)
+  const suppressEmissionUntilRef = useRef(0)
 
-  // Scroll to active section when TOC selection changes
+  const flatNodes = useMemo(() => flattenNodes(toc ?? []), [toc])
+  const sectionIdSequence = useMemo(
+    () => flatNodes.map(node => node.section_id).join('|'),
+    [flatNodes],
+  )
+
+  // Scroll to active section when activeSectionId changes from outside this pane.
   useEffect(() => {
     if (activeSectionId == null) return
+    lastReportedSectionRef.current = activeSectionId
+    if (activeSectionScrollBehavior === 'none') return
     const el = sectionRefs.current.get(activeSectionId)
-    if (el) {
-      el.scrollIntoView({ behavior: activeSectionScrollBehavior, block: 'start' })
-    }
+    if (!el) return
+    suppressEmissionUntilRef.current = Date.now() + EXTERNAL_SCROLL_EMISSION_SUPPRESS_MS
+    el.scrollIntoView({ behavior: activeSectionScrollBehavior, block: 'start' })
   }, [activeSectionId, activeSectionScrollBehavior])
+
+  // Detect which section card sits at the user's reading line in the middle
+  // pane and notify the parent so the PDF + TOC can sync to it.
+  useEffect(() => {
+    if (!onVisibleSectionChange) return
+    const root = containerRef.current
+    if (!root) return
+
+    let frameId: number | null = null
+
+    const detectAndEmit = () => {
+      if (Date.now() < suppressEmissionUntilRef.current) return
+      const targetY = root.scrollTop + root.clientHeight * 0.3
+      let bestId: number | null = null
+      let bestTop = -Infinity
+      let earliestId: number | null = null
+      let earliestTop = Number.POSITIVE_INFINITY
+      sectionRefs.current.forEach((el, sectionId) => {
+        const top = el.offsetTop
+        if (top < earliestTop) {
+          earliestTop = top
+          earliestId = sectionId
+        }
+        if (top <= targetY && top > bestTop) {
+          bestTop = top
+          bestId = sectionId
+        }
+      })
+      const picked = bestId ?? earliestId
+      if (picked == null) return
+      if (picked === lastReportedSectionRef.current) return
+      lastReportedSectionRef.current = picked
+      onVisibleSectionChange(picked)
+    }
+
+    const handleScroll = () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+      frameId = window.requestAnimationFrame(() => {
+        frameId = null
+        detectAndEmit()
+      })
+    }
+
+    root.addEventListener('scroll', handleScroll, { passive: true })
+    handleScroll()
+
+    return () => {
+      root.removeEventListener('scroll', handleScroll)
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [onVisibleSectionChange, sectionIdSequence])
 
   const setRef = useCallback((sectionId: number) => (el: HTMLDivElement | null) => {
     if (el) {
+      el.dataset.sectionId = String(sectionId)
       sectionRefs.current.set(sectionId, el)
     } else {
       sectionRefs.current.delete(sectionId)
@@ -74,10 +145,8 @@ export default function TextContent({
     )
   }
 
-  const flatNodes = flattenNodes(toc)
-
   return (
-    <div className="content-body">
+    <div className="content-body" ref={containerRef}>
       {flatNodes.map(node => (
         <SectionCard
           key={node.section_id}

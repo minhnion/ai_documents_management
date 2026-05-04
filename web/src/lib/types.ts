@@ -110,6 +110,7 @@ export interface WorkspaceDocumentInfo {
   storage_uri: string | null
   page_count: number | null
   image_uri: string | null
+  pipeline_mode_used: string | null
 }
 
 export interface WorkspaceSectionNode {
@@ -141,6 +142,8 @@ export interface VersionWorkspaceResponse {
   guideline: WorkspaceGuidelineInfo
   version: WorkspaceVersionInfo
   documents: WorkspaceDocumentInfo[]
+  pipeline_mode_used: string | null
+  positioning_mode: string
   toc: WorkspaceSectionNode[]
   section_count: number
   full_text: string | null

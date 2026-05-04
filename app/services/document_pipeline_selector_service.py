@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import statistics
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -19,15 +18,22 @@ class DocumentPipelineSelection:
 
 
 class DocumentPipelineSelectorService:
+    """Decide between the spatial and OCR pipelines by inspecting the PDF.
+
+    Rule (per partner spec — "Native PDF"):
+      1. The PDF Root must contain an /Outlines object.
+      2. The outline tree must expose entries with actionable /Dest
+         (a destination object pointing at a page or coordinate).
+      3. The document must carry a vector text layer that is actually
+         extractable (i.e. the PDF is not a pure scan).
+
+    Anything missing one of these characteristics falls back to ocr_llm.
+    """
+
     SAMPLE_PAGES = 5
-    STRONG_TEXT_MEDIAN_WORDS = 80
-    LOW_TEXT_MEDIAN_WORDS = 20
-    MEANINGFUL_WORDS_PER_PAGE = 30
-    MEANINGFUL_TEXT_BLOCKS_PER_PAGE = 2
-    STRONG_TEXT_RATIO = 0.6
-    LOW_TEXT_RATIO = 0.3
-    LARGE_IMAGE_COVERAGE = 0.7
-    MAX_IMAGE_RATIO_FOR_SPATIAL = 0.4
+    MIN_ACTIONABLE_OUTLINE_RATIO = 0.7
+    MIN_OUTLINE_ENTRIES = 1
+    MIN_EXTRACTABLE_WORDS = 30
 
     async def select_mode(self, pdf_path: Path) -> DocumentPipelineSelection:
         loop = asyncio.get_running_loop()
@@ -39,110 +45,143 @@ class DocumentPipelineSelectorService:
 
     def _select_mode_sync(self, pdf_path: Path) -> DocumentPipelineSelection:
         with fitz.open(str(pdf_path)) as document:
-            sample_pages = min(len(document), self.SAMPLE_PAGES)
-            if sample_pages == 0:
+            page_count = len(document)
+            if page_count == 0:
                 return DocumentPipelineSelection(
                     mode="ocr_llm",
                     reason="empty_pdf",
-                    metrics={"sample_pages": 0},
+                    metrics={"page_count": 0},
                 )
 
-            word_counts: list[int] = []
-            text_block_counts: list[int] = []
-            image_coverages: list[float] = []
-            meaningful_text_pages = 0
-            large_image_pages = 0
+            raw_toc = self._safe_get_toc(document)
+            has_outline_root = self._has_outline_root(document)
+            outline_entries, actionable_outline_entries, outline_depth = self._summarize_outline_entries(raw_toc)
+            actionable_outline_ratio = (
+                actionable_outline_entries / outline_entries
+                if outline_entries > 0
+                else 0.0
+            )
+            has_native_outline_tree = (
+                has_outline_root
+                and outline_entries >= self.MIN_OUTLINE_ENTRIES
+                and actionable_outline_ratio >= self.MIN_ACTIONABLE_OUTLINE_RATIO
+            )
 
+            sample_pages = min(page_count, self.SAMPLE_PAGES)
+            word_counts: list[int] = []
             for page_index in range(sample_pages):
                 page = document[page_index]
-                page_area = max(page.rect.width * page.rect.height, 1.0)
                 words = page.get_text("words")
-                word_count = sum(
-                    1
-                    for word in words
-                    if len(str(word[4]).strip()) >= 2
+                word_counts.append(
+                    sum(1 for word in words if len(str(word[4]).strip()) >= 2)
                 )
-                word_counts.append(word_count)
-
-                text_blocks = 0
-                image_area = 0.0
-                raw_dict = page.get_text("dict")
-                for block in raw_dict.get("blocks", []):
-                    block_type = block.get("type")
-                    bbox = block.get("bbox")
-                    if (
-                        isinstance(bbox, (list, tuple))
-                        and len(bbox) == 4
-                    ):
-                        x0, y0, x1, y1 = bbox
-                        block_area = max(float(x1) - float(x0), 0.0) * max(float(y1) - float(y0), 0.0)
-                    else:
-                        block_area = 0.0
-
-                    if block_type == 0:
-                        has_text = any(
-                            span.get("text", "").strip()
-                            for line in block.get("lines", [])
-                            for span in line.get("spans", [])
-                        )
-                        if has_text:
-                            text_blocks += 1
-                    elif block_type == 1:
-                        image_area += block_area
-
-                text_block_counts.append(text_blocks)
-                image_coverage = min(image_area / page_area, 1.0)
-                image_coverages.append(image_coverage)
-
-                if (
-                    word_count >= self.MEANINGFUL_WORDS_PER_PAGE
-                    and text_blocks >= self.MEANINGFUL_TEXT_BLOCKS_PER_PAGE
-                ):
-                    meaningful_text_pages += 1
-                if image_coverage >= self.LARGE_IMAGE_COVERAGE:
-                    large_image_pages += 1
-
-            median_words = int(statistics.median(word_counts)) if word_counts else 0
-            avg_words = float(sum(word_counts) / len(word_counts)) if word_counts else 0.0
-            meaningful_ratio = meaningful_text_pages / sample_pages
-            large_image_ratio = large_image_pages / sample_pages
-            max_image_coverage = max(image_coverages) if image_coverages else 0.0
+            total_sample_words = sum(word_counts)
+            text_layer_extractable = total_sample_words >= self.MIN_EXTRACTABLE_WORDS
 
             metrics = {
+                "page_count": page_count,
                 "sample_pages": sample_pages,
-                "median_words": median_words,
-                "avg_words": round(avg_words, 2),
-                "meaningful_text_ratio": round(meaningful_ratio, 3),
-                "large_image_ratio": round(large_image_ratio, 3),
-                "max_image_coverage": round(max_image_coverage, 3),
+                "has_outline_root": has_outline_root,
+                "outline_entries": outline_entries,
+                "actionable_outline_entries": actionable_outline_entries,
+                "actionable_outline_ratio": round(actionable_outline_ratio, 3),
+                "outline_depth": outline_depth,
+                "has_native_outline_tree": has_native_outline_tree,
                 "word_counts": word_counts,
-                "text_block_counts": text_block_counts,
+                "total_sample_words": total_sample_words,
+                "text_layer_extractable": text_layer_extractable,
             }
 
-            if (
-                median_words >= self.STRONG_TEXT_MEDIAN_WORDS
-                and meaningful_ratio >= self.STRONG_TEXT_RATIO
-                and large_image_ratio <= self.MAX_IMAGE_RATIO_FOR_SPATIAL
-            ):
+            if not has_native_outline_tree:
                 return DocumentPipelineSelection(
-                    mode="spatial_pdf",
-                    reason="strong_text_layer",
+                    mode="ocr_llm",
+                    reason="missing_native_outline_tree",
                     metrics=metrics,
                 )
 
-            if (
-                median_words < self.LOW_TEXT_MEDIAN_WORDS
-                or meaningful_ratio <= self.LOW_TEXT_RATIO
-                or large_image_ratio >= self.STRONG_TEXT_RATIO
-            ):
+            if not text_layer_extractable:
                 return DocumentPipelineSelection(
                     mode="ocr_llm",
-                    reason="likely_scanned_pdf",
+                    reason="native_outline_but_text_layer_unextractable",
                     metrics=metrics,
                 )
 
             return DocumentPipelineSelection(
                 mode="spatial_pdf",
-                reason="borderline_text_layer_prefer_spatial",
+                reason="native_outline_tree_and_extractable_text",
                 metrics=metrics,
             )
+
+    def _safe_get_toc(self, document: fitz.Document) -> list[Any]:
+        try:
+            raw_toc = document.get_toc(simple=False)
+        except Exception:
+            return []
+        return raw_toc if isinstance(raw_toc, list) else []
+
+    def _has_outline_root(self, document: fitz.Document) -> bool:
+        pdf_catalog = getattr(document, "pdf_catalog", None)
+        xref_get_key = getattr(document, "xref_get_key", None)
+        if not callable(pdf_catalog) or not callable(xref_get_key):
+            return False
+
+        try:
+            catalog_xref = pdf_catalog()
+            if not catalog_xref:
+                return False
+            key = xref_get_key(catalog_xref, "Outlines")
+        except Exception:
+            return False
+
+        if not isinstance(key, tuple) or len(key) != 2:
+            return False
+
+        key_type, key_value = key
+        if str(key_type).strip().lower() == "null":
+            return False
+        return bool(str(key_value).strip())
+
+    def _summarize_outline_entries(self, raw_toc: list[Any]) -> tuple[int, int, int]:
+        outline_entries = 0
+        actionable_outline_entries = 0
+        outline_depth = 0
+
+        for entry in raw_toc:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 4:
+                continue
+
+            level, title, page, destination = entry[:4]
+            if not str(title).strip():
+                continue
+
+            outline_entries += 1
+            try:
+                outline_depth = max(outline_depth, int(level))
+            except (TypeError, ValueError):
+                pass
+
+            if self._entry_has_actionable_destination(page=page, destination=destination):
+                actionable_outline_entries += 1
+
+        return outline_entries, actionable_outline_entries, outline_depth
+
+    def _entry_has_actionable_destination(self, *, page: Any, destination: Any) -> bool:
+        if isinstance(page, int) and page > 0:
+            return True
+
+        if not isinstance(destination, dict):
+            return False
+
+        target = destination.get("to")
+        if target is not None:
+            return True
+
+        dest_page = destination.get("page")
+        if isinstance(dest_page, int) and dest_page >= 0:
+            return True
+
+        if destination.get("kind") == getattr(fitz, "LINK_GOTO", None):
+            if any(destination.get(key) is not None for key in ("xref", "nameddest", "file", "uri")):
+                return True
+
+        return False

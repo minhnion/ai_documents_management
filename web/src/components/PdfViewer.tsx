@@ -106,6 +106,7 @@ interface PdfViewerProps {
   page?: number
   pageY?: number | null
   pageJumpKey?: number | null
+  visibleLocationBias?: number
   onVisiblePageChange?: (page: number) => void
   onVisibleLocationChange?: (page: number, normalizedY: number) => void
 }
@@ -130,6 +131,7 @@ export default function PdfViewer({
   page,
   pageY,
   pageJumpKey,
+  visibleLocationBias = 0,
   onVisiblePageChange,
   onVisibleLocationChange,
 }: PdfViewerProps) {
@@ -164,9 +166,10 @@ export default function PdfViewer({
       return 0
     }
 
-    const offsetWithinPage = container.scrollTop - pageElement.offsetTop
+    const biasPx = Math.max(container.clientHeight * Math.max(visibleLocationBias, 0), 0)
+    const offsetWithinPage = container.scrollTop - pageElement.offsetTop + biasPx
     return clampNormalizedY(offsetWithinPage / pageElement.offsetHeight)
-  }, [])
+  }, [visibleLocationBias])
 
   const emitVisibleLocation = useCallback((pageNumber: number) => {
     if (!onVisibleLocationChange) return
@@ -485,11 +488,15 @@ export default function PdfViewer({
       if (normalizedTargetY == null) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' })
       } else {
-        const targetTop = Math.max(el.offsetTop + el.offsetHeight * normalizedTargetY - 12, 0)
+        const biasPx = Math.max(container.clientHeight * Math.max(visibleLocationBias, 0), 0)
+        const targetTop = Math.max(
+          el.offsetTop + el.offsetHeight * normalizedTargetY - biasPx - 12,
+          0,
+        )
         container.scrollTo({ top: targetTop, behavior: 'smooth' })
       }
     }
-  }, [page, pageJumpKey, pageY, renderedPages])
+  }, [page, pageJumpKey, pageY, renderedPages, visibleLocationBias])
 
   const reload = () => {
     setReloadKey((value) => value + 1)

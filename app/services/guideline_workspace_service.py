@@ -76,10 +76,17 @@ class GuidelineWorkspaceService:
                 section.content for section in sections if section.content
             )
 
+        pipeline_mode_used = self._resolve_pipeline_mode_used(documents=documents)
+        positioning_mode = self._resolve_positioning_mode(
+            pipeline_mode_used=pipeline_mode_used
+        )
+
         return {
             "guideline": guideline,
             "version": guideline_version,
             "documents": documents,
+            "pipeline_mode_used": pipeline_mode_used,
+            "positioning_mode": positioning_mode,
             "toc": toc_tree,
             "section_count": len(sections),
             "suspect_score_threshold": score_threshold,
@@ -171,3 +178,15 @@ class GuidelineWorkspaceService:
             children = node.get("children", [])
             if isinstance(children, list) and children:
                 self._sort_nodes(children)
+
+    def _resolve_pipeline_mode_used(self, *, documents: list[Document]) -> str | None:
+        for document in documents:
+            mode = (document.pipeline_mode_used or "").strip().lower()
+            if mode:
+                return mode
+        return None
+
+    def _resolve_positioning_mode(self, *, pipeline_mode_used: str | None) -> str:
+        if pipeline_mode_used == "spatial_pdf":
+            return "spatial_heading_anchor"
+        return "page_range"
