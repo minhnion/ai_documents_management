@@ -215,3 +215,16 @@ async def migrate_chunks_text_abstract_schema() -> None:
                 """
             )
         )
+
+
+async def migrate_documents_pipeline_mode_schema() -> None:
+    """Add pipeline-mode metadata for uploaded documents."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS pipeline_mode_used VARCHAR(30)
+                """
+            )
+        )

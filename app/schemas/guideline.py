@@ -188,6 +188,7 @@ class WorkspaceDocumentInfo(BaseModel):
     storage_uri: str | None = None
     page_count: int | None = None
     image_uri: str | None = None
+    pipeline_mode_used: str | None = None
 
 
 class WorkspaceSectionNode(BaseModel):
@@ -222,6 +223,8 @@ class VersionWorkspaceResponse(BaseModel):
     guideline: WorkspaceGuidelineInfo
     version: WorkspaceVersionInfo
     documents: list[WorkspaceDocumentInfo]
+    pipeline_mode_used: str | None = None
+    positioning_mode: str
     toc: list[WorkspaceSectionNode]
     section_count: int
     suspect_score_threshold: float

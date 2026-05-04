@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import { type MouseEvent } from 'react'
 import { type WorkspaceSectionNode } from '../lib/types'
@@ -17,6 +17,17 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
     }
     return new Set<number>()
   })
+
+  // Only the root TocTree drives the scroll-into-view: descendants share the
+  // same DOM and finding by data attribute is enough.
+  useEffect(() => {
+    if (depth !== 0 || activeId == null) return
+    const el = document.querySelector(
+      `[data-toc-section-id="${activeId}"]`,
+    ) as HTMLElement | null
+    if (!el) return
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [activeId, depth])
 
   const toggleCollapse = (id: number, e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
@@ -39,7 +50,11 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
 
         return (
           <div key={node.section_id}>
-            <div className="toc-row" style={{ paddingLeft: `${10 + depth * 14}px` }}>
+            <div
+              className="toc-row"
+              data-toc-section-id={node.section_id}
+              style={{ paddingLeft: `${10 + depth * 14}px` }}
+            >
               {hasChildren ? (
                 <button
                   className="toc-chevron"

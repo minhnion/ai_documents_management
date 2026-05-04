@@ -19,6 +19,7 @@ class Document(Base):
     storage_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     image_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pipeline_mode_used: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
     # Relationships
     version: Mapped["GuidelineVersion"] = relationship(

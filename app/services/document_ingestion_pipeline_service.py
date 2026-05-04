@@ -154,6 +154,7 @@ class DocumentIngestionPipelineService:
                 clean_text=None,
                 page_count=ocr_result.page_count,
             )
+        document.pipeline_mode_used = effective_mode
         logger.info(
             "Pipeline done | guideline_id=%s version_id=%s mode=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,

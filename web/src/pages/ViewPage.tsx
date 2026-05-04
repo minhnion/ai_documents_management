@@ -22,6 +22,12 @@ type SectionEditDraft = {
 
 const JOB_POLL_INTERVAL_MS = 3000
 const PDF_SYNC_SUPPRESS_MS = 1200
+// Active band used by the PDF viewer to decide which section is currently
+// being read. Tuned so the section highlighted in the TOC / middle pane
+// matches the section that visually fills the centre of the PDF viewport.
+const SPATIAL_VISIBLE_LOCATION_BIAS = 0.32
+const OCR_VISIBLE_LOCATION_BIAS = 0.25
+const SPATIAL_SECTION_HYSTERESIS = 0.015
 
 function clampNormalizedY(value: number | null | undefined): number {
   if (value == null || Number.isNaN(value)) return 0
@@ -186,6 +192,74 @@ function findBestSectionForLocation(
   return findBestSectionForPage(nodes, page)
 }
 
+function nodeStartsBeforeLocation(
+  node: WorkspaceSectionNode,
+  page: number,
+  normalizedY: number,
+  hysteresis: number = 0,
+): boolean {
+  if (node.page_start == null) {
+    return false
+  }
+
+  if (page > node.page_start) {
+    return true
+  }
+
+  if (page < node.page_start) {
+    return false
+  }
+
+  return clampNormalizedY(normalizedY) + hysteresis >= clampNormalizedY(node.start_y)
+}
+
+function findBestSpatialSectionForLocation(
+  nodes: WorkspaceSectionNode[],
+  page: number,
+  normalizedY: number,
+): WorkspaceSectionNode | null {
+  const pagedNodes = nodes.filter(node => node.page_start != null)
+  if (pagedNodes.length === 0) {
+    return null
+  }
+
+  const startedNodes = pagedNodes
+    .filter(node => nodeStartsBeforeLocation(node, page, normalizedY, SPATIAL_SECTION_HYSTERESIS))
+    .sort((left, right) => {
+      const startPageDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      if (startPageDiff !== 0) return startPageDiff
+
+      const startYDiff = clampNormalizedY(right.start_y) - clampNormalizedY(left.start_y)
+      if (startYDiff !== 0) return startYDiff
+
+      const levelDiff = (right.level ?? 0) - (left.level ?? 0)
+      if (levelDiff !== 0) return levelDiff
+
+      return getPageSpan(left) - getPageSpan(right)
+    })
+
+  if (startedNodes.length > 0) {
+    return startedNodes[0]
+  }
+
+  const followingNodes = pagedNodes
+    .filter(node => (node.page_start ?? Number.MAX_SAFE_INTEGER) >= page)
+    .sort((left, right) => {
+      const startPageDiff = (left.page_start ?? Number.MAX_SAFE_INTEGER) - (right.page_start ?? Number.MAX_SAFE_INTEGER)
+      if (startPageDiff !== 0) return startPageDiff
+
+      const startYDiff = clampNormalizedY(left.start_y) - clampNormalizedY(right.start_y)
+      if (startYDiff !== 0) return startYDiff
+
+      const levelDiff = (right.level ?? 0) - (left.level ?? 0)
+      if (levelDiff !== 0) return levelDiff
+
+      return getPageSpan(left) - getPageSpan(right)
+    })
+
+  return followingNodes[0] ?? findBestSectionForPage(nodes, page)
+}
+
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
@@ -214,7 +288,7 @@ export default function ViewPage() {
   const [pipelineProgress, setPipelineProgress] = useState<VersionIngestionStatusResponse | null>(null)
   const [pipelineError, setPipelineError] = useState('')
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
-  const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior>('smooth')
+  const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior | 'none'>('smooth')
   const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; y?: number | null; key: number | null }>({
     page: undefined,
     y: null,
@@ -226,6 +300,8 @@ export default function ViewPage() {
   const pipelineStatus = pipelineProgress?.status ?? 'idle'
   const pipelineIsActive = pipelineStatus === 'queued' || pipelineStatus === 'running'
   const flattenedSections = useMemo(() => flattenSectionNodes(workspace?.toc ?? []), [workspace?.toc])
+  const positioningMode = workspace?.positioning_mode ?? 'page_range'
+  const isSpatialPositioning = positioningMode === 'spatial_heading_anchor'
 
   const clearPipelinePolling = useCallback(() => {
     if (pipelinePollTimerRef.current !== null) {
@@ -261,6 +337,25 @@ export default function ViewPage() {
       })
     }
   }, [])
+
+  const handleContentVisibleSectionChange = useCallback((sectionId: number) => {
+    if (unsavedEditCount > 0) return
+    if (sectionId === activeSection?.section_id) return
+    const next = flattenedSections.find(node => node.section_id === sectionId)
+    if (!next) return
+    // The middle pane already shows this section at the top of the viewport,
+    // so don't fight it with another scrollIntoView.
+    setContentScrollBehavior('none')
+    setActiveSection(next)
+    if (next.page_start && next.page_start > 0) {
+      suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
+      setPdfJumpState({
+        page: next.page_start,
+        y: next.start_y,
+        key: next.section_id,
+      })
+    }
+  }, [activeSection?.section_id, flattenedSections, unsavedEditCount])
 
   const loadWorkspaceData = useCallback(async (
     nextVersionId: string,
@@ -440,12 +535,14 @@ export default function ViewPage() {
   const handlePdfVisibleLocationChange = useCallback((visiblePage: number, normalizedY: number) => {
     if (Date.now() < suppressPdfSyncUntilRef.current) return
     if (unsavedEditCount > 0) return
-    const nextSection = findBestSectionForLocation(flattenedSections, visiblePage, normalizedY)
+    const nextSection = isSpatialPositioning
+      ? findBestSpatialSectionForLocation(flattenedSections, visiblePage, normalizedY)
+      : findBestSectionForLocation(flattenedSections, visiblePage, normalizedY)
     if (!nextSection) return
     if (nextSection.section_id === activeSection?.section_id) return
     setContentScrollBehavior('auto')
     setActiveSection(nextSection)
-  }, [activeSection?.section_id, flattenedSections, unsavedEditCount])
+  }, [activeSection?.section_id, flattenedSections, isSpatialPositioning, unsavedEditCount])
 
   useEffect(() => {
     if (!pipelineIsActive || !workspaceHasRenderableSections(workspace)) return
@@ -789,6 +886,7 @@ export default function ViewPage() {
             onSectionEditChange={handleSectionEditChange}
             onSaveSection={handleSaveSection}
             onCancelSection={handleCancelSection}
+            onVisibleSectionChange={handleContentVisibleSectionChange}
           />
         )}
       </div>
@@ -799,6 +897,7 @@ export default function ViewPage() {
           page={pdfJumpState.page}
           pageY={pdfJumpState.y}
           pageJumpKey={pdfJumpState.key}
+          visibleLocationBias={isSpatialPositioning ? SPATIAL_VISIBLE_LOCATION_BIAS : OCR_VISIBLE_LOCATION_BIAS}
           onVisibleLocationChange={handlePdfVisibleLocationChange}
         />
       </div>

@@ -58,6 +58,8 @@ async def get_version_workspace(
             WorkspaceDocumentInfo.model_validate(document)
             for document in workspace_data['documents']
         ],
+        pipeline_mode_used=workspace_data['pipeline_mode_used'],
+        positioning_mode=str(workspace_data['positioning_mode']),
         toc=[
             WorkspaceSectionNode.model_validate(node)
             for node in workspace_data['toc']
