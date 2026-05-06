@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Edit3, Check, X, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
+import SectionAssets from './SectionAssets'
 import SectionContentRenderer from './SectionContentRenderer'
 import { normalizeSectionContent } from './sectionContent'
 
@@ -35,7 +36,16 @@ export default function SectionCard({
 
   const isEditing = editValue !== null
   const hasRenderableContent = normalizeSectionContent(node.content).length > 0
-  const hideEmptyBody = !isEditing && node.children.length > 0 && !hasRenderableContent
+  const assetCount = Array.isArray(node.landing_chunks)
+    ? node.landing_chunks.filter(
+        (entry) =>
+          !!entry &&
+          typeof entry === 'object' &&
+          typeof (entry as Record<string, unknown>).image_url === 'string',
+      ).length
+    : 0
+  const hideEmptyBody =
+    !isEditing && node.children.length > 0 && !hasRenderableContent && assetCount === 0
 
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
@@ -114,6 +124,7 @@ export default function SectionCard({
           ) : (
             <div className="section-card-content">
               <SectionContentRenderer content={node.content} />
+              <SectionAssets assets={node.landing_chunks} />
             </div>
           )}
         </div>

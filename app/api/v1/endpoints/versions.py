@@ -1,6 +1,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import FileResponse
 
 from app.api.deps import ActiveUser, DBSession, require_roles
 from app.schemas.guideline import (
@@ -27,6 +28,7 @@ from app.services.guideline_edit_service import (
 from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
 from app.services.guideline_metadata_service import GuidelineMetadataService
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
+from app.services.version_asset_service import VersionAssetService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
 
@@ -175,3 +177,29 @@ async def delete_guideline_version(
     service = GuidelineDeleteService(db)
     result = await service.delete_version(version_id)
     return DeleteGuidelineVersionResponse(**result)
+
+
+@router.get(
+    '/{version_id}/assets/{landing_chunk_id}',
+    summary='Get Version Asset (table/figure PNG)',
+    responses={
+        200: {'description': 'PNG image cropped from the source PDF.'},
+        404: {'description': 'Version or asset not found.'},
+    },
+)
+async def get_version_asset(
+    version_id: int,
+    landing_chunk_id: str,
+    db: DBSession,
+    _: ActiveUser,
+) -> FileResponse:
+    service = VersionAssetService(db)
+    asset = await service.get_asset_file(
+        version_id=version_id,
+        landing_chunk_id=landing_chunk_id,
+    )
+    return FileResponse(
+        path=str(asset.path),
+        media_type=asset.media_type,
+        headers={'Cache-Control': 'public, max-age=86400'},
+    )

@@ -186,11 +186,7 @@ def _get_page_count(pdf_path: Path) -> int:
 
 
 def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
-    """
-    OCR 1 file PDF:
-      - Gọi LandingAI ADE (tự split nếu > MAX_PAGES trang)
-      - Trả về Markdown + ADE chunks JSON in-memory
-    """
+    """OCR 1 file PDF, trả về markdown + ADE chunks in-memory (không ghi file)."""
     n_pages = _get_page_count(pdf_path)
     logger.info("[%s] %d trang", pdf_path.name, n_pages)
 
@@ -281,13 +277,7 @@ def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
 
 
 def ocr_pdf(pdf_path: Path, client) -> None:
-    """
-    OCR 1 file PDF:
-      - Gọi LandingAI ADE (tự split nếu > MAX_PAGES trang)
-      - Lưu Markdown → OUTPUT_MD_DIR
-      - Lưu ADE chunks JSON → OUTPUT_ADE_DIR (bbox cache cho chunk_bbox.py)
-    Bỏ qua nếu cả hai output đã tồn tại (cache hit).
-    """
+    """OCR 1 file PDF + lưu Markdown / ADE chunks JSON ra disk (CLI mode)."""
     out_md  = OUTPUT_MD_DIR  / f"{pdf_path.stem}_ocr.md"
     out_ade = OUTPUT_ADE_DIR / f"{pdf_path.stem}_ade_chunks.json"
 
@@ -297,7 +287,6 @@ def ocr_pdf(pdf_path: Path, client) -> None:
 
     result = _ocr_pdf_in_memory(pdf_path, client)
 
-    # ── Lưu output ────────────────────────────────────────────────────────────
     OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
     out_md.write_text(result.raw_markdown, encoding="utf-8")
     logger.info("  → %s", out_md.name)

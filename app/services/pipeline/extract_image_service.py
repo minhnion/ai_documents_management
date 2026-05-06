@@ -22,7 +22,7 @@ MARGIN = 0.0    # Mở rộng bbox thêm N% mỗi phía (0.0 = không mở rộn
 
 _CHILD_KEYS = (
     "chapters", "sections", "subsections",
-    "subsubsections", "subsubsubsections", "subsubsubsubsections", "children",
+    "subsubsections", "subsubsubsections", "children",
 )
 
 # Màu overlay theo loại chunk (RGBA)
@@ -194,6 +194,67 @@ def extract_toc_sections(
         _process_node(chapter, out_dir)
 
     doc.close()
+    return stats
+
+
+# ==============================================================================
+# MODE 2b: CẮT TỪNG TABLE/FIGURE THEO UUID (FE-asset extractor)
+# ==============================================================================
+
+# Loại chunk Landing AI cần cắt làm asset cho FE.
+_FE_ASSET_TYPES: set[str] = {
+    "table",
+    "figure",
+    "diagram",
+    "chart",
+    "image",
+    "logo",
+}
+
+
+def extract_landing_chunk_images(
+    pdf_path: Path,
+    ade_chunks: list[dict],
+    out_dir: Path,
+    dpi: int = DPI,
+    asset_types: set[str] | None = None,
+) -> dict[str, int]:
+    """Cắt mỗi chunk table/figure thành 1 file PNG đặt theo UUID của chunk.
+
+    File path: ``out_dir/<chunk_id>.png`` (multi-page chunks: bbox đầu = ảnh
+    chính, các bbox sau lưu kèm hậu tố ``__pN``).
+    """
+
+    import fitz
+
+    types = asset_types if asset_types is not None else _FE_ASSET_TYPES
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    doc = fitz.open(str(pdf_path))
+    stats = {"saved": 0, "skipped": 0, "error": 0}
+
+    try:
+        for chunk in ade_chunks:
+            ctype = chunk.get("type", "text")
+            cid = chunk.get("id")
+            if not cid or ctype not in types:
+                continue
+
+            bboxes = chunk.get("bboxes", [])
+            if not bboxes:
+                stats["skipped"] += 1
+                continue
+
+            for j, bbox in enumerate(bboxes):
+                fname = f"{cid}.png" if j == 0 else f"{cid}__p{j}.png"
+                out_path = out_dir / fname
+                if _crop_and_save(doc, bbox, out_path, dpi=dpi):
+                    stats["saved"] += 1
+                else:
+                    stats["error"] += 1
+    finally:
+        doc.close()
+
     return stats
 
 
@@ -424,6 +485,29 @@ class ExtractImageService:
                     output_dir,
                     dpi,
                     heading_only,
+                ),
+            )
+
+    async def extract_landing_chunk_images(
+        self,
+        *,
+        pdf_path: Path,
+        ade_chunks: list[dict],
+        output_dir: Path,
+        dpi: int = DPI,
+        asset_types: set[str] | None = None,
+    ) -> dict[str, int]:
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return await loop.run_in_executor(
+                executor,
+                partial(
+                    extract_landing_chunk_images,
+                    pdf_path,
+                    ade_chunks,
+                    output_dir,
+                    dpi,
+                    asset_types,
                 ),
             )
 

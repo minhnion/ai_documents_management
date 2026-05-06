@@ -3,8 +3,7 @@ Node fields:
   node_id           — SHA-1 (12 hex) ổn định từ đường dẫn TOC đầy đủ
   title             — tiêu đề từ TOC
   page_start/end    — trang (1-indexed)
-  content           — text thuần (chỉ node lá; parent = null)
-  intro_content     — text giữa heading parent và heading child đầu tiên (parent có con; lá = null)
+  content           — text thuần (node lá: heading → end; node cha: heading → first child heading)
   match_score       — 1.0 nếu matched by ID; null nếu unmatched
   heading_bbox      — bbox dòng heading
   content_bboxes    — union bbox từng trang của nội dung
@@ -21,7 +20,6 @@ import logging
 import re
 import sys
 from pathlib import Path
-from typing import Any
 
 from dotenv import load_dotenv
 
@@ -46,7 +44,6 @@ _CHILD_KEYS = (
 
 _RE_ANCHOR  = re.compile(r"<a\s+id='[^']*'>.*?</a>", re.DOTALL)
 _RE_HEADING = re.compile(r"^#{1,6}\s*")
-_RE_TOC_MARKER = re.compile(r"MUC\s*LUC|MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", re.IGNORECASE)
 
 # Intra-chunk search window (chars). Đủ lớn để bao phủ 1 chunk dài nhất, nhưng không scan toàn file.
 _INTRA_CHUNK_SEARCH_WINDOW = 60_000
@@ -99,19 +96,6 @@ def page_at(char_pos: int, breaks: list[int]) -> int:
     return bisect.bisect_right(breaks, char_pos) + 1
 
 
-def _find_body_start(text: str) -> int:
-    pages = text.split(_PAGE_BREAK)
-    offset = 0
-    toc_seen = False
-    for page in pages:
-        if _RE_TOC_MARKER.search(page):
-            toc_seen = True
-        elif toc_seen and page.strip():
-            return offset
-        offset += len(page) + len(_PAGE_BREAK)
-    return 0
-
-
 # ── ADE offset map ────────────────────────────────────────────────────────────
 
 def build_ade_offset_map(ocr_md: str, ade_chunks: list[dict]) -> list[dict]:
@@ -160,6 +144,10 @@ def _find_next_heading_char(
     best_pos   = None
     best_score = 0.0
 
+    # Pre-compute numbered prefix (e.g. "4.3.1.6." or "Bước 4") for reliable match
+    _num_prefix_match = re.match(r'^(\d[\d\.]*\.?|Bước\s+\d+)', title)
+    _num_prefix = _num_prefix_match.group(1).strip() if _num_prefix_match else None
+
     for line in lines:
         clean = _RE_HEADING.sub("", line).strip()
         if clean:
@@ -170,6 +158,10 @@ def _find_next_heading_char(
                 if score >= _HEADING_MATCH_THRESHOLD and score > best_score:
                     best_score = score
                     best_pos   = search_start + offset
+            # Numbered prefix match: override Dice nếu prefix khớp chính xác
+            if _num_prefix and clean.startswith(_num_prefix) and best_score < 0.9:
+                best_score = 0.9
+                best_pos   = search_start + offset
         offset += len(line)
 
     return best_pos
@@ -187,7 +179,10 @@ def _compute_sibling_ends(
     for i, node in enumerate(nodes):
         cur_idx = node.get("_chunk_idx")
         nxt_idx = nodes[i + 1].get("_chunk_idx") if i + 1 < len(nodes) else None
-        node["_chunk_end"] = nxt_idx if nxt_idx is not None else parent_end
+        # Guard: chỉ dùng nxt_idx nếu nó TIẾN FORWARD (> cur_idx)
+        # Tránh inverted range [cur_idx, nxt_idx) khi nxt_idx <= cur_idx do shared/OOR chunk
+        valid_nxt = nxt_idx is not None and (cur_idx is None or nxt_idx > cur_idx)
+        node["_chunk_end"] = nxt_idx if valid_nxt else parent_end
 
         # ── Same-chunk sibling detection ─────────────────────────────────────
         if cur_idx is not None and nxt_idx is not None and cur_idx == nxt_idx:
@@ -242,7 +237,7 @@ def _process_level(
         cid = node.get("heading_chunk_id")
         if cid:
             raw_idx = id_to_idx.get(cid)
-            if raw_idx is not None and p_start <= raw_idx < p_end:
+            if raw_idx is not None and p_start <= raw_idx <= p_end:
                 node["_chunk_idx"]   = raw_idx
                 node["_match_score"] = 1.0
             else:
@@ -316,7 +311,19 @@ def _find_heading_end(text: str, toc_title: str) -> int:
 
     if best_score < 0.5 or best_i < 0:
         return 0
-    return sum(len(lines[j]) for j in range(best_i + 1))
+
+    heading_end = sum(len(lines[j]) for j in range(best_i + 1))
+
+    # Guard: nếu "heading" khớp nằm quá sâu trong text (> 70% tổng length)
+    # VÀ score thấp (< 0.80) → rất có thể là false positive từ heading của section KẾ TIẾP
+    # (heading thực của node này đã nằm trong ADE chunk trước).
+    # Nếu score cao (>= 0.80) thì đây là heading thực → strip bình thường,
+    # content sẽ thành "" → None (đúng với parent nodes chỉ có heading text).
+    total_len = sum(len(l) for l in lines)
+    if total_len > 0 and heading_end / total_len > 0.70 and best_score < 0.80:
+        return 0
+
+    return heading_end
 
 
 def _extract_content(ocr_md: str, toc_title: str, start: int, end: int) -> str | None:
@@ -424,6 +431,27 @@ def _build_chunk_node(
     if end_char_override is not None:
         end_char = end_char_override
 
+    # Fix SAME_IDX: khi h_idx == s_end và end_char <= start_char
+    # (do shared chunk conflict), thử expand đến cuối ADE chunk thực tế.
+    # An toàn chỉ khi heading của NODE NÀY xuất hiện trong chunk text.
+    if (
+        h_idx is not None and s_end is not None
+        and h_idx == s_end
+        and end_char_override is None
+        and start_char is not None and end_char is not None
+        and end_char <= start_char
+        and h_idx < len(ade_enriched)
+    ):
+        chunk_actual_end = ade_enriched[h_idx].get("end_char", start_char)
+        if chunk_actual_end > start_char:
+            chunk_raw = _RE_ANCHOR.sub("", ocr_md[start_char:chunk_actual_end]).replace(_PAGE_BREAK, "")
+            if _find_heading_end(chunk_raw, toc_node["title"]) > 0:
+                end_char = chunk_actual_end
+                logger.info(
+                    "  [SAME_IDX_EXPAND] %-40s end_char %d → %d",
+                    toc_node["title"][:40], start_char, end_char,
+                )
+
     # ── Page numbers ──────────────────────────────────────────────────────────
     page_start = page_at(start_char, page_breaks) if start_char is not None else None
     page_end   = page_at(end_char - 1, page_breaks) if end_char else None
@@ -461,6 +489,10 @@ def _build_chunk_node(
                 if ade_enriched[i].get("type") != "marginalia"
                 for b in ade_enriched[i].get("bboxes", [])
             ]
+            # Fix CONSEC: khi range(h_idx+1, s_end) rỗng (s_end = h_idx+1),
+            # toàn bộ content nằm trong h_idx chunk → dùng h_idx bboxes
+            if not raw and ade_enriched[h_idx].get("type") != "marginalia":
+                raw = list(ade_enriched[h_idx].get("bboxes", []))
         content_bboxes = _union_bboxes_by_page(raw)
 
     # ── Landing chunks ────────────────────────────────────────────────────────
@@ -483,20 +515,19 @@ def _build_chunk_node(
     node_path = f"{path}/{toc_node['title']}" if path else toc_node["title"]
     node_id   = _make_node_id(node_path)
 
-    # ── Content vs intro_content ──────────────────────────────────────────────
-    # Leaf node   : content = text từ heading → end; intro_content = null
-    # Parent node : content = null; intro_content = text từ heading → first child heading
+    # ── Content ───────────────────────────────────────────────────────────────
+    # Leaf node   : content = text từ heading → end
+    # Parent node : content = text từ heading → first child heading
     #   • Normal  : first_child_sc > start_char ← OK
     #   • Shared  : dùng intra-chunk split từ _get_first_child_start_char
-    has_children    = any(toc_node.get(k) for k in _CHILD_KEYS)
-    content: str | None       = None
-    intro_content: str | None = None
+    has_children = any(toc_node.get(k) for k in _CHILD_KEYS)
+    content: str | None = None
 
     if start_char is not None:
         if has_children:
             first_child_sc = _get_first_child_start_char(toc_node, ade_enriched, ocr_md)
             if first_child_sc is not None and first_child_sc > start_char:
-                intro_content = _extract_content(
+                content = _extract_content(
                     ocr_md, toc_node["title"], start_char, first_child_sc,
                 )
         elif end_char is not None:
@@ -508,7 +539,6 @@ def _build_chunk_node(
         "page_start":     page_start,
         "page_end":       page_end,
         "content":        content,
-        "intro_content":  intro_content,
         "match_score":    round(toc_node.get("_match_score") or 0.0, 4) or None,
         "heading_bbox":   heading_bbox,
         "content_bboxes": content_bboxes,
@@ -589,26 +619,17 @@ def process(toc_path: Path, ocr_md_path: Path, ade_path: Path, out_path: Path) -
 # ── Service class (API) ────────────────────────────────────────────────────────
 
 class BBoxChunkingService:
-    def __init__(self, markdown_service: Any | None = None) -> None:
-        self.markdown_service = markdown_service
+    def __init__(self, *, markdown_service=None) -> None:
+        # markdown_service kept for backward-compatible kwargs; the new
+        # ID-based pipeline operates on the raw markdown so cleaning is unwanted.
+        self._markdown_service = markdown_service
 
-    @staticmethod
     def build_chunk_payload(
-        ocr_md_text: str | None = None,
-        ade_chunks: list[dict] | None = None,
-        toc_data: dict | None = None,
-        *,
-        clean_text: str | None = None,
-        toc: dict | None = None,
-        score_threshold: float | None = None,
+        self,
+        ocr_md_text: str,
+        ade_chunks: list[dict],
+        toc_data: dict,
     ) -> dict:
-        if ocr_md_text is None:
-            ocr_md_text = clean_text or ""
-        if toc_data is None:
-            toc_data = toc or {}
-        if ade_chunks is None:
-            raise ValueError("ade_chunks is required for bbox chunking pipeline.")
-
         page_breaks  = build_page_breaks(ocr_md_text)
         ade_enriched = build_ade_offset_map(ocr_md_text, ade_chunks)
         id_to_idx    = build_id_to_idx(ade_enriched)
@@ -628,15 +649,17 @@ class BBoxChunkingService:
         return result
 
 
-class FuzzyChunkingService(BBoxChunkingService):
-    @staticmethod
-    def _match_score(expected: str, candidate: str) -> float:
-        a_words = set(re.sub(r"[^\w\s]", " ", expected.lower()).split())
-        b_words = set(re.sub(r"[^\w\s]", " ", candidate.lower()).split())
-        if not a_words or not b_words:
-            return 0.0
-        inter = a_words & b_words
-        return 2 * len(inter) / (len(a_words) + len(b_words))
+# Backward-compat alias: code paths previously imported FuzzyChunkingService.
+FuzzyChunkingService = BBoxChunkingService
+
+
+def _find_body_start(_text: str) -> int:
+    """Backward-compat shim — the new ID-based pipeline operates on raw OCR
+    markdown (anchors + PAGE_BREAK markers intact) so no body-start trim is
+    required. ``markdown_service.MarkdownProcessingService`` still imports this
+    symbol; return 0 so any consumer that fed cleaned text simply keeps it.
+    """
+    return 0
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────
