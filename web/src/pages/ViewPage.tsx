@@ -898,6 +898,9 @@ export default function ViewPage() {
           pageY={pdfJumpState.y}
           pageJumpKey={pdfJumpState.key}
           visibleLocationBias={isSpatialPositioning ? SPATIAL_VISIBLE_LOCATION_BIAS : OCR_VISIBLE_LOCATION_BIAS}
+          highlightKey={activeSection?.section_id ?? null}
+          highlightHeadingBbox={activeSection?.heading_bbox ?? null}
+          highlightContentBboxes={activeSection?.content_bboxes ?? []}
           onVisibleLocationChange={handlePdfVisibleLocationChange}
         />
       </div>

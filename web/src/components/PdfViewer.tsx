@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as pdfjs from 'pdfjs-dist'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import {
@@ -101,14 +101,58 @@ export const getZoomScale = (fitScale: number, zoomLevel: number) => {
   return fitScale * (1 + clampZoomLevel(zoomLevel) * ZOOM_STEP)
 }
 
+type PdfBboxLike = Record<string, unknown> | null | undefined
+
 interface PdfViewerProps {
   documentId: number | null
   page?: number
   pageY?: number | null
   pageJumpKey?: number | null
   visibleLocationBias?: number
+  highlightKey?: number | string | null
+  highlightHeadingBbox?: PdfBboxLike
+  highlightContentBboxes?: PdfBboxLike[]
   onVisiblePageChange?: (page: number) => void
   onVisibleLocationChange?: (page: number, normalizedY: number) => void
+}
+
+interface UsableBbox {
+  page: number
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+function toUsableBbox(bbox: PdfBboxLike): UsableBbox | null {
+  if (!bbox || typeof bbox !== 'object') return null
+  const page = bbox.page
+  const left = bbox.left
+  const top = bbox.top
+  const right = bbox.right
+  const bottom = bbox.bottom
+  if (
+    typeof page !== 'number'
+    || typeof left !== 'number'
+    || typeof top !== 'number'
+    || typeof right !== 'number'
+    || typeof bottom !== 'number'
+  ) return null
+  if (right <= left || bottom <= top) return null
+  return { page, left, top, right, bottom }
+}
+
+function bboxStyle(bbox: UsableBbox): React.CSSProperties {
+  const left = Math.max(0, bbox.left)
+  const top = Math.max(0, bbox.top)
+  const width = Math.max(0, Math.min(1, bbox.right) - left)
+  const height = Math.max(0, Math.min(1, bbox.bottom) - top)
+  return {
+    left: `${left * 100}%`,
+    top: `${top * 100}%`,
+    width: `${width * 100}%`,
+    height: `${height * 100}%`,
+  }
 }
 
 const isExpectedPdfLoadAbort = (error: unknown) => {
@@ -132,6 +176,9 @@ export default function PdfViewer({
   pageY,
   pageJumpKey,
   visibleLocationBias = 0,
+  highlightKey = null,
+  highlightHeadingBbox = null,
+  highlightContentBboxes = [],
   onVisiblePageChange,
   onVisibleLocationChange,
 }: PdfViewerProps) {
@@ -158,6 +205,31 @@ export default function PdfViewer({
   const lastReportedLocationRef = useRef<{ page: number; y: number } | null>(null)
 
   const renderScale = getZoomScale(fitScale, zoomLevel)
+
+  // Group highlight bboxes by page so each pdf-page-wrapper renders only its own.
+  const highlightsByPage = useMemo(() => {
+    const map = new Map<number, { heading: UsableBbox | null; contents: UsableBbox[] }>()
+    const heading = toUsableBbox(highlightHeadingBbox)
+    if (heading) {
+      map.set(heading.page, {
+        heading,
+        contents: map.get(heading.page)?.contents ?? [],
+      })
+    }
+    if (Array.isArray(highlightContentBboxes)) {
+      for (const raw of highlightContentBboxes) {
+        const bbox = toUsableBbox(raw)
+        if (!bbox) continue
+        const existing = map.get(bbox.page)
+        if (existing) {
+          existing.contents.push(bbox)
+        } else {
+          map.set(bbox.page, { heading: null, contents: [bbox] })
+        }
+      }
+    }
+    return map
+  }, [highlightHeadingBbox, highlightContentBboxes])
 
   const getNormalizedVisibleY = useCallback((pageNumber: number) => {
     const container = containerRef.current
@@ -682,22 +754,45 @@ export default function PdfViewer({
       </div>
 
       <div className="pdf-scroll-container" ref={containerRef}>
-        {renderedPages.map((pageNumber) => (
-          <div
-            key={pageNumber}
-            className="pdf-page-wrapper"
-            ref={(el) => {
-              pageRefs.current[pageNumber - 1] = el
-            }}
-          >
-            <canvas
+        {renderedPages.map((pageNumber) => {
+          const pageHighlights = highlightsByPage.get(pageNumber - 1)
+          return (
+            <div
+              key={pageNumber}
+              className="pdf-page-wrapper"
               ref={(el) => {
-                canvasRefs.current[pageNumber - 1] = el
+                pageRefs.current[pageNumber - 1] = el
               }}
-            />
-            <span className="pdf-page-label">{pageNumber}</span>
-          </div>
-        ))}
+            >
+              <canvas
+                ref={(el) => {
+                  canvasRefs.current[pageNumber - 1] = el
+                }}
+              />
+              {pageHighlights && highlightKey != null && (
+                <div
+                  key={`hl-${pageNumber}-${highlightKey}`}
+                  className="pdf-highlight-layer"
+                >
+                  {pageHighlights.heading && (
+                    <div
+                      className="pdf-highlight pdf-highlight--heading"
+                      style={bboxStyle(pageHighlights.heading)}
+                    />
+                  )}
+                  {pageHighlights.contents.map((bbox, index) => (
+                    <div
+                      key={`content-${index}`}
+                      className="pdf-highlight pdf-highlight--content"
+                      style={bboxStyle(bbox)}
+                    />
+                  ))}
+                </div>
+              )}
+              <span className="pdf-page-label">{pageNumber}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )

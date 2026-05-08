@@ -3,6 +3,7 @@ import { normalizeSectionContent } from './sectionContent'
 
 interface SectionContentRendererProps {
   content: string | null
+  hideEmptyMessage?: boolean
 }
 
 interface TableCellData {
@@ -50,10 +51,14 @@ void CUSTOM_BLOCK_EXAMPLES
 // 3. next <table or <:: start
 // 4. end of content
 
-export default function SectionContentRenderer({ content }: SectionContentRendererProps) {
+export default function SectionContentRenderer({
+  content,
+  hideEmptyMessage = false,
+}: SectionContentRendererProps) {
   const normalized = normalizeSectionContent(content)
 
   if (!normalized) {
+    if (hideEmptyMessage) return null
     return <span className="section-rich-empty">Không có nội dung.</span>
   }
 

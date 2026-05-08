@@ -1458,6 +1458,47 @@ a:hover {
   user-select: none;
 }
 
+.pdf-highlight-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.pdf-highlight {
+  position: absolute;
+  border-radius: 3px;
+  border: 2px solid transparent;
+  opacity: 0;
+  animation: pdf-highlight-fade 3.2s ease-out forwards;
+}
+
+.pdf-highlight--heading {
+  border-color: #C65A4A;
+  background: rgba(198, 90, 74, 0.18);
+  box-shadow: 0 0 0 2px rgba(198, 90, 74, 0.18);
+}
+
+.pdf-highlight--content {
+  border-color: #6FA8DC;
+  background: rgba(111, 168, 220, 0.14);
+}
+
+@keyframes pdf-highlight-fade {
+  0% {
+    opacity: 0;
+  }
+  8% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* Version select bar */
 .version-bar {
   display: flex;
