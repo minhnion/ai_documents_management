@@ -134,6 +134,16 @@ class DocumentIngestionPipelineService:
                 ocr_result.ade_chunks,
                 toc,
             )
+            await self._extract_landing_chunk_images_best_effort(
+                pdf_path=pdf_path,
+                ade_chunks=ocr_result.ade_chunks,
+                artifact_dir=artifact_dir,
+            )
+            self._enrich_landing_chunks(
+                chunk_payload=chunk_payload,
+                ade_chunks=ocr_result.ade_chunks,
+                version_id=version_id,
+            )
 
             self._write_artifacts(
                 artifact_dir=artifact_dir,
@@ -142,10 +152,6 @@ class DocumentIngestionPipelineService:
                 ade_chunks=ocr_result.ade_chunks,
                 toc=toc,
                 chunk_payload=chunk_payload,
-            )
-            await self._extract_images_best_effort(
-                pdf_path=pdf_path,
-                artifact_dir=artifact_dir,
             )
             persist_stats = await self._persist_chunk_payload(
                 version_id=version_id,
@@ -331,28 +337,95 @@ class DocumentIngestionPipelineService:
             chunk_payload=chunk_payload,
         )
 
-    async def _extract_images_best_effort(
+    async def _extract_landing_chunk_images_best_effort(
         self,
         *,
         pdf_path: Path,
+        ade_chunks: list[dict],
         artifact_dir: Path,
     ) -> None:
-        chunks_json_path = artifact_dir / "chunks.json"
-        if not chunks_json_path.exists():
+        if not ade_chunks:
             return
         try:
-            await self._extract_image_service.extract_toc_images(
+            stats = await self._extract_image_service.extract_landing_chunk_images(
                 pdf_path=pdf_path,
-                chunks_json_path=chunks_json_path,
+                ade_chunks=ade_chunks,
                 output_dir=artifact_dir / "images",
+            )
+            logger.info(
+                "Asset extraction done | file=%s saved=%s skipped=%s error=%s",
+                pdf_path.name,
+                stats.get("saved"),
+                stats.get("skipped"),
+                stats.get("error"),
             )
         except Exception:
             logger.warning(
-                "Pipeline image extraction failed | file=%s artifact_dir=%s",
+                "Asset extraction failed | file=%s artifact_dir=%s",
                 pdf_path.name,
                 artifact_dir.as_posix(),
                 exc_info=True,
             )
+
+    def _enrich_landing_chunks(
+        self,
+        *,
+        chunk_payload: dict,
+        ade_chunks: list[dict],
+        version_id: int,
+    ) -> None:
+        """Bơm ``bbox`` (từ ADE) và ``image_url`` (asset endpoint) vào mỗi
+        landing_chunks entry trong chunk_payload, đệ quy theo cây section.
+        """
+        ade_by_id: dict[str, dict] = {}
+        for chunk in ade_chunks:
+            cid = chunk.get("id")
+            if cid:
+                ade_by_id[cid] = chunk
+
+        # URL is relative to the FE axios baseURL (= API_V1_PREFIX), so the
+        # FE can call ``api.get(image_url, {responseType: 'blob'})`` and add
+        # the auth header automatically.
+        url_prefix = f"/versions/{version_id}/assets"
+
+        def _walk(node: object) -> None:
+            if not isinstance(node, dict):
+                return
+            entries = node.get("landing_chunks")
+            if isinstance(entries, list):
+                enriched: list[dict] = []
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    cid = entry.get("id")
+                    if not cid:
+                        continue
+                    out = {"id": cid, "type": entry.get("type", "text")}
+                    raw = ade_by_id.get(cid)
+                    if raw is not None:
+                        bboxes = raw.get("bboxes") or []
+                        if isinstance(bboxes, list) and bboxes:
+                            out["bbox"] = bboxes[0]
+                            if len(bboxes) > 1:
+                                out["bboxes"] = bboxes
+                    out["image_url"] = f"{url_prefix}/{cid}"
+                    enriched.append(out)
+                node["landing_chunks"] = enriched
+            for key in (
+                "chapters",
+                "sections",
+                "subsections",
+                "subsubsections",
+                "subsubsubsections",
+                "subsubsubsubsections",
+                "children",
+            ):
+                children = node.get(key)
+                if isinstance(children, list):
+                    for child in children:
+                        _walk(child)
+
+        _walk(chunk_payload)
 
     def _is_spatial_result_usable(self, spatial_result: SpatialPdfPipelineResult) -> bool:
         chapters = []

@@ -1,9 +1,42 @@
 // web/src/components/SectionCard.tsx
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Edit3, Check, X, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
+import SectionAssets from './SectionAssets'
 import SectionContentRenderer from './SectionContentRenderer'
 import { normalizeSectionContent } from './sectionContent'
+
+function collectDescendantAssetIds(children: WorkspaceSectionNode[]): Set<string> {
+  const ids = new Set<string>()
+  const walk = (nodes: WorkspaceSectionNode[]) => {
+    for (const child of nodes) {
+      if (Array.isArray(child.landing_chunks)) {
+        for (const entry of child.landing_chunks) {
+          if (entry && typeof entry === 'object') {
+            const id = (entry as Record<string, unknown>).id
+            if (typeof id === 'string') ids.add(id)
+          }
+        }
+      }
+      if (child.children?.length) walk(child.children)
+    }
+  }
+  walk(children)
+  return ids
+}
+
+function selectOwnAssets(node: WorkspaceSectionNode): unknown[] {
+  if (!Array.isArray(node.landing_chunks) || node.landing_chunks.length === 0) {
+    return []
+  }
+  const descendantIds = collectDescendantAssetIds(node.children ?? [])
+  if (descendantIds.size === 0) return node.landing_chunks
+  return node.landing_chunks.filter((entry) => {
+    if (!entry || typeof entry !== 'object') return false
+    const id = (entry as Record<string, unknown>).id
+    return typeof id === 'string' && !descendantIds.has(id)
+  })
+}
 
 interface SectionCardProps {
   node: WorkspaceSectionNode
@@ -35,7 +68,15 @@ export default function SectionCard({
 
   const isEditing = editValue !== null
   const hasRenderableContent = normalizeSectionContent(node.content).length > 0
-  const hideEmptyBody = !isEditing && node.children.length > 0 && !hasRenderableContent
+  const ownAssets = useMemo(() => selectOwnAssets(node), [node])
+  const ownAssetCount = ownAssets.filter(
+    (entry) =>
+      !!entry &&
+      typeof entry === 'object' &&
+      typeof (entry as Record<string, unknown>).image_url === 'string',
+  ).length
+  const hideEmptyBody =
+    !isEditing && node.children.length > 0 && !hasRenderableContent && ownAssetCount === 0
 
   // Auto-focus textarea when entering edit mode
   useEffect(() => {
@@ -113,7 +154,11 @@ export default function SectionCard({
             </div>
           ) : (
             <div className="section-card-content">
-              <SectionContentRenderer content={node.content} />
+              <SectionContentRenderer
+                content={node.content}
+                hideEmptyMessage={ownAssetCount > 0}
+              />
+              <SectionAssets assets={ownAssets} />
             </div>
           )}
         </div>
