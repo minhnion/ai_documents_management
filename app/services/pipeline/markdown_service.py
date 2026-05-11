@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import re
 
-from app.services.pipeline.chunking_service import _find_body_start
 from app.services.pipeline.clean_markdown_service import PAGE_BREAK_MARKER, clean_markdown
 from app.services.pipeline.toc_service import get_pages
+
+
+def _find_body_start(_text: str) -> int:
+    """Backward-compat shim — the new ID-based pipeline operates on raw OCR
+    markdown (anchors + PAGE_BREAK markers intact) so no body-start trim is
+    required. ``MarkdownProcessingService.find_body_start`` only stays alive
+    for diagnostics paths that still call it.
+    """
+    return 0
 
 _RE_TOC_MARKER = re.compile(r"MUC\s*LUC|MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", re.IGNORECASE)
 _RE_MD_HEADING = re.compile(r"^(#{1,6})\s+(.+)")

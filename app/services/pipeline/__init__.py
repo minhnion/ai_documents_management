@@ -6,8 +6,8 @@ __all__ = [
     "LandingAIOcrService",
     "MarkdownProcessingService",
     "TocBuilderService",
-    "FuzzyChunkingService",
     "BBoxChunkingService",
+    "FuzzyChunkingService",
     "ExtractImageService",
     "PipelinePersistenceService",
     "PAGE_BREAK_MARKER",
@@ -15,22 +15,22 @@ __all__ = [
 
 
 if TYPE_CHECKING:
-    from app.services.pipeline.chunking_service import BBoxChunkingService, FuzzyChunkingService
+    from app.services.pipeline.chunking_service import BBoxChunkingService
     from app.services.pipeline.extract_image_service import ExtractImageService
     from app.services.pipeline.markdown_service import MarkdownProcessingService, PAGE_BREAK_MARKER
     from app.services.pipeline.persistence_service import PipelinePersistenceService
-    from app.services.pipeline.toc_service import TocBuilderService
+    from app.services.pipeline.toc_builder_service import TocBuilderService
     from app.services.pipeline.landingai_ocr_service import LandingAIOcrService
 
 
 def __getattr__(name: str):
-    if name in {"FuzzyChunkingService", "BBoxChunkingService"}:
-        from app.services.pipeline.chunking_service import BBoxChunkingService, FuzzyChunkingService
+    if name in {"BBoxChunkingService", "FuzzyChunkingService"}:
+        # ``FuzzyChunkingService`` is kept as a backward-compatible alias —
+        # callers continue to import the old name while the chunking core
+        # ships a single ``BBoxChunkingService`` class.
+        from app.services.pipeline.chunking_service import BBoxChunkingService
 
-        return {
-            "FuzzyChunkingService": FuzzyChunkingService,
-            "BBoxChunkingService": BBoxChunkingService,
-        }[name]
+        return BBoxChunkingService
     if name in {"MarkdownProcessingService", "PAGE_BREAK_MARKER"}:
         from app.services.pipeline.markdown_service import MarkdownProcessingService, PAGE_BREAK_MARKER
 
@@ -43,7 +43,7 @@ def __getattr__(name: str):
 
         return PipelinePersistenceService
     if name == "TocBuilderService":
-        from app.services.pipeline.toc_service import TocBuilderService
+        from app.services.pipeline.toc_builder_service import TocBuilderService
 
         return TocBuilderService
     if name == "LandingAIOcrService":

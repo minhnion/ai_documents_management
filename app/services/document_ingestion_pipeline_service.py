@@ -15,8 +15,8 @@ from app.services.document_pipeline_selector_service import (
     DocumentPipelineSelectorService,
 )
 from app.services.pipeline import (
+    BBoxChunkingService,
     ExtractImageService,
-    FuzzyChunkingService,
     LandingAIOcrService,
     MarkdownProcessingService,
     PipelinePersistenceService,
@@ -41,8 +41,8 @@ class DocumentIngestionPipelineService:
 
         self._markdown_service = MarkdownProcessingService()
         self._ocr_service = LandingAIOcrService()
-        self._toc_service = TocBuilderService(markdown_service=self._markdown_service)
-        self._chunking_service = FuzzyChunkingService(markdown_service=self._markdown_service)
+        self._toc_service = TocBuilderService()
+        self._chunking_service = BBoxChunkingService()
         self._extract_image_service = ExtractImageService()
         self._persistence_service = PipelinePersistenceService(db=db)
         self._pipeline_selector_service = DocumentPipelineSelectorService()

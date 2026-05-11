@@ -1,19 +1,13 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
-import logging
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
-
-logger = logging.getLogger(__name__)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 INPUT_DIR      = Path("./data/02_ocr_markdown")
@@ -38,8 +32,8 @@ PHASE3_CHAPTER_BUFFER    = 25
 PHASE3_SUBGROUP_SIZE     = 8
 PHASE3_EDGE_RATIO        = 0.15
 PHASE3_EXPAND_FACTOR     = 2
-PHASE3_MAX_EXPAND_WINDOW = 600   # giới hạn kích thước cửa sổ expand (chunks) tránh vượt context
-PHASE3_MAX_EXPAND_TRIES  = 2     # số lần expand tối đa mỗi sub-batch
+PHASE3_MAX_EXPAND_WINDOW = 600
+PHASE3_MAX_EXPAND_TRIES  = 2
 LANDMARK_BATCH_SIZE      = 100
 LANDMARK_OVERLAP         = 10
 
@@ -227,7 +221,7 @@ CHUẨN HÓA ĐẦU RA
   • Chỉ trả về key "chapters".
 
 ══════════════════════════════════════════════
-QUY TẮC BẮT BUỘC KHI CÓ CÂY TOC NỀN (Phase 1)
+QUY TẮC BẮT BUỘC KHI CÓ CÂY TOC NỀN (Phase 1 hoặc TOC tích lũy)
 ══════════════════════════════════════════════
   • GIỮ NGUYÊN HOÀN TOÀN title của mọi node đã có trong cây TOC nền.
     TUYỆT ĐỐI không đổi tên, không tách, không gộp node đã có.
@@ -238,6 +232,21 @@ QUY TẮC BẮT BUỘC KHI CÓ CÂY TOC NỀN (Phase 1)
     title chapter phải giữ nguyên y hệt TOC nền.
   • CHỈ THÊM mục con (subsections, subsubsections…) vào đúng chapter/section
     tương ứng khi tìm thấy trong văn bản, không làm gì khác.
+
+══════════════════════════════════════════════
+CẢNH BÁO: NAMESPACE SỐ THỨ TỰ TRÙNG GIỮA CÁC CHƯƠNG
+══════════════════════════════════════════════
+  Nhiều chương trong tài liệu y tế đều dùng lại hệ đánh số từ đầu (1., 1.1, 1.2, 1.3...).
+  Ví dụ: CHƯƠNG 6 có "1.4. Các biến chứng khác" và CHƯƠNG 7 CũNG có "1.4. Can thiệp ĐMV thì đầu".
+  Hai node "1.4" này HOÀN TOÀN KHÁC NHAU — chúng thuộc hai chapter khác nhau.
+
+  QUY TẮC XÁC ĐỊNH CHAPTER CHA:
+  • Khi đọc văn bản và gặp một heading số thứ tự (1.x, 2.x...), hãy xác định CHAPTER NÀO đang
+    được trình bày tại thời điểm đó trong văn bản (dựa trên tiêu đề CHƯƠNG/PHẦN xuất hiện TRƯỚC ĐÓ).
+  • Sau đó thêm heading đó vào đúng chapter tương ứng trong TOC — KHÔNG so sánh tên heading
+    với các node đang ở chapter KHÁC.
+  • Ví dụ: nếu văn bản đang ở CHƯƠNG 7 và có "1.4. Can thiệp ĐMV...", node này phải được
+    đặt vào CHƯƠNG 7, KHÔNG phải CHƯƠNG 6 dù CHƯƠNG 6 cũng có "1.4. Các biến chứng".
 """
 
 _PROMPT_PHASE3_SYS = (
@@ -293,7 +302,6 @@ QUY TẮC:
    Khi tìm thấy tiêu đề khớp bên trong một table chunk → đó là chunk đúng, hãy gán nó.
 7. Thà để null hơn là assign sai chunk — không đoán mò khi không thấy text khớp rõ ràng."""
 
-# Lazy-initialized Phase 2 system prompts (depend on _PHASE2_SCHEMA / _PHASE2_READING_RULES)
 _PROMPT_PHASE2_SINGLE:    str = ""
 _PROMPT_PHASE2_ITERATIVE: str = ""
 
@@ -428,7 +436,7 @@ def _merge_nodes(base: list, updated: list, depth: int) -> list:
         return base
     child_key        = _DEPTH_CHILD_KEYS.get(depth)
     updated_by_title = {n.get("title", ""): n for n in updated if isinstance(n, dict)}
-    base_titles      = {n.get("title", "") for n in base    if isinstance(n, dict)}
+    base_titles      = {n.get("title", "") for n in base if isinstance(n, dict)}
     merged: list = []
     for node in base:
         if not isinstance(node, dict):
@@ -444,10 +452,10 @@ def _merge_nodes(base: list, updated: list, depth: int) -> list:
             merged.append({**node, child_key: merged_children})
         else:
             merged.append(node)
-    if not base:
-        for node in updated:
-            if isinstance(node, dict) and node.get("title", "") not in base_titles:
-                merged.append(node)
+    # Append nodes from updated that do not yet exist in base (new nodes discovered in later chunks)
+    for node in updated:
+        if isinstance(node, dict) and node.get("title", "") not in base_titles:
+            merged.append(node)
     return merged
 
 
@@ -587,6 +595,82 @@ def _build_ade_summary(ade_chunks: list[dict], toc_end_page: int | None = None) 
         preview = text[:limit]
         out.append({"i": i, "id": ch["id"], "t": preview, "type": ch.get("type", "text")})
     return out
+
+
+def _is_ade_page_toc_continuation(page_chunks: list[dict]) -> bool:
+    """Return True if ADE chunks from one PDF page look like TOC continuation."""
+    for ch in page_chunks:
+        md      = ch.get("markdown", "")
+        stripped = _RE_ANCHOR_STRIP_LEAD.sub("", md.lstrip()).lstrip()
+        if stripped.startswith("<table"):
+            return True
+    combined = "\n".join(ch.get("markdown", "") for ch in page_chunks)
+    return _is_toc_continuation(combined)
+
+
+def _compute_toc_end_ade_page(
+    ocr_md: str,
+    ade_chunks: list[dict],
+    toc_end_md_page: int | None,
+) -> int | None:
+    """Convert a markdown TOC page index to the corresponding ADE bbox page number.
+
+    LandingAI omits PAGE_BREAK for blank PDF pages, so the markdown index
+    can lag behind the real PDF page in ADE bboxes. We anchor via chunk
+    ``<a id='...'>`` positions in the markdown to find the true cutoff page.
+    A forward scan extends the cutoff if adjacent pages also look like TOC.
+    """
+    if toc_end_md_page is None:
+        return None
+
+    breaks = [m.start() for m in re.finditer(re.escape(PAGE_BREAK), ocr_md)]
+    cutoff_char = breaks[toc_end_md_page] if toc_end_md_page < len(breaks) else len(ocr_md)
+
+    max_ade_page: int | None = None
+    for ch in ade_chunks:
+        anchor = f"<a id='{ch['id']}'></a>"
+        pos    = ocr_md.find(anchor)
+        if pos < 0 or pos >= cutoff_char:
+            continue
+        bboxes = ch.get("bboxes", [])
+        if not bboxes:
+            continue
+        p = bboxes[0]["page"]
+        if max_ade_page is None or p > max_ade_page:
+            max_ade_page = p
+
+    # Forward scan: _is_toc_continuation may have missed TOC pages that appear
+    # on ADE pages > max_ade_page due to blank-page numbering gaps.
+    # Walk forward page-by-page until we find a page that is NOT TOC.
+    if max_ade_page is not None:
+        ade_by_page: dict[int, list[dict]] = {}
+        for ch in ade_chunks:
+            bboxes = ch.get("bboxes", [])
+            if bboxes:
+                ade_by_page.setdefault(bboxes[0]["page"], []).append(ch)
+
+        candidate = max_ade_page + 1
+        while candidate in ade_by_page:
+            if _is_ade_page_toc_continuation(ade_by_page[candidate]):
+                print(
+                    f"  Phase 3: forward scan — ADE page {candidate} "
+                    f"also TOC, extending toc_end_ade_page"
+                )
+                max_ade_page = candidate
+                candidate += 1
+            else:
+                break
+
+    if max_ade_page is not None:
+        print(
+            f"  Phase 3: toc_end_md_page={toc_end_md_page} "
+            f"→ toc_end_ade_page={max_ade_page} "
+            f"(cutoff_char={cutoff_char:,})"
+        )
+    else:
+        print(f"  Phase 3: toc_end_md_page={toc_end_md_page} → không tìm được ADE page, dùng fallback")
+
+    return max_ade_page if max_ade_page is not None else toc_end_md_page
 
 
 def _flatten_toc_refs(nodes: list, path: str = "") -> list[tuple[str, dict]]:
@@ -742,23 +826,15 @@ def _get_bounded_window(
 ) -> tuple[int, int]:
     if not landmarks:
         return 0, n_ade
-    sorted_lm = sorted(landmarks.items())
-    
-    prev_ade  = max((pos for t, pos in sorted_lm if t <= toc_s), default=0)
-    next_ade  = min((pos for t, pos in sorted_lm if t >= toc_e), default=n_ade)
-    
-    # Asymmetrical windowing logic:
-    # 1. Overlapping backwards is generally safe (hits the end/appendices of previous chapter).
-    #    We bound it by the midpoint to avoid hitting the START of the previous chapter.
-    prev_chap_ade = max((pos for t, pos in sorted_lm if t < toc_s), default=0)
-    mid_prev = (prev_chap_ade + prev_ade) // 2 if prev_chap_ade > 0 else 0
+    sorted_lm     = sorted(landmarks.items())
+    prev_ade      = max((pos for t, pos in sorted_lm if t <= toc_s), default=0)
+    next_ade      = min((pos for t, pos in sorted_lm if t >= toc_e), default=n_ade)
+    # Back-bound: midpoint of previous chapter prevents hitting its start.
+    # Forward-bound: tight +2 avoids absorbing identical subheadings at next chapter start.
+    prev_chap_ade = max((pos for t, pos in sorted_lm if t <  toc_s), default=0)
+    mid_prev      = (prev_chap_ade + prev_ade) // 2 if prev_chap_ade > 0 else 0
     win_s = max(mid_prev, prev_ade - buffer)
-    
-    # 2. Overlapping forwards is FATAL because identical subheadings (e.g. "Bước 1", "Bước 2")
-    #    are always located right at the start of the next chapter.
-    #    We use a very tight bound (+2) to just include the boundary shared chunk.
     win_e = min(n_ade, next_ade + 2)
-
     return win_s, win_e
 
 
@@ -783,15 +859,12 @@ def _phase3_expand_if_edge(
     new_win_e = min(n_ade, win_e + expansion) if near_right else win_e
     if new_win_s == win_s and new_win_e == win_e:
         return None
-    # Giới hạn kích thước cửa sổ mở rộng để không vượt context window LLM.
-    # Nếu expansion quá lớn, thu hẹp đối xứng xung quanh tâm vùng mapped.
-    new_size = new_win_e - new_win_s
-    if new_size > PHASE3_MAX_EXPAND_WINDOW:
-        center   = (min(mapped_positions) + max(mapped_positions)) // 2
-        half     = PHASE3_MAX_EXPAND_WINDOW // 2
+    if new_win_e - new_win_s > PHASE3_MAX_EXPAND_WINDOW:
+        center    = (min(mapped_positions) + max(mapped_positions)) // 2
+        half      = PHASE3_MAX_EXPAND_WINDOW // 2
         new_win_s = max(0,     center - half)
         new_win_e = min(n_ade, new_win_s + PHASE3_MAX_EXPAND_WINDOW)
-        new_win_s = max(0,     new_win_e - PHASE3_MAX_EXPAND_WINDOW)  # re-align nếu clamp cuối
+        new_win_s = max(0,     new_win_e - PHASE3_MAX_EXPAND_WINDOW)
     return new_win_s, new_win_e
 
 
@@ -862,16 +935,14 @@ def _phase3_get_landmarks(
         except Exception as e:
             print(f"    Batch {b_no + 1}/{n_batches} failed: {e}")
 
-    # Dedup: take earliest position per chapter
     deduped: dict[int, int] = {}
     for idx, positions in raw_hits.items():
         if positions:
             best = min(positions)
             deduped[idx] = best
             if len(positions) > 1:
-                print(f"    Dedup [{idx}] {flat_refs[idx][0]!r}: {len(positions)} hits → ADE[{best}]")
+                print(f"    Dedup [{idx}] {flat_refs[idx][0]!r}: {len(positions)} hits \u2192 ADE[{best}]")
 
-    # LIS filter: remove hallucinated out-of-order placements
     anchor_pairs = sorted(deduped.items())
     valid_pairs  = _lis_anchors(anchor_pairs) if anchor_pairs else []
     removed = len(anchor_pairs) - len(valid_pairs)
@@ -886,6 +957,117 @@ def _phase3_get_landmarks(
 
     print(f"  Phase 3 [Landmark]: {len(landmarks)}/{len(chapter_indices)} chapters mapped")
     return landmarks
+
+
+def _phase3_get_section_landmarks(
+    client: OpenAI,
+    flat_refs: list[tuple],
+    ade_summary: list[dict],
+    valid_ids: set[str],
+    landmarks: dict[int, int],
+    chapter_ranges: list[tuple[int, int]],
+    n_ade: int,
+) -> dict[int, int]:
+    """Intermediate landmark pass: find depth-2 nodes (sections) for chapters
+    whose ADE window exceeds PHASE3_MAX_EXPAND_WINDOW.  Results are added to
+    `landmarks` so the subsequent bounded pass has dense anchors (~100-300
+    chunks apart) instead of sparse chapter-level anchors (~1900 chunks apart).
+    Chapters with window <= PHASE3_MAX_EXPAND_WINDOW are skipped — they already
+    work well with per-subgroup anchor-based windowing.
+    """
+    id_to_ade_pos: dict[str, int] = {ch["id"]: j for j, ch in enumerate(ade_summary)}
+    new_landmarks:  dict[int, int] = {}
+    combined_lm = dict(landmarks)  # grows as we find sections chapter-by-chapter
+
+    for ci, (chap_s, chap_e) in enumerate(chapter_ranges):
+        chap_win_s, chap_win_e = _get_bounded_window(
+            chap_s, chap_e, combined_lm, n_ade
+        )
+        chap_win_size = chap_win_e - chap_win_s
+        if chap_win_size <= PHASE3_MAX_EXPAND_WINDOW:
+            continue
+
+        section_indices = [
+            i for i in range(chap_s + 1, chap_e)
+            if flat_refs[i][0].count("/") == 1
+            and not flat_refs[i][1].get("heading_chunk_id")
+        ]
+        if not section_indices:
+            continue
+
+        section_list_str = "\n".join(
+            f"[{i}] {flat_refs[i][0]}" for i in section_indices
+        )
+        step      = LANDMARK_BATCH_SIZE - LANDMARK_OVERLAP
+        starts    = list(range(chap_win_s, chap_win_e, step))
+        n_batches = len(starts)
+        raw_hits: dict[int, list[int]] = {idx: [] for idx in section_indices}
+        chap_label = flat_refs[chap_s][0][:40]
+        print(
+            f"  Phase 3 [SectionLM] Ch {ci+1} [{chap_label}]: "
+            f"{len(section_indices)} sections, ADE[{chap_win_s}:{chap_win_e}] "
+            f"({chap_win_size} chunks, {n_batches} batches)"
+        )
+
+        for b_no, b_start in enumerate(starts):
+            b_end  = min(b_start + LANDMARK_BATCH_SIZE, chap_win_e)
+            window = ade_summary[b_start:b_end]
+            chunk_list_str = "\n".join(
+                f"{ch['i']:4d} | chunk_id={ch['id']} | {ch['t']}" for ch in window
+            )
+            user = (
+                f"DANH SÁCH MỤC CẤP 2 CẦN TÌM (toc_idx — title):\n"
+                f"{section_list_str}\n\n"
+                f"ĐOẠN TÀI LIỆU [{b_start}\u2013{b_end - 1}] "
+                f"(đoạn {b_no + 1}/{n_batches}):\n"
+                f"{chunk_list_str}\n\n"
+                "NHIỆM VỤ: Rà soát toàn bộ đoạn trên. "
+                "Với mỗi toc_idx: nếu thấy heading mục cấp 2 xuất hiện → ghi chunk_id; "
+                "nếu không thấy → null. Trả về đủ tất cả toc_idx."
+            )
+            try:
+                result         = call_ai(client, _PROMPT_LANDMARK_SYS, user)
+                found_in_batch = 0
+                for m in result.get("mappings", []):
+                    idx = m.get("toc_idx")
+                    cid = m.get("chunk_id")
+                    if idx not in section_indices:
+                        continue
+                    clean_id = _sanitize_chunk_id(cid, valid_ids)
+                    if clean_id and clean_id in id_to_ade_pos:
+                        raw_hits[idx].append(id_to_ade_pos[clean_id])
+                        found_in_batch += 1
+                if found_in_batch:
+                    print(f"    SectionLM batch {b_no+1}/{n_batches} [{b_start}:{b_end}]: {found_in_batch} hit(s)")
+            except Exception as e:
+                print(f"    SectionLM batch {b_no+1}/{n_batches} failed: {e}")
+
+        chapter_new: dict[int, int] = {}
+        for idx, positions in raw_hits.items():
+            if positions:
+                best = min(positions)
+                flat_refs[idx][1]["heading_chunk_id"] = ade_summary[best]["id"]
+                chapter_new[idx] = best
+
+        if chapter_new:
+            all_for_lis = sorted({**combined_lm, **chapter_new}.items())
+            valid_set   = {i for i, _ in _lis_anchors(all_for_lis)}
+            removed = []
+            for idx in list(chapter_new.keys()):
+                if idx not in valid_set:
+                    removed.append(idx)
+                    flat_refs[idx][1].pop("heading_chunk_id", None)
+                    del chapter_new[idx]
+                else:
+                    print(f"    SectionLM [{idx}] {flat_refs[idx][0]!r} \u2192 ADE[{chapter_new[idx]}]")
+            if removed:
+                print(f"    SectionLM: LIS removed {len(removed)} out-of-order section(s)")
+            new_landmarks.update(chapter_new)
+            combined_lm.update(chapter_new)
+
+    if new_landmarks:
+        print(f"  Phase 3 [SectionLM]: {len(new_landmarks)} section(s) mapped as new anchors")
+    return new_landmarks
 
 
 def _phase3_deterministic_fallbacks(
@@ -1030,6 +1212,13 @@ def _phase3_run_batched(
             except Exception as e:
                 print(f"  Mini-Landmark failed [{chap_s}]: {e}")
 
+    # ── Section Landmark pass (large chapters only, window > PHASE3_MAX_EXPAND_WINDOW) ──
+    section_lm = _phase3_get_section_landmarks(
+        client, flat_refs, ade_summary, valid_ids, landmarks, chapter_ranges, n_ade
+    )
+    landmarks.update(section_lm)
+    total_applied += len(section_lm)
+
     # ── Bounded window pass per chapter ──────────────────────────────────────
     initial_landmarks  = dict(landmarks)
     chapter_windows = {
@@ -1045,11 +1234,7 @@ def _phase3_run_batched(
             continue
 
         win_s, win_e = chapter_windows[ci]
-        win_total    = win_e - win_s
-        ade_window   = ade_summary[win_s:win_e]
-        is_large_chapter = win_total > PHASE3_MAX_EXPAND_WINDOW
-        print(f"    Ch {ci+1}/{total_chapters} [{chap_label}]: {len(pending)} nodes, ADE[{win_s}:{win_e}]"
-              + (f" — large chapter, sub-windows x{PHASE3_MAX_EXPAND_WINDOW}" if is_large_chapter else ""))
+        print(f"    Ch {ci+1}/{total_chapters} [{chap_label}]: {len(pending)} nodes, ADE[{win_s}:{win_e}]")
 
         subgroups = [pending[k : k + PHASE3_SUBGROUP_SIZE] for k in range(0, len(pending), PHASE3_SUBGROUP_SIZE)]
         n_sg      = len(subgroups)
@@ -1059,25 +1244,16 @@ def _phase3_run_batched(
             if not batch_nodes:
                 continue
 
-            # Với chapter lớn (window > MAX_EXPAND_WINDOW): dùng sub-window cục bộ
-            # căn theo vị trí tỉ lệ của subgroup trong chapter để tránh overflow.
-            if is_large_chapter:
-                ratio_s = sg_idx / max(1, n_sg)
-                ratio_e = (sg_idx + 1) / max(1, n_sg)
-                sw_s = win_s + int(win_total * ratio_s)
-                sw_e = win_s + int(win_total * ratio_e)
-                # Mở rộng buffer = PHASE3_CHAPTER_BUFFER về 2 phía, cap tại MAX_EXPAND_WINDOW
-                sw_s = max(win_s, sw_s - PHASE3_CHAPTER_BUFFER)
-                sw_e = min(win_e, sw_e + PHASE3_CHAPTER_BUFFER)
-                if sw_e - sw_s > PHASE3_MAX_EXPAND_WINDOW:
-                    # Thay vì lấy trung tâm (sẽ làm mất phần đầu của block nơi TOC thường xuất hiện),
-                    # ta giữ nguyên điểm bắt đầu (sw_s) và cắt bớt phần đuôi.
-                    sw_e = sw_s + PHASE3_MAX_EXPAND_WINDOW
-                cur_window = ade_summary[sw_s:sw_e]
-                sg_win_s, sg_win_e = sw_s, sw_e
-            else:
-                cur_window  = list(ade_window)
-                sg_win_s, sg_win_e = win_s, win_e
+            sg_win_s, sg_win_e = _get_bounded_window(
+                batch_nodes[0], batch_nodes[-1] + 1, landmarks, n_ade
+            )
+            # Clamp to chapter boundaries to avoid crossing into adjacent chapters
+            sg_win_s = max(win_s, sg_win_s)
+            sg_win_e = min(win_e, sg_win_e)
+            # Safety cap: if still oversized (no nearby section anchor), limit window
+            if sg_win_e - sg_win_s > PHASE3_MAX_EXPAND_WINDOW:
+                sg_win_e = sg_win_s + PHASE3_MAX_EXPAND_WINDOW
+            cur_window = ade_summary[sg_win_s:sg_win_e]
 
             batch_refs  = [flat_refs[i] for i in batch_nodes]
             user        = _phase3_build_user(batch_refs, cur_window, batch_nodes[0], sg_idx + 1, n_sg, n_toc, toc_indices=batch_nodes)
@@ -1099,12 +1275,14 @@ def _phase3_run_batched(
                     expanded = _phase3_expand_if_edge(mapped_positions, sg_win_s, sg_win_e, n_ade)
                     if expanded:
                         exp_win_s, exp_win_e = expanded
+                        # Clamp to chapter boundaries to avoid contaminating adjacent chapters
+                        exp_win_s = max(win_s, exp_win_s)
+                        exp_win_e = min(win_e, exp_win_e)
                         exp_window  = ade_summary[exp_win_s:exp_win_e]
-                        exp_refs    = [flat_refs[i] for i in still_null]
-                        exp_user    = _phase3_build_user(exp_refs, exp_window, still_null[0], sg_idx + 1, n_sg, n_toc, toc_indices=still_null)
-                        # Shrink nếu exp_user vượt context window (chương lớn)
-                        exp_shrink  = max(10, len(exp_window) // 5)
-                        exp_tries   = 0
+                        exp_refs   = [flat_refs[i] for i in still_null]
+                        exp_user   = _phase3_build_user(exp_refs, exp_window, still_null[0], sg_idx + 1, n_sg, n_toc, toc_indices=still_null)
+                        exp_shrink = max(10, len(exp_window) // 5)
+                        exp_tries  = 0
                         while len(exp_user) > PHASE3_MAX_USER_CHARS and len(exp_window) > exp_shrink and exp_tries < PHASE3_MAX_EXPAND_TRIES:
                             exp_window = exp_window[: max(exp_shrink, len(exp_window) - exp_shrink)]
                             exp_user   = _phase3_build_user(exp_refs, exp_window, still_null[0], sg_idx + 1, n_sg, n_toc, toc_indices=still_null)
@@ -1136,22 +1314,16 @@ def _phase3_run_batched(
             sub      = orphans[k : k + PHASE3_SUBGROUP_SIZE]
             o_win_s, o_win_e = _get_bounded_window(sub[0], sub[-1] + 1, landmarks, n_ade, buffer=PHASE3_CHAPTER_BUFFER * 2)
             o_window = ade_summary[o_win_s:o_win_e]
-            # Giới hạn cứng cửa sổ mồ côi nếu nó quá to
             if len(o_window) > PHASE3_MAX_EXPAND_WINDOW:
-                # Tuân thủ đúng logic: giữ nguyên điểm bắt đầu (nơi TOC có khả năng xuất hiện cao nhất
-                # ngay sau node tiền nhiệm) và cắt bớt phần đuôi.
-                o_win_e = min(n_ade, o_win_s + PHASE3_MAX_EXPAND_WINDOW)
+                o_win_e  = min(n_ade, o_win_s + PHASE3_MAX_EXPAND_WINDOW)
                 o_window = ade_summary[o_win_s:o_win_e]
 
             o_refs   = [flat_refs[i] for i in sub]
             o_user   = _phase3_build_user(o_refs, o_window, sub[0], 1, 1, n_toc, toc_indices=sub)
-            
-            # Shrink loop an toàn cho Orphan pass
             o_shrink = max(10, len(o_window) // 5)
             while len(o_user) > PHASE3_MAX_USER_CHARS and len(o_window) > o_shrink:
                 o_window = o_window[: max(o_shrink, len(o_window) - o_shrink)]
                 o_user   = _phase3_build_user(o_refs, o_window, sub[0], 1, 1, n_toc, toc_indices=sub)
-                
             try:
                 o_result = call_ai(client, _PROMPT_PHASE3_SYS, o_user)
                 oa, on   = _phase3_apply_mappings(o_result.get("mappings", []), flat_refs, valid_ids)
@@ -1300,11 +1472,7 @@ def phase3(
 
     still_null = sum(1 for _, nd in flat_refs if not nd.get("heading_chunk_id"))
     if still_null:
-        print(f"  Phase 3: {still_null}/{n_toc} nodes still null — running fallbacks")
-
-    # Final deterministic fallbacks (runs for both single-call and batched paths)
-    _phase3_deterministic_fallbacks(flat_refs, ade_summary)
-
+        print(f"  Phase 3: {still_null}/{n_toc} nodes remain null after all passes")
     return toc
 
 
@@ -1375,7 +1543,8 @@ def process_file(
         if ade_path.exists():
             try:
                 ade_chunks = json.loads(ade_path.read_text(encoding="utf-8"))
-                toc = phase3(client, toc, ade_chunks, toc_end_page=toc_end)
+                toc_end_ade = _compute_toc_end_ade_page(text, ade_chunks, toc_end)
+                toc = phase3(client, toc, ade_chunks, toc_end_page=toc_end_ade)
             except Exception as e:
                 print(f"  Phase 3 error: {e} — bỏ qua")
         else:
@@ -1479,103 +1648,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ASYNC SERVICE WRAPPER (used by the FastAPI ingestion pipeline)
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TocBuilderService:
-    """Async wrapper around the 3-phase TOC pipeline.
-
-    Phase 1 & 2 build the TOC tree from the raw OCR markdown (anchors and
-    PAGE_BREAK markers must be intact). Phase 3 maps each TOC heading to an
-    ADE chunk via heading_chunk_id.
-    """
-
-    def __init__(self, *, markdown_service=None) -> None:
-        # markdown_service kept for backward-compatible kwargs; not used.
-        self._markdown_service = markdown_service
-
-    async def build_toc(
-        self,
-        *,
-        clean_text: str | None = None,
-        raw_markdown: str | None = None,
-        source_file: str,
-        ade_chunks: list[dict] | None = None,
-    ) -> dict:
-        markdown = raw_markdown if raw_markdown is not None else clean_text
-        if markdown is None:
-            raise ValueError("build_toc requires raw_markdown (or clean_text)")
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return await loop.run_in_executor(
-                executor,
-                partial(self._build_sync, markdown, source_file, ade_chunks or []),
-            )
-
-    async def openai_json_completion(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> dict:
-        loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return await loop.run_in_executor(
-                executor,
-                partial(self._json_completion_sync, system_prompt, user_prompt),
-            )
-
-    def _build_sync(
-        self,
-        raw_markdown: str,
-        source_file: str,
-        ade_chunks: list[dict],
-    ) -> dict:
-        client = self._make_client()
-        _init_phase2_prompts()
-
-        global MIN_SECTION_DEPTH
-
-        raw_toc, found_toc, toc_end = phase1(client, raw_markdown, source_file)
-        toc = ensure_schema(raw_toc, source_file)
-
-        if not toc.get("total_pages"):
-            toc["total_pages"] = raw_markdown.count(PAGE_BREAK) + 1
-
-        total_pages = toc.get("total_pages") or 0
-        MIN_SECTION_DEPTH = (
-            MIN_SECTION_DEPTH_LONG if total_pages >= PAGE_THRESHOLD_FOR_DEPTH
-            else MIN_SECTION_DEPTH_SHORT
-        )
-
-        if not found_toc or toc_is_shallow(toc):
-            try:
-                toc = ensure_schema(
-                    phase2(client, raw_markdown, toc, source_file, body_start_page=toc_end),
-                    source_file,
-                )
-            except Exception:
-                logger.exception("Phase 2 failed — keeping Phase 1 result")
-
-        if ade_chunks:
-            try:
-                toc = phase3(client, toc, ade_chunks, toc_end_page=toc_end)
-            except Exception:
-                logger.exception("Phase 3 mapping failed — TOC will have no heading_chunk_id")
-
-        return toc
-
-    def _json_completion_sync(self, system_prompt: str, user_prompt: str) -> dict:
-        client = self._make_client()
-        return call_ai(client, system_prompt, user_prompt)
-
-    @staticmethod
-    def _make_client() -> OpenAI:
-        load_dotenv(override=False)
-        api_key = os.getenv("OPENAI_API_KEY", "").strip().strip('"').strip("'")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY missing — required for the TOC pipeline")
-        return OpenAI(api_key=api_key)

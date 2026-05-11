@@ -129,6 +129,7 @@ def _find_next_heading_char(
     ocr_md: str,
     title: str,
     search_from: int,
+    search_end: int | None = None,
     min_advance: int = 1,
 ) -> int | None:
 
@@ -137,7 +138,8 @@ def _find_next_heading_char(
         return None
 
     search_start = search_from + min_advance
-    window       = ocr_md[search_start: search_start + _INTRA_CHUNK_SEARCH_WINDOW]
+    end_limit = search_end if search_end is not None else search_start + _INTRA_CHUNK_SEARCH_WINDOW
+    window       = ocr_md[search_start: end_limit]
     lines        = window.splitlines(keepends=True)
 
     offset     = 0
@@ -145,11 +147,14 @@ def _find_next_heading_char(
     best_score = 0.0
 
     # Pre-compute numbered prefix (e.g. "4.3.1.6." or "Bước 4") for reliable match
-    _num_prefix_match = re.match(r'^(\d[\d\.]*\.?|Bước\s+\d+)', title)
-    _num_prefix = _num_prefix_match.group(1).strip() if _num_prefix_match else None
+    _num_prefix_match = re.match(r'^(\d[\d\.]*\.?|Bước\s+\d+)', title, flags=re.IGNORECASE)
+    _num_prefix = _num_prefix_match.group(1).strip().lower() if _num_prefix_match else None
+
+    _RE_HTML = re.compile(r"<[^>]+>")
 
     for line in lines:
-        clean = _RE_HEADING.sub("", line).strip()
+        clean = _RE_HTML.sub(" ", line)
+        clean = _RE_HEADING.sub("", clean).strip()
         if clean:
             b_words = set(re.sub(r"[^\w\s]", " ", clean.lower()).split())
             if b_words:
@@ -159,7 +164,7 @@ def _find_next_heading_char(
                     best_score = score
                     best_pos   = search_start + offset
             # Numbered prefix match: override Dice nếu prefix khớp chính xác
-            if _num_prefix and clean.startswith(_num_prefix) and best_score < 0.9:
+            if _num_prefix and clean.lower().startswith(_num_prefix) and best_score < 0.9:
                 best_score = 0.9
                 best_pos   = search_start + offset
         offset += len(line)
@@ -176,11 +181,15 @@ def _compute_sibling_ends(
     ocr_md: str,
 ) -> None:
 
+    # Pre-pass: resolve split chars for each run of siblings sharing the same chunk_idx.
+    # Each successive sibling's search begins AFTER the previous split, not from chunk_start.
+    # This fixes the 3+-sibling case where the second sibling's heading was always the first
+    # heading found from chunk_start rather than the correct next heading.
+    last_split_by_chunk: dict[int, int] = {}  # chunk_idx -> last resolved split char
+
     for i, node in enumerate(nodes):
         cur_idx = node.get("_chunk_idx")
         nxt_idx = nodes[i + 1].get("_chunk_idx") if i + 1 < len(nodes) else None
-        # Guard: chỉ dùng nxt_idx nếu nó TIẾN FORWARD (> cur_idx)
-        # Tránh inverted range [cur_idx, nxt_idx) khi nxt_idx <= cur_idx do shared/OOR chunk
         valid_nxt = nxt_idx is not None and (cur_idx is None or nxt_idx > cur_idx)
         node["_chunk_end"] = nxt_idx if valid_nxt else parent_end
 
@@ -189,9 +198,14 @@ def _compute_sibling_ends(
             chunk_start = ade_enriched[cur_idx].get("start_char", -1)
             nxt_title   = nodes[i + 1].get("title", "")
             if chunk_start >= 0 and nxt_title:
-                split = _find_next_heading_char(ocr_md, nxt_title, chunk_start)
-                if split is not None and split > chunk_start:
+                # Search for next sibling's heading starting after the previous split
+                # (or from chunk_start if this is the first in the run).
+                search_from = last_split_by_chunk.get(cur_idx, chunk_start)
+                chunk_end = ade_enriched[cur_idx].get("end_char")
+                split = _find_next_heading_char(ocr_md, nxt_title, search_from, search_end=chunk_end)
+                if split is not None and split > search_from:
                     node["_end_char_override"] = split
+                    last_split_by_chunk[cur_idx] = split
                     logger.info(
                         "  [SHARED_CHUNK/sibling] %-40s ← split @char %d (id=%.8s)",
                         node["title"][:40], split, ade_enriched[cur_idx].get("id", ""),
@@ -201,7 +215,6 @@ def _compute_sibling_ends(
                         "  [SHARED_CHUNK/no-split] %-40s  next=%-40s",
                         node["title"][:40], nxt_title[:40],
                     )
-
 
 def _infer_from_children(node: dict) -> None:
     child_idxs, child_ends = [], []
@@ -297,8 +310,11 @@ def _find_heading_end(text: str, toc_title: str) -> int:
     lines = text.splitlines(keepends=True)
     best_i, best_score = -1, 0.0
 
+    _RE_HTML = re.compile(r"<[^>]+>")
+
     for i, line in enumerate(lines):
-        clean = _RE_HEADING.sub("", line).strip()
+        clean = _RE_HTML.sub(" ", line)
+        clean = _RE_HEADING.sub("", clean).strip()
         if not clean:
             continue
         b_words = set(re.sub(r"[^\w\s]", " ", clean.lower()).split())
@@ -381,7 +397,8 @@ def _get_first_child_start_char(
             # Parent và child cùng chunk → tìm intra-chunk heading position
             if parent_idx is not None and parent_idx == idx:
                 child_title = child.get("title", "")
-                split = _find_next_heading_char(ocr_md, child_title, sc)
+                chunk_end = ade_enriched[idx].get("end_char")
+                split = _find_next_heading_char(ocr_md, child_title, sc, search_end=chunk_end)
                 if split is not None and split > sc:
                     logger.info(
                         "  [SHARED_CHUNK/parent-child] %-40s ← child heading @char %d",
@@ -619,17 +636,8 @@ def process(toc_path: Path, ocr_md_path: Path, ade_path: Path, out_path: Path) -
 # ── Service class (API) ────────────────────────────────────────────────────────
 
 class BBoxChunkingService:
-    def __init__(self, *, markdown_service=None) -> None:
-        # markdown_service kept for backward-compatible kwargs; the new
-        # ID-based pipeline operates on the raw markdown so cleaning is unwanted.
-        self._markdown_service = markdown_service
-
-    def build_chunk_payload(
-        self,
-        ocr_md_text: str,
-        ade_chunks: list[dict],
-        toc_data: dict,
-    ) -> dict:
+    @staticmethod
+    def build_chunk_payload(ocr_md_text: str, ade_chunks: list[dict], toc_data: dict) -> dict:
         page_breaks  = build_page_breaks(ocr_md_text)
         ade_enriched = build_ade_offset_map(ocr_md_text, ade_chunks)
         id_to_idx    = build_id_to_idx(ade_enriched)
@@ -647,19 +655,6 @@ class BBoxChunkingService:
         result = {k: toc_copy.get(k) for k in meta_keys}
         result["chapters"] = top_chunks
         return result
-
-
-# Backward-compat alias: code paths previously imported FuzzyChunkingService.
-FuzzyChunkingService = BBoxChunkingService
-
-
-def _find_body_start(_text: str) -> int:
-    """Backward-compat shim — the new ID-based pipeline operates on raw OCR
-    markdown (anchors + PAGE_BREAK markers intact) so no body-start trim is
-    required. ``markdown_service.MarkdownProcessingService`` still imports this
-    symbol; return 0 so any consumer that fed cleaned text simply keeps it.
-    """
-    return 0
 
 
 # ── Main ───────────────────────────────────────────────────────────────────────

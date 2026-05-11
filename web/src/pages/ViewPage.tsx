@@ -34,6 +34,43 @@ function clampNormalizedY(value: number | null | undefined): number {
   return Math.max(0, Math.min(1, value))
 }
 
+interface SpatialHighlightBbox {
+  page: number
+  left: number
+  top: number
+  right: number
+  bottom: number
+}
+
+// Spatial PDFs only carry (page_start, page_end, start_y, end_y) per node and
+// have no per-page bbox tree. Synthesise a full-width content bbox for each
+// page in the section's range so the PDF viewer can pulse-highlight it the
+// same way OCR mode highlights heading + content bboxes.
+function buildSpatialHighlightBboxes(
+  node: WorkspaceSectionNode | null,
+): SpatialHighlightBbox[] {
+  if (!node || node.page_start == null) return []
+  const startPage = node.page_start
+  const endPage = node.page_end ?? startPage
+  const startY = clampNormalizedY(node.start_y)
+  const endY = node.end_y == null ? 1 : clampNormalizedY(node.end_y)
+
+  const out: SpatialHighlightBbox[] = []
+  for (let page = startPage; page <= endPage; page += 1) {
+    const top = page === startPage ? startY : 0
+    const bottom = page === endPage ? endY : 1
+    if (bottom <= top) continue
+    out.push({
+      page: page - 1, // PdfViewer expects 0-indexed page numbers
+      left: 0,
+      top,
+      right: 1,
+      bottom,
+    })
+  }
+  return out
+}
+
 function flattenSectionNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNode[] {
   const result: WorkspaceSectionNode[] = []
   for (const node of nodes) {
@@ -899,8 +936,12 @@ export default function ViewPage() {
           pageJumpKey={pdfJumpState.key}
           visibleLocationBias={isSpatialPositioning ? SPATIAL_VISIBLE_LOCATION_BIAS : OCR_VISIBLE_LOCATION_BIAS}
           highlightKey={activeSection?.section_id ?? null}
-          highlightHeadingBbox={activeSection?.heading_bbox ?? null}
-          highlightContentBboxes={activeSection?.content_bboxes ?? []}
+          highlightHeadingBbox={isSpatialPositioning ? null : (activeSection?.heading_bbox ?? null)}
+          highlightContentBboxes={
+            isSpatialPositioning
+              ? (buildSpatialHighlightBboxes(activeSection) as unknown as Record<string, unknown>[])
+              : (activeSection?.content_bboxes ?? [])
+          }
           onVisibleLocationChange={handlePdfVisibleLocationChange}
         />
       </div>
