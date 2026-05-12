@@ -118,6 +118,7 @@ class GuidelineWorkspaceService:
 
         for section in sections:
             score = section_score_map.get(section.section_id)
+            pdf_position = self._build_pdf_viewer_position(section)
             node_map[section.section_id] = {
                 "section_id": section.section_id,
                 "version_id": section.version_id,
@@ -133,6 +134,7 @@ class GuidelineWorkspaceService:
                 "page_end": section.page_end,
                 "start_y": section.start_y,
                 "end_y": section.end_y,
+                **pdf_position,
                 "score": score,
                 "is_suspect": bool(section.is_suspect)
                 if score is None
@@ -154,7 +156,163 @@ class GuidelineWorkspaceService:
                 roots.append(current_node)
 
         self._sort_nodes(roots)
+        self._disambiguate_shared_pdf_anchors(roots)
         return roots
+
+    def _build_pdf_viewer_position(self, section: Section) -> dict[str, float | int | None]:
+        """Return PDF-native anchors for the viewer without changing core fields.
+
+        OCR chunking ``page_start`` is derived from markdown page breaks, while
+        ADE bboxes are native PDF pages (0-indexed). The viewer should use the
+        bbox coordinates whenever present so old ingestions and OCR page drift
+        still land on the physical PDF page.
+        """
+        heading_bbox = section.heading_bbox if isinstance(section.heading_bbox, dict) else None
+        content_bboxes = section.content_bboxes if isinstance(section.content_bboxes, list) else []
+
+        first_content_bbox = next(
+            (bbox for bbox in content_bboxes if isinstance(bbox, dict)),
+            None,
+        )
+
+        page_start = self._bbox_pdf_page(heading_bbox)
+        if page_start is None:
+            page_start = self._bbox_pdf_page(first_content_bbox)
+
+        start_y = self._bbox_float(heading_bbox, "top")
+        if start_y is None:
+            start_y = self._bbox_float(first_content_bbox, "top")
+
+        content_pages = [
+            page
+            for bbox in content_bboxes
+            if isinstance(bbox, dict)
+            for page in [self._bbox_pdf_page(bbox)]
+            if page is not None
+        ]
+        page_end = max(content_pages) if content_pages else page_start
+        end_y = self._resolve_pdf_end_y(
+            page_end=page_end,
+            content_bboxes=content_bboxes,
+            heading_bbox=heading_bbox,
+        )
+
+        return {
+            "pdf_page_start": page_start if page_start is not None else section.page_start,
+            "pdf_page_end": page_end if page_end is not None else section.page_end,
+            "pdf_start_y": start_y if start_y is not None else section.start_y,
+            "pdf_end_y": end_y if end_y is not None else section.end_y,
+        }
+
+    def _bbox_pdf_page(self, bbox: dict[str, object] | None) -> int | None:
+        if not isinstance(bbox, dict):
+            return None
+        page = bbox.get("page")
+        if isinstance(page, int):
+            return page + 1
+        return None
+
+    def _bbox_float(self, bbox: dict[str, object] | None, key: str) -> float | None:
+        if not isinstance(bbox, dict):
+            return None
+        value = bbox.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _resolve_pdf_end_y(
+        self,
+        *,
+        page_end: int | None,
+        content_bboxes: list[object],
+        heading_bbox: dict[str, object] | None,
+    ) -> float | None:
+        candidates = [
+            bbox for bbox in content_bboxes
+            if isinstance(bbox, dict)
+            and (
+                page_end is None
+                or self._bbox_pdf_page(bbox) == page_end
+            )
+        ]
+        if not candidates:
+            candidates = [bbox for bbox in content_bboxes if isinstance(bbox, dict)]
+        if candidates:
+            return self._bbox_float(candidates[-1], "bottom")
+        return self._bbox_float(heading_bbox, "bottom")
+
+    def _disambiguate_shared_pdf_anchors(self, roots: list[dict[str, object]]) -> None:
+        """Spread viewer anchors for headings merged into the same ADE bbox.
+
+        LandingAI can emit several markdown headings inside one text chunk; the
+        core correctly maps them to one bbox, but a PDF scroll target then needs
+        distinct y positions. This is viewer-only enrichment and leaves the
+        core page/bbox fields intact.
+        """
+        groups: dict[tuple[object, ...], list[dict[str, object]]] = {}
+        for node in self._iter_nodes(roots):
+            bbox = node.get("heading_bbox")
+            if not isinstance(bbox, dict):
+                continue
+            key = (
+                node.get("pdf_page_start"),
+                bbox.get("left"),
+                bbox.get("top"),
+                bbox.get("right"),
+                bbox.get("bottom"),
+            )
+            groups.setdefault(key, []).append(node)
+
+        for nodes in groups.values():
+            if len(nodes) <= 1:
+                continue
+
+            first_bbox = nodes[0].get("heading_bbox")
+            if not isinstance(first_bbox, dict):
+                continue
+            top = self._bbox_float(first_bbox, "top")
+            bottom = self._bbox_float(first_bbox, "bottom")
+            if top is None or bottom is None or bottom <= top:
+                continue
+
+            weights = [self._node_text_weight(node) for node in nodes]
+            positive_total = sum(weight for weight in weights if weight > 0)
+            if positive_total <= 0:
+                weights = [1.0 for _ in nodes]
+                positive_total = float(len(nodes))
+
+            span = bottom - top
+            starts: list[float] = []
+            cursor = 0.0
+            for weight in weights:
+                starts.append(min(bottom, top + span * (cursor / positive_total)))
+                if weight > 0:
+                    cursor += weight
+
+            for index, node in enumerate(nodes):
+                start_y = starts[index]
+                next_start = starts[index + 1] if index + 1 < len(starts) else bottom
+                start_value = round(max(top, min(bottom, start_y)), 6)
+                node["pdf_start_y"] = start_value
+                node["pdf_end_y"] = round(max(start_value, min(bottom, next_start)), 6)
+
+    def _node_text_weight(self, node: dict[str, object]) -> float:
+        text = node.get("content") or node.get("intro_content")
+        if isinstance(text, str):
+            stripped = text.strip()
+            if stripped:
+                return float(len(stripped))
+        return 0.0
+
+    def _iter_nodes(self, nodes: list[dict[str, object]]):
+        for node in nodes:
+            yield node
+            children = node.get("children")
+            if isinstance(children, list):
+                yield from self._iter_nodes(children)
 
     def _count_suspect_sections(self, nodes: list[dict[str, object]]) -> int:
         count = 0

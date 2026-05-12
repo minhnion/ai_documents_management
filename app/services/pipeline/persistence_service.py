@@ -91,8 +91,8 @@ class PipelinePersistenceService:
             order_index=order_index,
             start_char=node.get('start_char'),
             end_char=node.get('end_char'),
-            page_start=node.get('page_start'),
-            page_end=node.get('page_end'),
+            page_start=self._derive_page_start(node),
+            page_end=self._derive_page_end(node),
             start_y=self._derive_start_y(node),
             end_y=self._derive_end_y(node),
             match_score=score,
@@ -164,6 +164,33 @@ class PipelinePersistenceService:
             return 0
         return clean_text.count(PAGE_BREAK_MARKER) + 1
 
+    def _derive_page_start(self, node: dict[str, Any]) -> int | None:
+        # OCR mode: chunking_service.page_at() counts markdown PAGE_BREAKs which drifts vs real PDF pages; prefer heading_bbox.page (0-idx ADE → 1-idx PDF) so FE scroll matches highlight.
+        hb = node.get('heading_bbox')
+        if isinstance(hb, dict):
+            page = hb.get('page')
+            if isinstance(page, int):
+                return page + 1
+        return node.get('page_start')
+
+    def _derive_page_end(self, node: dict[str, Any]) -> int | None:
+        cb = node.get('content_bboxes')
+        pdf_pages: list[int] = []
+        if isinstance(cb, list):
+            for bbox in cb:
+                if isinstance(bbox, dict):
+                    page = bbox.get('page')
+                    if isinstance(page, int):
+                        pdf_pages.append(page)
+        if pdf_pages:
+            return max(pdf_pages) + 1
+        hb = node.get('heading_bbox')
+        if isinstance(hb, dict):
+            page = hb.get('page')
+            if isinstance(page, int):
+                return page + 1
+        return node.get('page_end')
+
     def _derive_start_y(self, node: dict[str, Any]) -> float | None:
         explicit = node.get('start_y')
         if explicit is not None:
@@ -179,7 +206,8 @@ class PipelinePersistenceService:
         if explicit is not None:
             return self._as_float(explicit)
 
-        page_end = node.get('page_end')
+        # Must match _derive_page_end (PDF 1-idx) so the bbox filter actually hits in OCR mode.
+        page_end = self._derive_page_end(node)
         content_bboxes = node.get('content_bboxes')
         if isinstance(content_bboxes, list) and content_bboxes:
             candidates = [

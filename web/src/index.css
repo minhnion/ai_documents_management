@@ -1470,7 +1470,7 @@ a:hover {
   border-radius: 3px;
   border: 2px solid transparent;
   opacity: 0;
-  animation: pdf-highlight-fade 3.2s ease-out forwards;
+  animation: pdf-highlight-fade 5s ease-out forwards;
 }
 
 .pdf-highlight--heading {
@@ -1491,7 +1491,7 @@ a:hover {
   8% {
     opacity: 1;
   }
-  55% {
+  70% {
     opacity: 1;
   }
   100% {

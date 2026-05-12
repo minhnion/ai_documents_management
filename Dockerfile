@@ -1,7 +1,7 @@
 # ---------------------------------------
 # Stage 1: Build the frontend
 # ---------------------------------------
-FROM node:20-slim AS frontend-builder
+FROM node:22-slim AS frontend-builder
 
 # Setup pnpm
 ENV PNPM_HOME="/pnpm"
@@ -13,7 +13,7 @@ WORKDIR /app/web
 # Copy package files and install dependencies using a cache mount
 COPY web/package.json web/pnpm-lock.yaml* ./
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --ignore-scripts
 
 # Copy the rest of the frontend source code and build
 # (Note: The original file missed copying the source code before building)
