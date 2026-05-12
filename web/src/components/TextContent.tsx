@@ -55,6 +55,8 @@ export default function TextContent({
   const sectionRefs = useRef<Map<number, HTMLDivElement>>(new Map())
   const lastReportedSectionRef = useRef<number | null>(null)
   const suppressEmissionUntilRef = useRef(0)
+  // True only after the user explicitly scrolled (wheel/touch/keyboard). Programmatic scrolls (TOC click, PDF→middle sync) keep it false to prevent reverse-sync from drifting active section into a child while smooth-scroll is still in flight.
+  const userScrollingRef = useRef(false)
 
   const flatNodes = useMemo(() => flattenNodes(toc ?? []), [toc])
   const sectionIdSequence = useMemo(
@@ -66,7 +68,9 @@ export default function TextContent({
   useEffect(() => {
     if (activeSectionId == null) return
     lastReportedSectionRef.current = activeSectionId
+    // 'none' means this pane drove the change itself (user scrolled here), so don't reset the user-scroll flag — keep emitting as the user continues scrolling.
     if (activeSectionScrollBehavior === 'none') return
+    userScrollingRef.current = false
     const el = sectionRefs.current.get(activeSectionId)
     if (!el) return
     suppressEmissionUntilRef.current = Date.now() + EXTERNAL_SCROLL_EMISSION_SUPPRESS_MS
@@ -82,7 +86,13 @@ export default function TextContent({
 
     let frameId: number | null = null
 
+    const markUserScroll = () => { userScrollingRef.current = true }
+    root.addEventListener('wheel', markUserScroll, { passive: true })
+    root.addEventListener('touchstart', markUserScroll, { passive: true })
+    root.addEventListener('keydown', markUserScroll)
+
     const detectAndEmit = () => {
+      if (!userScrollingRef.current) return
       if (Date.now() < suppressEmissionUntilRef.current) return
       const targetY = root.scrollTop + root.clientHeight * 0.3
       let bestId: number | null = null
@@ -118,10 +128,13 @@ export default function TextContent({
     }
 
     root.addEventListener('scroll', handleScroll, { passive: true })
-    handleScroll()
+    // Don't emit on mount: at scrollTop=0 the 30% line falls inside section 1.4 / 1.4.1, which would auto-jump the PDF before the user scrolls.
 
     return () => {
       root.removeEventListener('scroll', handleScroll)
+      root.removeEventListener('wheel', markUserScroll)
+      root.removeEventListener('touchstart', markUserScroll)
+      root.removeEventListener('keydown', markUserScroll)
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId)
       }

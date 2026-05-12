@@ -15,6 +15,7 @@ from app.core.database import (
     AsyncSessionLocal,
     init_db_schema,
     migrate_chunks_text_abstract_schema,
+    migrate_documents_original_filename_schema,
     migrate_documents_pipeline_mode_schema,
     migrate_guidelines_ten_benh_schema,
     migrate_sections_enriched_schema,
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
         await migrate_sections_enriched_schema()
         await migrate_chunks_text_abstract_schema()
         await migrate_documents_pipeline_mode_schema()
+        await migrate_documents_original_filename_schema()
         logger.info("Database schema ready.")
 
     async with AsyncSessionLocal() as session:

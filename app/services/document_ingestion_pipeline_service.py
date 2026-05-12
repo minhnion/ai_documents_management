@@ -124,9 +124,10 @@ class DocumentIngestionPipelineService:
         if effective_mode == "ocr_llm":
             self._validate_pipeline_settings("ocr_llm")
             ocr_result = await self._ocr_document(pdf_path)
+            ocr_md_name = self._derive_ocr_md_name(document=document, pdf_path=pdf_path)
             toc = await self._build_toc(
                 ocr_result.raw_markdown,
-                source_file=pdf_path.name,
+                source_file=ocr_md_name,
                 ade_chunks=ocr_result.ade_chunks,
             )
             chunk_payload = self._chunk_with_fuzzy_matching(
@@ -139,12 +140,8 @@ class DocumentIngestionPipelineService:
                 ade_chunks=ocr_result.ade_chunks,
                 artifact_dir=artifact_dir,
             )
-            self._enrich_landing_chunks(
-                chunk_payload=chunk_payload,
-                ade_chunks=ocr_result.ade_chunks,
-                version_id=version_id,
-            )
 
+            # Write artifacts before enrichment so chunks.json on disk keeps the partner core shape; FE-only fields are added after, only on the in-memory copy.
             self._write_artifacts(
                 artifact_dir=artifact_dir,
                 raw_md=ocr_result.raw_markdown,
@@ -152,6 +149,11 @@ class DocumentIngestionPipelineService:
                 ade_chunks=ocr_result.ade_chunks,
                 toc=toc,
                 chunk_payload=chunk_payload,
+            )
+            self._enrich_landing_chunks(
+                chunk_payload=chunk_payload,
+                ade_chunks=ocr_result.ade_chunks,
+                version_id=version_id,
             )
             persist_stats = await self._persist_chunk_payload(
                 version_id=version_id,
@@ -234,6 +236,14 @@ class DocumentIngestionPipelineService:
         raise BadRequestException(
             "DOCUMENT_PIPELINE_MODE must be one of: auto, ocr_llm, spatial_pdf."
         )
+
+    def _derive_ocr_md_name(self, *, document: Document, pdf_path: Path) -> str:
+        # Mirrors the partner CLI: Phase 1/2/3 prompts embed the OCR markdown filename, so we feed the user-uploaded stem + "_ocr.md".
+        raw = (document.original_filename or "").strip()
+        stem = Path(raw).stem if raw else pdf_path.stem
+        if not stem:
+            stem = pdf_path.stem
+        return f"{stem}_ocr.md"
 
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():

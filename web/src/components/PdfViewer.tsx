@@ -193,6 +193,7 @@ export default function PdfViewer({
   const [reloadKey, setReloadKey] = useState(0)
   const [fitScale, setFitScale] = useState(DEFAULT_SCALE)
   const [zoomLevel, setZoomLevel] = useState(0)
+  const [placeholderSize, setPlaceholderSize] = useState<{ width: number; height: number } | null>(null)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -203,6 +204,8 @@ export default function PdfViewer({
   const observerRef = useRef<IntersectionObserver | null>(null)
   const currentPageRef = useRef(1)
   const lastReportedLocationRef = useRef<{ page: number; y: number } | null>(null)
+  // True only after the user explicitly scrolled. TOC-driven jumps reset it so IntersectionObserver fires during programmatic scroll don't yank activeSection mid-flight.
+  const userScrollingRef = useRef(false)
 
   const renderScale = getZoomScale(fitScale, zoomLevel)
 
@@ -245,6 +248,8 @@ export default function PdfViewer({
 
   const emitVisibleLocation = useCallback((pageNumber: number) => {
     if (!onVisibleLocationChange) return
+    // Only forward to the parent when the user is actively scrolling. During TOC-driven jumps this stays false so IntersectionObserver hits along the way don't reopen the suppress window.
+    if (!userScrollingRef.current) return
 
     const normalizedY = getNormalizedVisibleY(pageNumber)
     const previous = lastReportedLocationRef.current
@@ -477,6 +482,37 @@ export default function PdfViewer({
     return () => window.clearTimeout(timer)
   }, [pdfDoc, renderAllPages, renderScale])
 
+  // Pre-compute page wrapper dimensions so offsetTop is correct for every page from the start. Without this, unrendered pages have height 0 and TOC jumps to far pages land at the wrong scroll position.
+  useEffect(() => {
+    if (!pdfDoc) {
+      setPlaceholderSize(null)
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const firstPage = await pdfDoc.getPage(1)
+        try {
+          const viewport = firstPage.getViewport({ scale: renderScale, rotation: DEFAULT_ROTATION })
+          if (!cancelled) {
+            setPlaceholderSize({ width: viewport.width, height: viewport.height })
+          }
+        } finally {
+          if (typeof firstPage.cleanup === 'function') {
+            firstPage.cleanup()
+          }
+        }
+      } catch (placeholderError) {
+        if (!cancelled) {
+          console.error('Failed measuring PDF placeholder dimensions', placeholderError)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [pdfDoc, renderScale])
+
   useEffect(() => {
     if (!containerRef.current || renderedPages.length === 0) return
 
@@ -538,11 +574,19 @@ export default function PdfViewer({
       })
     }
 
+    const markUserScroll = () => { userScrollingRef.current = true }
+
     container.addEventListener('scroll', handleScroll, { passive: true })
-    handleScroll()
+    container.addEventListener('wheel', markUserScroll, { passive: true })
+    container.addEventListener('touchstart', markUserScroll, { passive: true })
+    container.addEventListener('keydown', markUserScroll)
+    // Don't fire handleScroll on mount: scrollTop=0 at load would emit page 1 before the user has done anything.
 
     return () => {
       container.removeEventListener('scroll', handleScroll)
+      container.removeEventListener('wheel', markUserScroll)
+      container.removeEventListener('touchstart', markUserScroll)
+      container.removeEventListener('keydown', markUserScroll)
       if (frameId !== null) {
         window.cancelAnimationFrame(frameId)
       }
@@ -555,19 +599,26 @@ export default function PdfViewer({
     setPageInputValue(String(page))
     const el = pageRefs.current[page - 1]
     const container = containerRef.current
-    if (el && container) {
-      const normalizedTargetY = pageY == null ? null : clampNormalizedY(pageY)
-      if (normalizedTargetY == null) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      } else {
-        const biasPx = Math.max(container.clientHeight * Math.max(visibleLocationBias, 0), 0)
-        const targetTop = Math.max(
-          el.offsetTop + el.offsetHeight * normalizedTargetY - biasPx - 12,
+    if (!el || !container) return
+
+    // External jump (TOC click) — silence reverse-sync until the user scrolls again.
+    userScrollingRef.current = false
+
+    const normalizedTargetY = pageY == null ? null : clampNormalizedY(pageY)
+    const targetTop = normalizedTargetY == null
+      ? el.offsetTop
+      : Math.max(
+          el.offsetTop
+            + el.offsetHeight * normalizedTargetY
+            - Math.max(container.clientHeight * Math.max(visibleLocationBias, 0), 0)
+            - 12,
           0,
         )
-        container.scrollTo({ top: targetTop, behavior: 'smooth' })
-      }
-    }
+
+    // Smooth scroll across many pages takes longer than the reverse-sync suppress window, so IntersectionObserver fires mid-flight and yanks activeSection. Jump instantly for far targets to avoid that race.
+    const distancePx = Math.abs(targetTop - container.scrollTop)
+    const behavior: ScrollBehavior = distancePx > container.clientHeight * 2 ? 'auto' : 'smooth'
+    container.scrollTo({ top: targetTop, behavior })
   }, [page, pageJumpKey, pageY, renderedPages, visibleLocationBias])
 
   const reload = () => {
@@ -623,6 +674,7 @@ export default function PdfViewer({
     setPageInputValue(String(clamped))
     const el = pageRefs.current[clamped - 1]
     if (el) {
+      userScrollingRef.current = false
       el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     }
   }
@@ -763,6 +815,10 @@ export default function PdfViewer({
               ref={(el) => {
                 pageRefs.current[pageNumber - 1] = el
               }}
+              style={placeholderSize ? {
+                width: `${placeholderSize.width}px`,
+                minHeight: `${placeholderSize.height}px`,
+              } : undefined}
             >
               <canvas
                 ref={(el) => {

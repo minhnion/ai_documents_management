@@ -228,3 +228,16 @@ async def migrate_documents_pipeline_mode_schema() -> None:
                 """
             )
         )
+
+
+async def migrate_documents_original_filename_schema() -> None:
+    """Preserve the user-uploaded PDF filename so the OCR pipeline can pass it verbatim to the partner core (matches local CLI behaviour)."""
+    async with engine.begin() as conn:
+        await conn.execute(
+            text(
+                """
+                ALTER TABLE documents
+                ADD COLUMN IF NOT EXISTS original_filename TEXT
+                """
+            )
+        )

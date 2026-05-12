@@ -104,7 +104,10 @@ class TocBuilderService:
 
         if ade_chunks:
             try:
-                toc = _toc.phase3(client, toc, ade_chunks, toc_end_page=toc_end)
+                toc_end_ade = _toc._compute_toc_end_ade_page(
+                    raw_markdown, ade_chunks, toc_end
+                )
+                toc = _toc.phase3(client, toc, ade_chunks, toc_end_page=toc_end_ade)
             except Exception:
                 logger.exception(
                     "Phase 3 mapping failed — TOC will have no heading_chunk_id"

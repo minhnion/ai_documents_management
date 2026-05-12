@@ -74,10 +74,11 @@ class GuidelineCommandService:
         self.db.add(guideline_version)
         await self.db.flush()
 
+        original_filename = upload_file.filename or "source.pdf"
         storage_path = self._build_storage_path(
             guideline_id=guideline.guideline_id,
             version_id=guideline_version.version_id,
-            original_filename=upload_file.filename or "source.pdf",
+            original_filename=original_filename,
         )
 
         try:
@@ -90,6 +91,7 @@ class GuidelineCommandService:
                 version_id=guideline_version.version_id,
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
+                original_filename=original_filename,
                 page_count=None,
                 image_uri=None,
             )
@@ -154,10 +156,11 @@ class GuidelineCommandService:
 
         storage_path: Path | None = None
         try:
+            original_filename = upload_file.filename or "source.pdf"
             storage_path = self._build_storage_path(
                 guideline_id=guideline.guideline_id,
                 version_id=guideline_version.version_id,
-                original_filename=upload_file.filename or "source.pdf",
+                original_filename=original_filename,
             )
             await self._write_upload_file(
                 upload_file=upload_file,
@@ -167,6 +170,7 @@ class GuidelineCommandService:
                 version_id=guideline_version.version_id,
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
+                original_filename=original_filename,
                 page_count=None,
                 image_uri=None,
             )

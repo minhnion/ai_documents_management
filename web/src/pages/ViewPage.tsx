@@ -184,14 +184,8 @@ function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): Wo
     return precedingNodes[0]
   }
 
-  const followingNodes = pagedNodes
-    .filter(node => (node.page_start ?? Number.MAX_SAFE_INTEGER) >= page)
-    .sort((left, right) => {
-      const startDiff = (left.page_start ?? Number.MAX_SAFE_INTEGER) - (right.page_start ?? Number.MAX_SAFE_INTEGER)
-      if (startDiff !== 0) return startDiff
-      return (right.level ?? 0) - (left.level ?? 0)
-    })
-  return followingNodes[0] ?? null
+  // No preceding section: user is before the first real section (e.g. cover page). Don't auto-select a future section — that would yank both panes onto a section the user hasn't asked for.
+  return null
 }
 
 function findBestSectionForLocation(
@@ -279,22 +273,8 @@ function findBestSpatialSectionForLocation(
     return startedNodes[0]
   }
 
-  const followingNodes = pagedNodes
-    .filter(node => (node.page_start ?? Number.MAX_SAFE_INTEGER) >= page)
-    .sort((left, right) => {
-      const startPageDiff = (left.page_start ?? Number.MAX_SAFE_INTEGER) - (right.page_start ?? Number.MAX_SAFE_INTEGER)
-      if (startPageDiff !== 0) return startPageDiff
-
-      const startYDiff = clampNormalizedY(left.start_y) - clampNormalizedY(right.start_y)
-      if (startYDiff !== 0) return startYDiff
-
-      const levelDiff = (right.level ?? 0) - (left.level ?? 0)
-      if (levelDiff !== 0) return levelDiff
-
-      return getPageSpan(left) - getPageSpan(right)
-    })
-
-  return followingNodes[0] ?? findBestSectionForPage(nodes, page)
+  // Before all sections → no auto-jump (consistent with findBestSectionForPage).
+  return findBestSectionForPage(nodes, page)
 }
 
 export default function ViewPage() {
