@@ -34,6 +34,28 @@ function clampNormalizedY(value: number | null | undefined): number {
   return Math.max(0, Math.min(1, value))
 }
 
+function getPdfPageStart(node: WorkspaceSectionNode): number | null {
+  return node.pdf_page_start ?? node.page_start ?? null
+}
+
+function getPdfPageEnd(node: WorkspaceSectionNode): number | null {
+  return node.pdf_page_end ?? node.page_end ?? getPdfPageStart(node)
+}
+
+function getPdfStartY(node: WorkspaceSectionNode): number | null {
+  return node.pdf_start_y ?? node.start_y ?? null
+}
+
+function getPdfEndY(node: WorkspaceSectionNode): number | null {
+  return node.pdf_end_y ?? node.end_y ?? null
+}
+
+function getPdfAnchor(node: WorkspaceSectionNode): { page: number; y: number | null } | null {
+  const page = getPdfPageStart(node)
+  if (page == null || page <= 0) return null
+  return { page, y: getPdfStartY(node) }
+}
+
 interface SpatialHighlightBbox {
   page: number
   left: number
@@ -83,8 +105,8 @@ function flattenSectionNodes(nodes: WorkspaceSectionNode[]): WorkspaceSectionNod
 }
 
 function getPageSpan(node: WorkspaceSectionNode): number {
-  const start = node.page_start ?? Number.MAX_SAFE_INTEGER
-  const end = node.page_end ?? node.page_start ?? Number.MAX_SAFE_INTEGER
+  const start = getPdfPageStart(node) ?? Number.MAX_SAFE_INTEGER
+  const end = getPdfPageEnd(node) ?? start
   return end - start
 }
 
@@ -97,20 +119,22 @@ function nodeContainsLocation(
   page: number,
   normalizedY: number,
 ): boolean {
-  if (node.page_start == null) {
+  const startPage = getPdfPageStart(node)
+  if (startPage == null) {
     return false
   }
 
-  const startPage = node.page_start
-  const endPage = node.page_end ?? startPage
+  const endPage = getPdfPageEnd(node) ?? startPage
   if (page < startPage || page > endPage) {
     return false
   }
 
-  const hasStartY = node.start_y != null
-  const hasEndY = node.end_y != null
-  const startY = clampNormalizedY(node.start_y)
-  const endY = clampNormalizedY(node.end_y)
+  const startYRaw = getPdfStartY(node)
+  const endYRaw = getPdfEndY(node)
+  const hasStartY = startYRaw != null
+  const hasEndY = endYRaw != null
+  const startY = clampNormalizedY(startYRaw)
+  const endY = clampNormalizedY(endYRaw)
   const currentY = clampNormalizedY(normalizedY)
 
   if (startPage === endPage) {
@@ -132,33 +156,35 @@ function nodeContainsLocation(
 }
 
 function getLocationSpan(node: WorkspaceSectionNode): number {
-  if (node.page_start == null) {
+  const startPage = getPdfPageStart(node)
+  if (startPage == null) {
     return Number.MAX_SAFE_INTEGER
   }
 
-  const startPage = node.page_start
-  const endPage = node.page_end ?? startPage
+  const endPage = getPdfPageEnd(node) ?? startPage
   if (startPage !== endPage) {
     return endPage - startPage + 1
   }
 
-  if (node.start_y == null && node.end_y == null) {
+  const startY = getPdfStartY(node)
+  const endY = getPdfEndY(node)
+  if (startY == null && endY == null) {
     return 1
   }
 
-  return Math.max(clampNormalizedY(node.end_y) - clampNormalizedY(node.start_y), 0)
+  return Math.max(clampNormalizedY(endY) - clampNormalizedY(startY), 0)
 }
 
 function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): WorkspaceSectionNode | null {
-  const pagedNodes = nodes.filter(node => node.page_start !== null && node.page_start !== undefined)
+  const pagedNodes = nodes.filter(node => getPdfPageStart(node) != null)
   if (pagedNodes.length === 0) {
     return null
   }
 
   const containingNodes = pagedNodes
     .filter(node => {
-      const start = node.page_start ?? 0
-      const end = node.page_end ?? node.page_start ?? start
+      const start = getPdfPageStart(node) ?? 0
+      const end = getPdfPageEnd(node) ?? start
       return start <= page && page <= end
     })
     .sort((left, right) => {
@@ -166,7 +192,7 @@ function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): Wo
       if (spanDiff !== 0) return spanDiff
       const levelDiff = (right.level ?? 0) - (left.level ?? 0)
       if (levelDiff !== 0) return levelDiff
-      return (right.page_start ?? 0) - (left.page_start ?? 0)
+      return (getPdfPageStart(right) ?? 0) - (getPdfPageStart(left) ?? 0)
     })
 
   if (containingNodes.length > 0) {
@@ -174,9 +200,9 @@ function findBestSectionForPage(nodes: WorkspaceSectionNode[], page: number): Wo
   }
 
   const precedingNodes = pagedNodes
-    .filter(node => (node.page_start ?? 0) <= page)
+    .filter(node => (getPdfPageStart(node) ?? 0) <= page)
     .sort((left, right) => {
-      const startDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      const startDiff = (getPdfPageStart(right) ?? 0) - (getPdfPageStart(left) ?? 0)
       if (startDiff !== 0) return startDiff
       return (right.level ?? 0) - (left.level ?? 0)
     })
@@ -193,7 +219,7 @@ function findBestSectionForLocation(
   page: number,
   normalizedY: number,
 ): WorkspaceSectionNode | null {
-  const pagedNodes = nodes.filter(node => node.page_start != null)
+  const pagedNodes = nodes.filter(node => getPdfPageStart(node) != null)
   if (pagedNodes.length === 0) {
     return null
   }
@@ -210,10 +236,10 @@ function findBestSectionForLocation(
       const levelDiff = (right.level ?? 0) - (left.level ?? 0)
       if (levelDiff !== 0) return levelDiff
 
-      const startPageDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      const startPageDiff = (getPdfPageStart(right) ?? 0) - (getPdfPageStart(left) ?? 0)
       if (startPageDiff !== 0) return startPageDiff
 
-      return clampNormalizedY(right.start_y) - clampNormalizedY(left.start_y)
+      return clampNormalizedY(getPdfStartY(right)) - clampNormalizedY(getPdfStartY(left))
     })
 
   if (containingNodes.length > 0) {
@@ -229,19 +255,20 @@ function nodeStartsBeforeLocation(
   normalizedY: number,
   hysteresis: number = 0,
 ): boolean {
-  if (node.page_start == null) {
+  const startPage = getPdfPageStart(node)
+  if (startPage == null) {
     return false
   }
 
-  if (page > node.page_start) {
+  if (page > startPage) {
     return true
   }
 
-  if (page < node.page_start) {
+  if (page < startPage) {
     return false
   }
 
-  return clampNormalizedY(normalizedY) + hysteresis >= clampNormalizedY(node.start_y)
+  return clampNormalizedY(normalizedY) + hysteresis >= clampNormalizedY(getPdfStartY(node))
 }
 
 function findBestSpatialSectionForLocation(
@@ -249,7 +276,7 @@ function findBestSpatialSectionForLocation(
   page: number,
   normalizedY: number,
 ): WorkspaceSectionNode | null {
-  const pagedNodes = nodes.filter(node => node.page_start != null)
+  const pagedNodes = nodes.filter(node => getPdfPageStart(node) != null)
   if (pagedNodes.length === 0) {
     return null
   }
@@ -257,10 +284,10 @@ function findBestSpatialSectionForLocation(
   const startedNodes = pagedNodes
     .filter(node => nodeStartsBeforeLocation(node, page, normalizedY, SPATIAL_SECTION_HYSTERESIS))
     .sort((left, right) => {
-      const startPageDiff = (right.page_start ?? 0) - (left.page_start ?? 0)
+      const startPageDiff = (getPdfPageStart(right) ?? 0) - (getPdfPageStart(left) ?? 0)
       if (startPageDiff !== 0) return startPageDiff
 
-      const startYDiff = clampNormalizedY(right.start_y) - clampNormalizedY(left.start_y)
+      const startYDiff = clampNormalizedY(getPdfStartY(right)) - clampNormalizedY(getPdfStartY(left))
       if (startYDiff !== 0) return startYDiff
 
       const levelDiff = (right.level ?? 0) - (left.level ?? 0)
@@ -345,11 +372,12 @@ export default function ViewPage() {
   const handleTocSelect = useCallback((node: WorkspaceSectionNode) => {
     setContentScrollBehavior('smooth')
     setActiveSection(node)
-    if (node.page_start && node.page_start > 0) {
+    const anchor = getPdfAnchor(node)
+    if (anchor) {
       suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
       setPdfJumpState({
-        page: node.page_start,
-        y: node.start_y,
+        page: anchor.page,
+        y: anchor.y,
         key: node.section_id,
       })
     }
@@ -364,11 +392,12 @@ export default function ViewPage() {
     // so don't fight it with another scrollIntoView.
     setContentScrollBehavior('none')
     setActiveSection(next)
-    if (next.page_start && next.page_start > 0) {
+    const anchor = getPdfAnchor(next)
+    if (anchor) {
       suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
       setPdfJumpState({
-        page: next.page_start,
-        y: next.start_y,
+        page: anchor.page,
+        y: anchor.y,
         key: next.section_id,
       })
     }

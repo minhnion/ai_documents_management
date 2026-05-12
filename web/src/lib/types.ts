@@ -128,6 +128,10 @@ export interface WorkspaceSectionNode {
   page_end: number | null
   start_y: number | null
   end_y: number | null
+  pdf_page_start?: number | null
+  pdf_page_end?: number | null
+  pdf_start_y?: number | null
+  pdf_end_y?: number | null
   score: number | null
   is_suspect: boolean
   content: string | null
