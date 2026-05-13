@@ -28,6 +28,7 @@ from app.services.guideline_edit_service import (
 from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
 from app.services.guideline_metadata_service import GuidelineMetadataService
 from app.services.guideline_workspace_service import GuidelineWorkspaceService
+from app.services.tenant_access_service import TenantAccessService
 from app.services.version_asset_service import VersionAssetService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
@@ -41,10 +42,14 @@ router = APIRouter(prefix='/versions', tags=['Versions'])
 async def get_version_workspace(
     version_id: int,
     db: DBSession,
-    _: ActiveUser,
+    current_user: ActiveUser,
     include_full_text: Annotated[bool, Query()] = True,
     suspect_threshold: Annotated[float | None, Query(gt=0.0, lt=1.0)] = None,
 ) -> VersionWorkspaceResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+    )
     service = GuidelineWorkspaceService(db)
     workspace_data = await service.get_workspace(
         version_id=version_id,
@@ -82,8 +87,13 @@ async def update_guideline_version_metadata(
     version_id: int,
     payload: UpdateGuidelineVersionMetadataRequest,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
 ) -> UpdateGuidelineVersionMetadataResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+        for_update=True,
+    )
     service = GuidelineMetadataService(db)
     result = await service.update_version_metadata(
         version_id=version_id,
@@ -101,8 +111,13 @@ async def bulk_update_section_content(
     version_id: int,
     payload: BulkSectionContentUpdateRequest,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
 ) -> BulkSectionContentUpdateResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+        for_update=True,
+    )
     service = GuidelineEditService(db)
     result = await service.bulk_update_section_content(
         version_id=version_id,
@@ -126,8 +141,12 @@ async def bulk_update_section_content(
 async def get_version_ingestion_status(
     version_id: int,
     db: DBSession,
-    _: ActiveUser,
+    current_user: ActiveUser,
 ) -> VersionIngestionStatusResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+    )
     service = GuidelineIngestionJobService(db)
     result = await service.get_version_ingestion_status(version_id)
     return VersionIngestionStatusResponse(**result)
@@ -142,8 +161,12 @@ async def get_version_ingestion_status(
 async def rebuild_version_chunks(
     version_id: int,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
 ) -> RebuildVersionChunksResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+    )
     service = GuidelineChunkService(db)
     result = await service.enqueue_version_chunk_rebuild(version_id)
     return RebuildVersionChunksResponse(**result)
@@ -157,8 +180,12 @@ async def rebuild_version_chunks(
 async def get_version_chunk_rebuild_status(
     version_id: int,
     db: DBSession,
-    _: ActiveUser,
+    current_user: ActiveUser,
 ) -> VersionChunkRebuildStatusResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+    )
     service = GuidelineChunkService(db)
     result = await service.get_version_chunk_rebuild_status(version_id)
     return VersionChunkRebuildStatusResponse(**result)
@@ -172,8 +199,13 @@ async def get_version_chunk_rebuild_status(
 async def delete_guideline_version(
     version_id: int,
     db: DBSession,
-    _: Annotated[object, Depends(require_roles('editor', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
 ) -> DeleteGuidelineVersionResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+        for_update=True,
+    )
     service = GuidelineDeleteService(db)
     result = await service.delete_version(version_id)
     return DeleteGuidelineVersionResponse(**result)
@@ -191,8 +223,12 @@ async def get_version_asset(
     version_id: int,
     landing_chunk_id: str,
     db: DBSession,
-    _: ActiveUser,
+    current_user: ActiveUser,
 ) -> FileResponse:
+    await TenantAccessService(db).ensure_version_access(
+        version_id=version_id,
+        current_user=current_user,
+    )
     service = VersionAssetService(db)
     asset = await service.get_asset_file(
         version_id=version_id,

@@ -5,12 +5,13 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     Identity,
     String,
     func,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 
@@ -19,7 +20,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "role IN ('admin', 'editor', 'viewer')",
+            "role IN ('admin', 'user')",
             name="ck_users_role",
         ),
     )
@@ -33,8 +34,14 @@ class User(Base):
     role: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
-        default="viewer",
-        server_default=text("'viewer'"),
+        default="user",
+        server_default=text("'user'"),
+    )
+    organization_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
     )
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=text("true")
@@ -47,6 +54,10 @@ class User(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    organization: Mapped["Organization | None"] = relationship(
+        "Organization", back_populates="users", lazy="selectin"
     )
 
     def __repr__(self) -> str:

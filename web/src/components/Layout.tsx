@@ -25,6 +25,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {user?.full_name ?? user?.email}
             </span>
             <span className="badge badge-default text-sm">{user?.role}</span>
+            {user?.role === 'user' && user.organization && (
+              <span className="badge badge-default text-sm">{user.organization.name}</span>
+            )}
             <button className="btn btn-ghost btn-sm" onClick={logout} title="Đăng xuất">
               <LogOut size={14} />
             </button>

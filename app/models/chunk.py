@@ -16,6 +16,12 @@ class Chunk(Base):
         ForeignKey("guideline_versions.version_id", ondelete="CASCADE"),
         nullable=False,
     )
+    organization_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     section_id: Mapped[int | None] = mapped_column(
         BigInteger,
         ForeignKey("sections.section_id", ondelete="SET NULL"),
@@ -31,6 +37,9 @@ class Chunk(Base):
     )
     section: Mapped["Section | None"] = relationship(
         "Section", back_populates="chunks"
+    )
+    organization: Mapped["Organization | None"] = relationship(
+        "Organization", lazy="selectin"
     )
 
     def __repr__(self) -> str:

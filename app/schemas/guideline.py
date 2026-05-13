@@ -3,6 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.organization import OrganizationResponse
+
 
 class GuidelineVersionSummary(BaseModel):
     version_id: int
@@ -21,6 +23,8 @@ class GuidelineListItem(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
+    organization_id: int | None = None
+    organization: OrganizationResponse | None = None
     active_version: GuidelineVersionSummary | None = None
 
 
@@ -69,6 +73,7 @@ class VersionIngestionStatusResponse(BaseModel):
 class CreateGuidelineResponse(BaseModel):
     accepted: bool
     guideline_id: int
+    organization_id: int | None = None
     version_id: int
     document_id: int
     storage_uri: str | None = None
@@ -107,6 +112,7 @@ class UpdateGuidelineMetadataResponse(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
+    organization_id: int | None = None
 
 
 class UpdateGuidelineVersionMetadataRequest(BaseModel):
@@ -165,6 +171,7 @@ class WorkspaceGuidelineInfo(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
+    organization_id: int | None = None
 
 
 class WorkspaceVersionInfo(BaseModel):
@@ -184,6 +191,7 @@ class WorkspaceDocumentInfo(BaseModel):
 
     document_id: int
     version_id: int
+    organization_id: int | None = None
     doc_type: str | None = None
     storage_uri: str | None = None
     page_count: int | None = None

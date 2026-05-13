@@ -461,7 +461,7 @@ export default function ViewPage() {
     key: null,
   })
 
-  const canEdit = user?.role === 'editor' || user?.role === 'admin'
+  const canEdit = user?.role === 'user' || user?.role === 'admin'
   const pipelineStatus = pipelineProgress?.status ?? 'idle'
   const pipelineIsActive = pipelineStatus === 'queued' || pipelineStatus === 'running'
   const canEditSections = canEdit && !pipelineIsActive

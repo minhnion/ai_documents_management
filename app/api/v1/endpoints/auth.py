@@ -102,6 +102,8 @@ async def create_user(
         password=payload.password,
         role=payload.role,
         full_name=payload.full_name,
+        organization_id=payload.organization_id,
+        organization_name=payload.organization_name,
         is_active=payload.is_active,
     )
     return UserResponse.model_validate(user)
@@ -121,5 +123,7 @@ async def update_user_role(
     user = await auth_service.update_user_role(
         user_id=user_id,
         role=payload.role,
+        organization_id=payload.organization_id,
+        organization_name=payload.organization_name,
     )
     return UserResponse.model_validate(user)
