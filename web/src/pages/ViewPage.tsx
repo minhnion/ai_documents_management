@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ChevronLeft, AlertTriangle, Check, LoaderCircle, X, PanelRightClose, PanelRightOpen } from 'lucide-react'
+import {
+  ChevronDown,
+  ChevronLeft,
+  ChevronUp,
+  AlertTriangle,
+  Check,
+  Edit3,
+  LoaderCircle,
+  LocateFixed,
+  X,
+  PanelRightClose,
+  PanelRightOpen,
+} from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import TocTree from '../components/TocTree'
 import TextContent from '../components/TextContent'
 import PdfViewer from '../components/PdfViewer'
+import { normalizeSectionContent } from '../components/sectionContent'
 import type {
   GuidelineVersionItem,
   RebuildVersionChunksResponse,
@@ -28,6 +41,7 @@ const PDF_SYNC_SUPPRESS_MS = 1200
 const SPATIAL_VISIBLE_LOCATION_BIAS = 0.32
 const OCR_VISIBLE_LOCATION_BIAS = 0.25
 const SPATIAL_SECTION_HYSTERESIS = 0.015
+const EMPTY_LEAF_NOTICE_COLLAPSED_LIMIT = 1
 
 function clampNormalizedY(value: number | null | undefined): number {
   if (value == null || Number.isNaN(value)) return 0
@@ -54,6 +68,40 @@ function getPdfAnchor(node: WorkspaceSectionNode): { page: number; y: number | n
   const page = getPdfPageStart(node)
   if (page == null || page <= 0) return null
   return { page, y: getPdfStartY(node) }
+}
+
+function hasRenderableLandingAsset(node: WorkspaceSectionNode): boolean {
+  if (!Array.isArray(node.landing_chunks)) return false
+  return node.landing_chunks.some(entry => {
+    if (!entry || typeof entry !== 'object') return false
+    const imageUrl = (entry as Record<string, unknown>).image_url
+    return typeof imageUrl === 'string' && imageUrl.trim().length > 0
+  })
+}
+
+function isEmptyLeafSection(
+  node: WorkspaceSectionNode,
+  draft: SectionEditDraft | undefined,
+): boolean {
+  if ((node.children?.length ?? 0) > 0) return false
+  if (hasRenderableLandingAsset(node)) return false
+  return normalizeSectionContent(draft?.content ?? node.content).length === 0
+}
+
+function isSectionDraftDirty(
+  node: WorkspaceSectionNode | undefined,
+  draft: SectionEditDraft | undefined,
+): boolean {
+  if (!node || !draft) return false
+  return draft.heading !== (node.heading ?? '') || draft.content !== (node.content ?? '')
+}
+
+function getSectionTitle(node: WorkspaceSectionNode): string {
+  return node.heading?.trim() || `Mục ${node.section_id}`
+}
+
+function getSectionLocator(node: WorkspaceSectionNode): string {
+  return node.section_path?.trim() || node.node_id?.trim() || `#${node.section_id}`
 }
 
 interface SpatialHighlightBbox {
@@ -304,6 +352,78 @@ function findBestSpatialSectionForLocation(
   return findBestSectionForPage(nodes, page)
 }
 
+interface EmptyLeafSectionsNoticeProps {
+  sections: WorkspaceSectionNode[]
+  activeSectionId: number | null
+  canEdit: boolean
+  onSelect: (node: WorkspaceSectionNode) => void
+}
+
+function EmptyLeafSectionsNotice({
+  sections,
+  activeSectionId,
+  canEdit,
+  onSelect,
+}: EmptyLeafSectionsNoticeProps) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  if (sections.length === 0) return null
+
+  const visibleSections = isExpanded
+    ? sections
+    : sections.slice(0, EMPTY_LEAF_NOTICE_COLLAPSED_LIMIT)
+  const hiddenCount = Math.max(0, sections.length - visibleSections.length)
+
+  return (
+    <div className="empty-leaf-notice" role="region" aria-label="Mục chưa có nội dung">
+      <div className="empty-leaf-notice-header">
+        <span className="empty-leaf-notice-icon" aria-hidden>
+          <AlertTriangle size={16} />
+        </span>
+        <div className="empty-leaf-notice-copy">
+          <div className="empty-leaf-notice-title">
+            Có {sections.length} mục lá chưa có nội dung
+          </div>
+          <div className="empty-leaf-notice-subtitle">
+            Chọn một mục để mở đúng vị trí trong nội dung và PDF.
+          </div>
+        </div>
+      </div>
+
+      <div className="empty-leaf-list">
+        {visibleSections.map(node => (
+          <button
+            key={node.section_id}
+            type="button"
+            className={`empty-leaf-item${node.section_id === activeSectionId ? ' empty-leaf-item--active' : ''}`}
+            onClick={() => onSelect(node)}
+            title={getSectionTitle(node)}
+          >
+            <span className="empty-leaf-item-main">
+              <span className="empty-leaf-item-locator">{getSectionLocator(node)}</span>
+              <span className="empty-leaf-item-title">{getSectionTitle(node)}</span>
+            </span>
+            <span className="empty-leaf-item-action">
+              {canEdit ? <Edit3 size={12} /> : <LocateFixed size={12} />}
+              {canEdit ? 'Sửa' : 'Mở'}
+            </span>
+          </button>
+        ))}
+      </div>
+
+      {sections.length > EMPTY_LEAF_NOTICE_COLLAPSED_LIMIT && (
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs empty-leaf-toggle"
+          onClick={() => setIsExpanded(prev => !prev)}
+        >
+          {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+          {isExpanded ? 'Thu gọn' : `Xem thêm ${hiddenCount} mục`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export default function ViewPage() {
   const { guidelineId, versionId } = useParams()
   const navigate = useNavigate()
@@ -315,6 +435,7 @@ export default function ViewPage() {
   const chunkPollTimerRef = useRef<number | null>(null)
   const suppressPdfSyncUntilRef = useRef(0)
   const workspaceRef = useRef<VersionWorkspaceResponse | null>(null)
+  const jumpRequestSequenceRef = useRef(0)
 
   const [workspace, setWorkspace] = useState<VersionWorkspaceResponse | null>(null)
   const [targetVersionId, setTargetVersionId] = useState(versionId)
@@ -333,6 +454,7 @@ export default function ViewPage() {
   const [pipelineError, setPipelineError] = useState('')
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
   const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior | 'none'>('smooth')
+  const [contentScrollKey, setContentScrollKey] = useState(0)
   const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; y?: number | null; key: number | null }>({
     page: undefined,
     y: null,
@@ -340,12 +462,49 @@ export default function ViewPage() {
   })
 
   const canEdit = user?.role === 'editor' || user?.role === 'admin'
-  const unsavedEditCount = useMemo(() => Object.keys(sectionEdits).length, [sectionEdits])
   const pipelineStatus = pipelineProgress?.status ?? 'idle'
   const pipelineIsActive = pipelineStatus === 'queued' || pipelineStatus === 'running'
+  const canEditSections = canEdit && !pipelineIsActive
   const flattenedSections = useMemo(() => flattenSectionNodes(workspace?.toc ?? []), [workspace?.toc])
+  const sectionById = useMemo(() => {
+    const next = new Map<number, WorkspaceSectionNode>()
+    for (const node of flattenedSections) {
+      next.set(node.section_id, node)
+    }
+    return next
+  }, [flattenedSections])
+  const dirtySectionUpdates = useMemo(
+    () => Object.entries(sectionEdits)
+      .map(([id, draft]) => ({
+        section_id: Number(id),
+        content: draft.content,
+        heading: draft.heading,
+        isDirty: isSectionDraftDirty(sectionById.get(Number(id)), draft),
+      }))
+      .filter(update => update.isDirty)
+      .map(update => ({
+        section_id: update.section_id,
+        content: update.content,
+        heading: update.heading,
+      })),
+    [sectionById, sectionEdits],
+  )
+  const dirtySectionIds = useMemo(
+    () => new Set(dirtySectionUpdates.map(update => update.section_id)),
+    [dirtySectionUpdates],
+  )
+  const unsavedEditCount = dirtySectionUpdates.length
+  const emptyLeafSections = useMemo(
+    () => flattenedSections.filter(node => isEmptyLeafSection(node, sectionEdits[node.section_id])),
+    [flattenedSections, sectionEdits],
+  )
   const positioningMode = workspace?.positioning_mode ?? 'page_range'
   const isSpatialPositioning = positioningMode === 'spatial_heading_anchor'
+
+  const nextJumpRequestKey = () => {
+    jumpRequestSequenceRef.current += 1
+    return jumpRequestSequenceRef.current
+  }
 
   const clearPipelinePolling = useCallback(() => {
     if (pipelinePollTimerRef.current !== null) {
@@ -370,7 +529,9 @@ export default function ViewPage() {
   }, [workspace])
 
   const handleTocSelect = useCallback((node: WorkspaceSectionNode) => {
+    const jumpKey = nextJumpRequestKey()
     setContentScrollBehavior('smooth')
+    setContentScrollKey(jumpKey)
     setActiveSection(node)
     const anchor = getPdfAnchor(node)
     if (anchor) {
@@ -378,7 +539,7 @@ export default function ViewPage() {
       setPdfJumpState({
         page: anchor.page,
         y: anchor.y,
-        key: node.section_id,
+        key: jumpKey,
       })
     }
   }, [])
@@ -390,6 +551,7 @@ export default function ViewPage() {
     if (!next) return
     // The middle pane already shows this section at the top of the viewport,
     // so don't fight it with another scrollIntoView.
+    const jumpKey = nextJumpRequestKey()
     setContentScrollBehavior('none')
     setActiveSection(next)
     const anchor = getPdfAnchor(next)
@@ -398,7 +560,7 @@ export default function ViewPage() {
       setPdfJumpState({
         page: anchor.page,
         y: anchor.y,
-        key: next.section_id,
+        key: jumpKey,
       })
     }
   }, [activeSection?.section_id, flattenedSections, unsavedEditCount])
@@ -558,6 +720,8 @@ export default function ViewPage() {
     setPipelineError('')
     setPipelineProgress(null)
     setChunkProgress(null)
+    jumpRequestSequenceRef.current = 0
+    setContentScrollKey(0)
     setPdfJumpState({ page: undefined, y: null, key: null })
     setContentScrollBehavior('smooth')
     suppressPdfSyncUntilRef.current = 0
@@ -618,6 +782,14 @@ export default function ViewPage() {
     if (!workspace || pipelineIsActive) return
     const draft = sectionEdits[sectionId]
     if (!draft) return
+    if (!isSectionDraftDirty(sectionById.get(sectionId), draft)) {
+      setSectionEdits(prev => {
+        const next = { ...prev }
+        delete next[sectionId]
+        return next
+      })
+      return
+    }
     setSavingSections(prev => ({ ...prev, [sectionId]: true }))
     setSaveError('')
     setChunkError('')
@@ -649,11 +821,7 @@ export default function ViewPage() {
 
   const handleSaveAll = async () => {
     if (!workspace || pipelineIsActive) return
-    const updates = Object.entries(sectionEdits).map(([id, val]) => ({
-      section_id: Number(id),
-      content: val.content,
-      heading: val.heading,
-    }))
+    const updates = dirtySectionUpdates
     if (updates.length === 0) return
     setSaving(true)
     setSaveError('')
@@ -746,6 +914,16 @@ export default function ViewPage() {
       return next
     })
     setSaveError('')
+  }
+
+  const handleEmptyLeafSectionSelect = (node: WorkspaceSectionNode) => {
+    handleTocSelect(node)
+    if (!canEditSections || sectionEdits[node.section_id]) return
+    handleSectionEditStart(
+      node.section_id,
+      node.heading ?? '',
+      node.content ?? '',
+    )
   }
 
   const handleContentTogglePointerDown = () => {
@@ -910,6 +1088,14 @@ export default function ViewPage() {
         {saveError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{saveError}</div>}
         {chunkError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{chunkError}</div>}
         {chunkSuccess && <div className="alert alert-success" style={{ margin: '8px 20px 0' }}>{chunkSuccess}</div>}
+        {!pipelineIsActive && emptyLeafSections.length > 0 && (
+          <EmptyLeafSectionsNotice
+            sections={emptyLeafSections}
+            activeSectionId={activeSection?.section_id ?? null}
+            canEdit={canEditSections}
+            onSelect={handleEmptyLeafSectionSelect}
+          />
+        )}
         {!pipelineIsActive && workspace.toc.length === 0 ? (
           <div className="empty-state" style={{ minHeight: 240 }}>
             {workspace.version.status === 'failed'
@@ -919,13 +1105,14 @@ export default function ViewPage() {
         ) : (
           <TextContent
             toc={workspace.toc}
-            canEdit={canEdit && !pipelineIsActive}
+            canEdit={canEditSections}
             activeSectionId={activeSection?.section_id ?? null}
+            activeSectionScrollKey={contentScrollKey}
             activeSectionScrollBehavior={contentScrollBehavior}
             sectionEdits={sectionEdits}
             savingSections={
               saving
-                ? Object.fromEntries(Object.keys(sectionEdits).map(id => [id, true]))
+                ? Object.fromEntries(Array.from(dirtySectionIds).map(id => [id, true]))
                 : savingSections
             }
             onSectionEditStart={handleSectionEditStart}
@@ -944,7 +1131,7 @@ export default function ViewPage() {
           pageY={pdfJumpState.y}
           pageJumpKey={pdfJumpState.key}
           visibleLocationBias={isSpatialPositioning ? SPATIAL_VISIBLE_LOCATION_BIAS : OCR_VISIBLE_LOCATION_BIAS}
-          highlightKey={activeSection?.section_id ?? null}
+          highlightKey={activeSection ? `${activeSection.section_id}:${pdfJumpState.key ?? 'active'}` : null}
           highlightHeadingBbox={isSpatialPositioning ? null : (activeSection?.heading_bbox ?? null)}
           highlightContentBboxes={
             isSpatialPositioning

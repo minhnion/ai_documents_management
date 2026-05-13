@@ -24,9 +24,14 @@ type ContentBlock =
       value: string
     }
 
+interface ParsedListItem {
+  marker: string
+  text: string
+}
+
 const TABLE_BLOCK_RE = /<table\b[\s\S]*?<\/table>/gi
 const HEADING_RE = /^(#{1,6})\s+(.+)$/
-const LIST_ITEM_RE = /^(?:[-*•]\s+|(?:\d+|[A-Za-z])[.)]\s+)(.+)$/
+const LIST_ITEM_RE = /^([-*•–—]|(?:\d+|[A-Za-z])[.)])\s+(.+)$/
 const BOLD_RE = /\*\*(.+?)\*\*/g
 const ARROW_ONLY_RE = /^(?:↓|⬇|->|=>|→)+$/
 const FLOW_CONNECTOR_RE = /\s*(?:->|=>|→|↓|⬇)\s*/
@@ -498,15 +503,17 @@ function TextBlock({ value }: { value: string }) {
         }
 
         const lines = paragraph.split('\n').map((line) => line.trim()).filter(Boolean)
-        const listItems = lines
-          .map((line) => LIST_ITEM_RE.exec(line)?.[1]?.trim() ?? null)
+        const listItems = lines.map(parseListItem)
         if (lines.length > 1 && listItems.every(Boolean)) {
           return (
-            <ul key={`list-${index}`} className="section-rich-list">
+            <div key={`list-${index}`} className="section-rich-list" role="list">
               {listItems.map((item, itemIndex) => (
-                <li key={`item-${itemIndex}`}>{renderInlineNodes(item ?? '')}</li>
+                <div key={`item-${itemIndex}`} className="section-rich-list-item" role="listitem">
+                  <span className="section-rich-list-marker">{item?.marker}</span>
+                  <span className="section-rich-list-content">{renderInlineNodes(item?.text ?? '')}</span>
+                </div>
               ))}
-            </ul>
+            </div>
           )
         }
 
@@ -523,6 +530,15 @@ function TextBlock({ value }: { value: string }) {
       })}
     </>
   )
+}
+
+function parseListItem(line: string): ParsedListItem | null {
+  const match = LIST_ITEM_RE.exec(line)
+  if (!match) return null
+  return {
+    marker: match[1],
+    text: match[2].trim(),
+  }
 }
 
 function createHeading(

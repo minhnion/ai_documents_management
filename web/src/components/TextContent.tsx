@@ -7,6 +7,7 @@ interface TextContentProps {
   toc: WorkspaceSectionNode[]
   canEdit: boolean
   activeSectionId: number | null
+  activeSectionScrollKey?: number | null
   activeSectionScrollBehavior?: ScrollBehavior | 'none'
   sectionEdits: Record<number, { heading: string; content: string }>
   savingSections: Record<number, boolean>
@@ -42,6 +43,7 @@ export default function TextContent({
   toc,
   canEdit,
   activeSectionId,
+  activeSectionScrollKey = null,
   activeSectionScrollBehavior = 'smooth',
   sectionEdits,
   savingSections,
@@ -75,7 +77,7 @@ export default function TextContent({
     if (!el) return
     suppressEmissionUntilRef.current = Date.now() + EXTERNAL_SCROLL_EMISSION_SUPPRESS_MS
     el.scrollIntoView({ behavior: activeSectionScrollBehavior, block: 'start' })
-  }, [activeSectionId, activeSectionScrollBehavior])
+  }, [activeSectionId, activeSectionScrollBehavior, activeSectionScrollKey])
 
   // Detect which section card sits at the user's reading line in the middle
   // pane and notify the parent so the PDF + TOC can sync to it.
