@@ -1,7 +1,8 @@
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.core.exceptions import NotFoundException
+from app.core.exceptions import BadRequestException, NotFoundException
 from app.core.text_normalization import (
     VIETNAMESE_TRANSLATION_SOURCE,
     VIETNAMESE_TRANSLATION_TARGET,
@@ -9,6 +10,7 @@ from app.core.text_normalization import (
 )
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
+from app.models.user import User
 
 
 class GuidelineQueryService:
@@ -19,6 +21,7 @@ class GuidelineQueryService:
 
     async def list_guidelines(
         self,
+        current_user: User,
         page: int,
         page_size: int,
         search: str | None = None,
@@ -26,13 +29,16 @@ class GuidelineQueryService:
         ten_benh: str | None = None,
         publisher: str | None = None,
         chuyen_khoa: str | None = None,
+        organization_id: int | None = None,
     ) -> tuple[list[Guideline], dict[int, dict[str, object]], int]:
         filters = self._build_guideline_filters(
+            current_user=current_user,
             search=search,
             title=title,
             ten_benh=ten_benh,
             publisher=publisher,
             chuyen_khoa=chuyen_khoa,
+            organization_id=organization_id,
         )
         offset = (page - 1) * page_size
 
@@ -41,6 +47,7 @@ class GuidelineQueryService:
 
         guidelines_stmt = (
             select(Guideline)
+            .options(selectinload(Guideline.organization))
             .where(*filters)
             .order_by(Guideline.guideline_id.desc())
             .offset(offset)
@@ -54,6 +61,7 @@ class GuidelineQueryService:
 
     async def list_guideline_versions(
         self,
+        current_user: User,
         guideline_id: int,
         page: int,
         page_size: int,
@@ -62,7 +70,8 @@ class GuidelineQueryService:
         guideline_exists = (
             await self.db.execute(
                 select(Guideline.guideline_id).where(
-                    Guideline.guideline_id == guideline_id
+                    Guideline.guideline_id == guideline_id,
+                    *self._build_tenant_filters(current_user=current_user),
                 )
             )
         ).scalar_one_or_none()
@@ -97,13 +106,18 @@ class GuidelineQueryService:
 
     def _build_guideline_filters(
         self,
+        current_user: User,
         search: str | None,
         title: str | None,
         ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
+        organization_id: int | None,
     ) -> list[object]:
-        filters: list[object] = []
+        filters: list[object] = self._build_tenant_filters(
+            current_user=current_user,
+            organization_id=organization_id,
+        )
 
         normalized_search = normalize_search_text(search)
         if normalized_search:
@@ -139,6 +153,18 @@ class GuidelineQueryService:
 
         return filters
 
+    def _build_tenant_filters(
+        self,
+        *,
+        current_user: User,
+        organization_id: int | None = None,
+    ) -> list[object]:
+        if current_user.role == "admin":
+            return [Guideline.organization_id == organization_id] if organization_id else []
+        if current_user.organization_id is None:
+            raise BadRequestException("User account has no organization assigned.")
+        return [Guideline.organization_id == current_user.organization_id]
+
     def _append_normalized_contains_filter(
         self,
         *,
@@ -160,10 +186,19 @@ class GuidelineQueryService:
         )
         return func.regexp_replace(translated, r"[^a-z0-9]+", "", "g")
 
-    async def get_filter_options(self) -> dict[str, list[str]]:
+    async def get_filter_options(
+        self,
+        current_user: User,
+        organization_id: int | None = None,
+    ) -> dict[str, list[str]]:
         """Get unique values for filter dropdowns."""
+        tenant_filters = self._build_tenant_filters(
+            current_user=current_user,
+            organization_id=organization_id,
+        )
         publishers_stmt = (
             select(Guideline.publisher)
+            .where(*tenant_filters)
             .where(Guideline.publisher.isnot(None))
             .where(Guideline.publisher != "")
             .distinct()
@@ -175,6 +210,7 @@ class GuidelineQueryService:
 
         ten_benh_stmt = (
             select(Guideline.ten_benh)
+            .where(*tenant_filters)
             .where(Guideline.ten_benh.isnot(None))
             .where(Guideline.ten_benh != "")
             .distinct()

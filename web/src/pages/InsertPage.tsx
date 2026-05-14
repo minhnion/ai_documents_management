@@ -1,14 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ChevronLeft, Save } from 'lucide-react'
 import { api } from '../lib/api'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import SelectOrCustomInputField from '../components/SelectOrCustomInputField'
 import useGuidelineFilterOptions from '../hooks/useGuidelineFilterOptions'
-import type { CreateGuidelineResponse } from '../lib/types'
+import { useAuth } from '../store/auth'
+import type { CreateGuidelineResponse, OrganizationListResponse, OrganizationResponse } from '../lib/types'
+
+const CUSTOM_ORGANIZATION_VALUE = '__custom__'
 
 export default function InsertPage() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const filterOptions = useGuidelineFilterOptions()
 
   const [title, setTitle] = useState('')
@@ -18,9 +22,24 @@ export default function InsertPage() {
   const [versionLabel, setVersionLabel] = useState('')
   const [releaseDate, setReleaseDate] = useState('')
   const [file, setFile] = useState<File | null>(null)
+  const [organizations, setOrganizations] = useState<OrganizationResponse[]>([])
+  const [organizationChoice, setOrganizationChoice] = useState('')
+  const [customOrganizationName, setCustomOrganizationName] = useState('')
 
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (user?.role !== 'admin') return
+    api.get<OrganizationListResponse>('/organizations')
+      .then(res => {
+        setOrganizations(res.data.items)
+        setOrganizationChoice(res.data.items[0]?.organization_id
+          ? String(res.data.items[0].organization_id)
+          : CUSTOM_ORGANIZATION_VALUE)
+      })
+      .catch(() => setError('Không thể tải danh sách organization.'))
+  }, [user?.role])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -41,6 +60,23 @@ export default function InsertPage() {
       if (chuyenKhoa) formData.append('chuyen_khoa', chuyenKhoa)
       if (versionLabel) formData.append('version_label', versionLabel)
       if (releaseDate) formData.append('release_date', releaseDate)
+      if (user?.role === 'admin') {
+        if (organizationChoice === CUSTOM_ORGANIZATION_VALUE) {
+          const orgName = customOrganizationName.trim()
+          if (!orgName) {
+            setError('Vui lòng nhập organization.')
+            setLoading(false)
+            return
+          }
+          formData.append('organization_name', orgName)
+        } else if (organizationChoice) {
+          formData.append('organization_id', organizationChoice)
+        } else {
+          setError('Vui lòng chọn organization.')
+          setLoading(false)
+          return
+        }
+      }
 
       const res = await api.post<CreateGuidelineResponse>('/guidelines', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
@@ -75,6 +111,38 @@ export default function InsertPage() {
           <div className="form-section">
             <h2 className="form-section-title">Thông tin chung (Metadata)</h2>
             <div className="form-grid">
+              {user?.role === 'admin' && (
+                <>
+                  <div className="form-group">
+                    <label className="form-label">Organization *</label>
+                    <select
+                      className="form-select"
+                      value={organizationChoice}
+                      onChange={e => setOrganizationChoice(e.target.value)}
+                    >
+                      {organizations.map(org => (
+                        <option key={org.organization_id} value={org.organization_id}>
+                          {org.name}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_ORGANIZATION_VALUE}>Khác...</option>
+                    </select>
+                  </div>
+                  {organizationChoice === CUSTOM_ORGANIZATION_VALUE && (
+                    <div className="form-group">
+                      <label className="form-label">Organization mới *</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        required
+                        value={customOrganizationName}
+                        onChange={e => setCustomOrganizationName(e.target.value)}
+                        placeholder="Nhập tên organization"
+                      />
+                    </div>
+                  )}
+                </>
+              )}
               <div className="form-group span-full">
                 <label className="form-label">Tên văn bản *</label>
                 <input

@@ -15,6 +15,12 @@ class Document(Base):
         ForeignKey("guideline_versions.version_id", ondelete="CASCADE"),
         nullable=False,
     )
+    organization_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     doc_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     storage_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -25,6 +31,9 @@ class Document(Base):
     # Relationships
     version: Mapped["GuidelineVersion"] = relationship(
         "GuidelineVersion", back_populates="documents"
+    )
+    organization: Mapped["Organization | None"] = relationship(
+        "Organization", lazy="selectin"
     )
 
     def __repr__(self) -> str:

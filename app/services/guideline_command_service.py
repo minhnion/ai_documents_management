@@ -19,7 +19,9 @@ from app.core.exceptions import (
 from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
+from app.models.user import User
 from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
+from app.services.organization_service import OrganizationService
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +36,13 @@ class GuidelineCommandService:
 
     async def create_guideline(
         self,
+        current_user: User,
         title: str,
         ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
+        organization_id: int | None,
+        organization_name: str | None,
         version_label: str | None,
         release_date: date | None,
         effective_from: date | None,
@@ -49,12 +54,18 @@ class GuidelineCommandService:
         self._validate_create_payload(title=title, upload_file=upload_file)
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
         target_status = self._normalize_status(status)
+        resolved_organization_id = await self._resolve_target_organization_id(
+            current_user=current_user,
+            organization_id=organization_id,
+            organization_name=organization_name,
+        )
 
         guideline = Guideline(
             title=title.strip(),
             ten_benh=ten_benh.strip() if ten_benh else None,
             publisher=publisher.strip() if publisher else None,
             chuyen_khoa=chuyen_khoa.strip() if chuyen_khoa else None,
+            organization_id=resolved_organization_id,
         )
         self.db.add(guideline)
         await self.db.flush()
@@ -89,6 +100,7 @@ class GuidelineCommandService:
 
             document = Document(
                 version_id=guideline_version.version_id,
+                organization_id=resolved_organization_id,
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
                 original_filename=original_filename,
@@ -124,6 +136,7 @@ class GuidelineCommandService:
 
     async def create_guideline_version(
         self,
+        current_user: User,
         guideline_id: int,
         version_label: str | None,
         release_date: date | None,
@@ -137,7 +150,7 @@ class GuidelineCommandService:
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
         target_status = self._normalize_status(status)
 
-        guideline = await self._get_guideline_for_update(guideline_id)
+        guideline = await self._get_guideline_for_update(guideline_id, current_user)
         resolved_version_label = await self._resolve_version_label(
             guideline_id=guideline_id,
             version_label=version_label,
@@ -168,6 +181,7 @@ class GuidelineCommandService:
             )
             document = Document(
                 version_id=guideline_version.version_id,
+                organization_id=guideline.organization_id,
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
                 original_filename=original_filename,
@@ -233,17 +247,43 @@ class GuidelineCommandService:
     def _is_active_status(self, status: str) -> bool:
         return status in self.ACTIVE_STATUSES
 
-    async def _get_guideline_for_update(self, guideline_id: int) -> Guideline:
+    async def _get_guideline_for_update(
+        self,
+        guideline_id: int,
+        current_user: User,
+    ) -> Guideline:
+        stmt = (
+            select(Guideline)
+            .where(Guideline.guideline_id == guideline_id)
+            .with_for_update()
+        )
+        if current_user.role != "admin":
+            if current_user.organization_id is None:
+                raise BadRequestException("User account has no organization assigned.")
+            stmt = stmt.where(Guideline.organization_id == current_user.organization_id)
         guideline = (
-            await self.db.execute(
-                select(Guideline)
-                .where(Guideline.guideline_id == guideline_id)
-                .with_for_update()
-            )
+            await self.db.execute(stmt)
         ).scalar_one_or_none()
         if guideline is None:
             raise NotFoundException("Guideline", guideline_id)
         return guideline
+
+    async def _resolve_target_organization_id(
+        self,
+        *,
+        current_user: User,
+        organization_id: int | None,
+        organization_name: str | None,
+    ) -> int:
+        if current_user.role == "admin":
+            organization = await OrganizationService(self.db).resolve_from_payload(
+                organization_id=organization_id,
+                organization_name=organization_name,
+            )
+            return int(organization.organization_id)
+        if current_user.organization_id is None:
+            raise BadRequestException("User account has no organization assigned.")
+        return int(current_user.organization_id)
 
     async def _resolve_version_label(
         self,

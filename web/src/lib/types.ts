@@ -1,9 +1,25 @@
 // ── Auth ──────────────────────────────────────────────────────────
+export interface OrganizationResponse {
+  organization_id: number
+  slug: string
+  name: string
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface OrganizationListResponse {
+  items: OrganizationResponse[]
+  total: number
+}
+
 export interface UserResponse {
   user_id: number
   email: string
   full_name: string | null
   role: string
+  organization_id: number | null
+  organization: OrganizationResponse | null
   is_active: boolean
   created_at: string
   updated_at: string
@@ -36,6 +52,8 @@ export interface GuidelineListItem {
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
+  organization_id: number | null
+  organization: OrganizationResponse | null
   active_version: GuidelineVersionSummary | null
 }
 
@@ -91,6 +109,7 @@ export interface WorkspaceGuidelineInfo {
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
+  organization_id: number | null
 }
 
 export interface WorkspaceVersionInfo {
@@ -106,6 +125,7 @@ export interface WorkspaceVersionInfo {
 export interface WorkspaceDocumentInfo {
   document_id: number
   version_id: number
+  organization_id: number | null
   doc_type: string | null
   storage_uri: string | null
   page_count: number | null
@@ -159,6 +179,7 @@ export interface VersionWorkspaceResponse {
 export interface CreateGuidelineResponse {
   accepted: boolean
   guideline_id: number
+  organization_id: number | null
   version_id: number
   document_id: number
   storage_uri: string | null
@@ -195,6 +216,7 @@ export interface UpdateGuidelineMetadataResponse {
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
+  organization_id: number | null
 }
 
 export interface UpdateGuidelineVersionMetadataRequest {
@@ -233,11 +255,15 @@ export interface CreateUserRequest {
   full_name: string | null
   password: string
   role: string
+  organization_id?: number | null
+  organization_name?: string | null
   is_active: boolean
 }
 
 export interface UpdateUserRoleRequest {
   role: string
+  organization_id?: number | null
+  organization_name?: string | null
 }
 
 // ── Delete responses ───────────────────────────────────────────────

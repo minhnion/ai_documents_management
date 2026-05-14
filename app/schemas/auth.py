@@ -2,6 +2,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.organization import OrganizationResponse
+
 
 class AvailableRoleResponse(BaseModel):
     name: str
@@ -15,6 +17,8 @@ class UserResponse(BaseModel):
     email: EmailStr
     full_name: str | None = None
     role: str
+    organization_id: int | None = None
+    organization: OrganizationResponse | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -36,12 +40,16 @@ class CreateUserRequest(BaseModel):
     email: EmailStr
     full_name: str | None = Field(default=None, max_length=255)
     password: str = Field(min_length=8, max_length=512)
-    role: str = "viewer"
+    role: str = "user"
+    organization_id: int | None = Field(default=None, gt=0)
+    organization_name: str | None = Field(default=None, max_length=255)
     is_active: bool = True
 
 
 class UpdateUserRoleRequest(BaseModel):
     role: str
+    organization_id: int | None = Field(default=None, gt=0)
+    organization_name: str | None = Field(default=None, max_length=255)
 
 
 class UserListResponse(BaseModel):

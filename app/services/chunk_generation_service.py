@@ -11,8 +11,10 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.exceptions import BadRequestException, UnprocessableEntityException
+from app.core.exceptions import BadRequestException, NotFoundException, UnprocessableEntityException
 from app.models.chunk import Chunk
+from app.models.guideline import Guideline
+from app.models.guideline_version import GuidelineVersion
 from app.models.section import Section
 from app.services.pipeline.chunk_prompts import (
     CHUNK_ABSTRACT_SYSTEM_PROMPT,
@@ -47,6 +49,7 @@ class ChunkGenerationService:
 
     async def rebuild_chunks_for_version(self, version_id: int) -> dict[str, int]:
         max_chars = self._validate_chunk_settings()
+        organization_id = await self._load_version_organization_id(version_id)
 
         await self.db.execute(delete(Chunk).where(Chunk.version_id == version_id))
         await self.db.flush()
@@ -62,9 +65,30 @@ class ChunkGenerationService:
 
         chunk_rows = await self._persist_chunk_rows(
             version_id=version_id,
+            organization_id=organization_id,
             prepared_chunks=prepared_chunks,
         )
         return {"chunk_count": len(chunk_rows)}
+
+    async def _load_version_organization_id(self, version_id: int) -> int | None:
+        organization_id = (
+            await self.db.execute(
+                select(Guideline.organization_id)
+                .join(GuidelineVersion, GuidelineVersion.guideline_id == Guideline.guideline_id)
+                .where(GuidelineVersion.version_id == version_id)
+            )
+        ).scalar_one_or_none()
+        if organization_id is None:
+            version_exists = (
+                await self.db.execute(
+                    select(GuidelineVersion.version_id).where(
+                        GuidelineVersion.version_id == version_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if version_exists is None:
+                raise NotFoundException("GuidelineVersion", version_id)
+        return organization_id
 
     def _validate_chunk_settings(self) -> int:
         if not settings.OPENAI_API_KEY.strip():
@@ -280,6 +304,7 @@ class ChunkGenerationService:
         self,
         *,
         version_id: int,
+        organization_id: int | None,
         prepared_chunks: Sequence[PreparedChunk],
     ) -> list[Chunk]:
         abstracts = await self._build_chunk_abstracts(prepared_chunks)
@@ -287,6 +312,7 @@ class ChunkGenerationService:
         for prepared, abstract in zip(prepared_chunks, abstracts):
             chunk = Chunk(
                 version_id=version_id,
+                organization_id=organization_id,
                 section_id=prepared.section_id,
                 text=prepared.text,
                 text_abstract=abstract,

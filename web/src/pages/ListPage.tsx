@@ -3,7 +3,13 @@ import { Link } from 'react-router-dom'
 import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
-import type { GuidelineListItem, GuidelineListResponse, UpdateGuidelineMetadataResponse } from '../lib/types'
+import type {
+  GuidelineListItem,
+  GuidelineListResponse,
+  OrganizationListResponse,
+  OrganizationResponse,
+  UpdateGuidelineMetadataResponse,
+} from '../lib/types'
 import { useAuth } from '../store/auth'
 import VersionManagerModal from '../components/VersionManagerModal'
 import GuidelineMetadataModal from '../components/GuidelineMetadataModal'
@@ -23,6 +29,8 @@ export default function ListPage() {
   const [chuyenKhoa, setChuyenKhoa] = useState('')
   const [publisher, setPublisher] = useState('')
   const [tenBenh, setTenBenh] = useState('')
+  const [organizationFilter, setOrganizationFilter] = useState('')
+  const [organizations, setOrganizations] = useState<OrganizationResponse[]>([])
   const [page, setPage] = useState(1)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
@@ -31,12 +39,17 @@ export default function ListPage() {
 
   const fetchFilterOptions = useCallback(async () => {
     try {
-      const res = await api.get<FilterOptions>('/guidelines/filter-options')
+      const params = new URLSearchParams()
+      if (user?.role === 'admin' && organizationFilter) {
+        params.set('organization_id', organizationFilter)
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : ''
+      const res = await api.get<FilterOptions>(`/guidelines/filter-options${suffix}`)
       setFilterOptions(res.data)
     } catch (err) {
       console.error('Failed to fetch filter options:', err)
     }
-  }, [])
+  }, [organizationFilter, user?.role])
 
   const fetchGuidelines = useCallback(async () => {
     setLoading(true)
@@ -47,6 +60,9 @@ export default function ListPage() {
     if (chuyenKhoa) params.set('chuyen_khoa', chuyenKhoa)
     if (publisher) params.set('publisher', publisher)
     if (tenBenh) params.set('ten_benh', tenBenh)
+    if (user?.role === 'admin' && organizationFilter) {
+      params.set('organization_id', organizationFilter)
+    }
 
     try {
       const res = await api.get<GuidelineListResponse>(`/guidelines?${params.toString()}`)
@@ -56,7 +72,7 @@ export default function ListPage() {
     } finally {
       setLoading(false)
     }
-  }, [chuyenKhoa, publisher, tenBenh, page, search])
+  }, [chuyenKhoa, publisher, tenBenh, page, search, organizationFilter, user?.role])
 
   const handleDelete = async (guidelineId: number, title: string) => {
     if (!window.confirm(`Xóa "${title}" và tất cả phiên bản? Thao tác này không thể hoàn tác.`)) return
@@ -81,6 +97,13 @@ export default function ListPage() {
   }, [fetchFilterOptions])
 
   useEffect(() => {
+    if (user?.role !== 'admin') return
+    api.get<OrganizationListResponse>('/organizations')
+      .then(res => setOrganizations(res.data.items))
+      .catch(err => console.error('Failed to fetch organizations:', err))
+  }, [user?.role])
+
+  useEffect(() => {
     fetchGuidelines()
   }, [fetchGuidelines])
 
@@ -89,7 +112,7 @@ export default function ListPage() {
     await fetchGuidelines()
   }
 
-  const canEdit = user?.role === 'editor' || user?.role === 'admin'
+  const canEdit = user?.role === 'user' || user?.role === 'admin'
 
   return (
     <div className="list-page h-full flex-col">
@@ -98,13 +121,36 @@ export default function ListPage() {
           <h1 className="page-title">Quản lý Guideline</h1>
           <p className="page-subtitle">Danh sách các văn bản, hướng dẫn chuyên môn ({data?.total || 0})</p>
         </div>
-        <Link to="/guidelines/new" className="btn btn-primary">
-          <Plus size={16} /> Thêm Guideline
-        </Link>
+        {canEdit && (
+          <Link to="/guidelines/new" className="btn btn-primary">
+            <Plus size={16} /> Thêm Guideline
+          </Link>
+        )}
       </div>
 
       <div className="card flex-1 flex-col" style={{ padding: 20 }}>
         <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 12 }}>
+          {user?.role === 'admin' && (
+            <div className="form-group" style={{ width: 220, minWidth: 180 }}>
+              <select
+                className="form-select"
+                value={organizationFilter}
+                onChange={e => {
+                  setOrganizationFilter(e.target.value)
+                  setPublisher('')
+                  setTenBenh('')
+                  setPage(1)
+                }}
+              >
+                <option value="">Tất cả organization</option>
+                {organizations.map(org => (
+                  <option key={org.organization_id} value={org.organization_id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="form-group" style={{ flex: 1, minWidth: 200 }}>
             <div style={{ position: 'relative' }}>
               <Search size={16} style={{ position: 'absolute', top: 11, left: 12, color: 'var(--text-muted)' }} />
@@ -186,6 +232,7 @@ export default function ListPage() {
                   <th>Tên văn bản</th>
                   <th>Tên bệnh</th>
                   <th>Đơn vị ban hành</th>
+                  {user?.role === 'admin' && <th>Organization</th>}
                   <th>Chuyên khoa</th>
                   <th>Phiên bản hiện hành</th>
                   <th className="text-center">Thao tác</th>
@@ -197,6 +244,9 @@ export default function ListPage() {
                     <td className="font-medium">{item.title}</td>
                     <td>{item.ten_benh || '-'}</td>
                     <td>{item.publisher || '-'}</td>
+                    {user?.role === 'admin' && (
+                      <td>{item.organization?.name || '-'}</td>
+                    )}
                     <td>{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
                     <td>
                       {item.active_version ? (
@@ -251,7 +301,7 @@ export default function ListPage() {
                             <Layers size={14} /> Phiên bản
                           </button>
                         )}
-                        {user?.role === 'admin' && (
+                        {canEdit && (
                           <button
                             className="btn btn-danger btn-sm"
                             title="Xóa guideline"

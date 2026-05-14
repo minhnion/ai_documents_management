@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
 import { api } from '../lib/api'
 import type { UserResponse, LoginResponse } from '../lib/types'
 
@@ -36,6 +36,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(null)
     setUser(null)
   }, [])
+
+  useEffect(() => {
+    if (!token) return
+    api.get<UserResponse>('/auth/me')
+      .then(res => {
+        localStorage.setItem('user', JSON.stringify(res.data))
+        setUser(res.data)
+      })
+      .catch(() => logout())
+  }, [logout, token])
 
   return (
     <AuthContext.Provider
