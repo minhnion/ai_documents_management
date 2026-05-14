@@ -124,6 +124,20 @@ interface UsableBbox {
   bottom: number
 }
 
+interface PdfPageBaseSize {
+  pageNumber: number
+  width: number
+  height: number
+  area: number
+  aspectRatio: number
+}
+
+interface PdfPageLayout {
+  width: number
+  height: number
+  renderScale: number
+}
+
 function toUsableBbox(bbox: PdfBboxLike): UsableBbox | null {
   if (!bbox || typeof bbox !== 'object') return null
   const page = bbox.page
@@ -152,6 +166,37 @@ function bboxStyle(bbox: UsableBbox): React.CSSProperties {
     top: `${top * 100}%`,
     width: `${width * 100}%`,
     height: `${height * 100}%`,
+  }
+}
+
+function resolveAutoFitMultiplier(
+  page: PdfPageBaseSize,
+  reference: PdfPageBaseSize,
+): number {
+  if (
+    page.pageNumber === reference.pageNumber
+    || page.area >= reference.area
+    || Math.abs(reference.aspectRatio - page.aspectRatio) > 0.03
+  ) return 1
+
+  const widthRatio = reference.width / page.width
+  const heightRatio = reference.height / page.height
+  const ratioDelta = Math.abs(widthRatio - heightRatio)
+  const averageRatio = (widthRatio + heightRatio) / 2
+
+  if (averageRatio < 1.18 || averageRatio > 2.2 || ratioDelta > 0.06) {
+    return 1
+  }
+
+  return averageRatio
+}
+
+function buildPageLayout(page: PdfPageBaseSize, baseScale: number, reference: PdfPageBaseSize): PdfPageLayout {
+  const renderScale = baseScale * resolveAutoFitMultiplier(page, reference)
+  return {
+    width: page.width * renderScale,
+    height: page.height * renderScale,
+    renderScale,
   }
 }
 
@@ -193,13 +238,18 @@ export default function PdfViewer({
   const [reloadKey, setReloadKey] = useState(0)
   const [fitScale, setFitScale] = useState(DEFAULT_SCALE)
   const [zoomLevel, setZoomLevel] = useState(0)
-  const [placeholderSize, setPlaceholderSize] = useState<{ width: number; height: number } | null>(null)
+  const [pageLayouts, setPageLayouts] = useState<PdfPageLayout[]>([])
 
   const containerRef = useRef<HTMLDivElement>(null)
   const pageRefs = useRef<(HTMLDivElement | null)[]>([])
   const canvasRefs = useRef<(HTMLCanvasElement | null)[]>([])
+  const pageLayoutsRef = useRef<PdfPageLayout[]>([])
   const renderingRef = useRef(false)
-  const queuedRenderRef = useRef<{ doc: PDFDocumentProxy; scale: number } | null>(null)
+  const queuedRenderRef = useRef<{
+    doc: PDFDocumentProxy
+    layouts: PdfPageLayout[]
+    fallbackScale: number
+  } | null>(null)
   const currentDocRef = useRef<PDFDocumentProxy | null>(null)
   const observerRef = useRef<IntersectionObserver | null>(null)
   const currentPageRef = useRef(1)
@@ -208,6 +258,11 @@ export default function PdfViewer({
   const userScrollingRef = useRef(false)
 
   const renderScale = getZoomScale(fitScale, zoomLevel)
+
+  const applyPageLayouts = useCallback((layouts: PdfPageLayout[]) => {
+    pageLayoutsRef.current = layouts
+    setPageLayouts(layouts)
+  }, [])
 
   // Group highlight bboxes by page so each pdf-page-wrapper renders only its own.
   const highlightsByPage = useMemo(() => {
@@ -291,9 +346,39 @@ export default function PdfViewer({
     }
   }, [documentId])
 
-  const renderAllPages = useCallback(async (doc: PDFDocumentProxy, scale: number) => {
+  const measurePageBaseSize = useCallback(async (
+    doc: PDFDocumentProxy,
+    pageNumber: number,
+  ): Promise<PdfPageBaseSize> => {
+    const pdfPage = await doc.getPage(pageNumber)
+    try {
+      const viewport = pdfPage.getViewport({
+        scale: 1,
+        rotation: DEFAULT_ROTATION,
+      })
+      const width = Math.max(viewport.width, 1)
+      const height = Math.max(viewport.height, 1)
+      return {
+        pageNumber,
+        width,
+        height,
+        area: width * height,
+        aspectRatio: width / height,
+      }
+    } finally {
+      if (typeof pdfPage.cleanup === 'function') {
+        pdfPage.cleanup()
+      }
+    }
+  }, [])
+
+  const renderAllPages = useCallback(async (
+    doc: PDFDocumentProxy,
+    layouts: PdfPageLayout[],
+    fallbackScale: number,
+  ) => {
     if (renderingRef.current) {
-      queuedRenderRef.current = { doc, scale }
+      queuedRenderRef.current = { doc, layouts, fallbackScale }
       return
     }
     renderingRef.current = true
@@ -308,8 +393,9 @@ export default function PdfViewer({
 
         try {
           const pdfPage = await doc.getPage(pageNumber)
+          const pageLayout = pageLayoutsRef.current[pageNumber - 1] ?? layouts[pageNumber - 1]
           const viewport = pdfPage.getViewport({
-            scale,
+            scale: pageLayout?.renderScale ?? fallbackScale,
             rotation: DEFAULT_ROTATION,
           })
           const context = canvas.getContext('2d')
@@ -320,7 +406,8 @@ export default function PdfViewer({
           canvas.height = Math.floor(viewport.height * outputScale)
           canvas.style.width = '100%'
           canvas.style.height = 'auto'
-          wrapper.style.width = `${viewport.width}px`
+          wrapper.style.width = `${pageLayout?.width ?? viewport.width}px`
+          wrapper.style.minHeight = `${pageLayout?.height ?? viewport.height}px`
 
           context.setTransform(outputScale, 0, 0, outputScale, 0, 0)
           context.clearRect(0, 0, viewport.width, viewport.height)
@@ -346,7 +433,11 @@ export default function PdfViewer({
       const queuedRender = queuedRenderRef.current
       queuedRenderRef.current = null
       if (queuedRender && currentDocRef.current === queuedRender.doc) {
-        void renderAllPages(queuedRender.doc, queuedRender.scale)
+        void renderAllPages(
+          queuedRender.doc,
+          queuedRender.layouts,
+          queuedRender.fallbackScale,
+        )
       }
     }
   }, [])
@@ -384,6 +475,7 @@ export default function PdfViewer({
       setPdfDoc(null)
       setNumPages(0)
       setRenderedPages([])
+      applyPageLayouts([])
       setError(null)
       setActionError(null)
       return
@@ -401,6 +493,7 @@ export default function PdfViewer({
     setPdfDoc(null)
     setNumPages(0)
     setRenderedPages([])
+    applyPageLayouts([])
     setCurrentPage(1)
     setPageInputValue('1')
     setFitScale(DEFAULT_SCALE)
@@ -475,43 +568,75 @@ export default function PdfViewer({
     pageRefs.current = new Array(totalPages).fill(null)
     canvasRefs.current = new Array(totalPages).fill(null)
     setRenderedPages(Array.from({ length: totalPages }, (_, index) => index + 1))
+  }, [pdfDoc])
 
-    const timer = window.setTimeout(() => {
-      void renderAllPages(pdfDoc, renderScale)
-    }, 50)
-    return () => window.clearTimeout(timer)
-  }, [pdfDoc, renderAllPages, renderScale])
-
-  // Pre-compute page wrapper dimensions so offsetTop is correct for every page from the start. Without this, unrendered pages have height 0 and TOC jumps to far pages land at the wrong scroll position.
   useEffect(() => {
     if (!pdfDoc) {
-      setPlaceholderSize(null)
+      applyPageLayouts([])
       return
     }
+
     let cancelled = false
+    let renderTimer: number | null = null
     ;(async () => {
       try {
-        const firstPage = await pdfDoc.getPage(1)
-        try {
-          const viewport = firstPage.getViewport({ scale: renderScale, rotation: DEFAULT_ROTATION })
-          if (!cancelled) {
-            setPlaceholderSize({ width: viewport.width, height: viewport.height })
+        const referencePage = await measurePageBaseSize(pdfDoc, 1)
+        if (cancelled || currentDocRef.current !== pdfDoc) return
+
+        const fallbackLayout = buildPageLayout(referencePage, renderScale, referencePage)
+        const measuredLayouts = Array.from(
+          { length: pdfDoc.numPages },
+          () => fallbackLayout,
+        )
+        applyPageLayouts(measuredLayouts)
+
+        renderTimer = window.setTimeout(() => {
+          if (!cancelled && currentDocRef.current === pdfDoc) {
+            void renderAllPages(pdfDoc, measuredLayouts, renderScale)
           }
-        } finally {
-          if (typeof firstPage.cleanup === 'function') {
-            firstPage.cleanup()
+        }, 50)
+
+        let hasPendingLayoutUpdates = false
+        for (let pageNumber = 2; pageNumber <= pdfDoc.numPages; pageNumber += 1) {
+          if (cancelled || currentDocRef.current !== pdfDoc) return
+          const pageBaseSize = await measurePageBaseSize(pdfDoc, pageNumber)
+          if (cancelled || currentDocRef.current !== pdfDoc) return
+
+          const nextLayout = buildPageLayout(pageBaseSize, renderScale, referencePage)
+          const previousLayout = measuredLayouts[pageNumber - 1]
+          const changed = (
+            !previousLayout
+            || Math.abs(previousLayout.width - nextLayout.width) > 0.5
+            || Math.abs(previousLayout.height - nextLayout.height) > 0.5
+            || Math.abs(previousLayout.renderScale - nextLayout.renderScale) > 0.001
+          )
+          if (changed) {
+            measuredLayouts[pageNumber - 1] = nextLayout
+            pageLayoutsRef.current = measuredLayouts
+            hasPendingLayoutUpdates = true
+          }
+
+          if (pageNumber % 8 === 0 || pageNumber === pdfDoc.numPages) {
+            if (hasPendingLayoutUpdates) {
+              applyPageLayouts([...measuredLayouts])
+              hasPendingLayoutUpdates = false
+            }
+            await new Promise<void>(resolve => window.setTimeout(resolve, 0))
           }
         }
       } catch (placeholderError) {
         if (!cancelled) {
-          console.error('Failed measuring PDF placeholder dimensions', placeholderError)
+          console.error('Failed measuring PDF page dimensions', placeholderError)
         }
       }
     })()
     return () => {
       cancelled = true
+      if (renderTimer !== null) {
+        window.clearTimeout(renderTimer)
+      }
     }
-  }, [pdfDoc, renderScale])
+  }, [applyPageLayouts, measurePageBaseSize, pdfDoc, renderAllPages, renderScale])
 
   useEffect(() => {
     if (!containerRef.current || renderedPages.length === 0) return
@@ -600,6 +725,7 @@ export default function PdfViewer({
     const el = pageRefs.current[page - 1]
     const container = containerRef.current
     if (!el || !container) return
+    if (pdfDoc && pageLayouts.length !== pdfDoc.numPages) return
 
     // External jump (TOC click) — silence reverse-sync until the user scrolls again.
     userScrollingRef.current = false
@@ -619,7 +745,7 @@ export default function PdfViewer({
     const distancePx = Math.abs(targetTop - container.scrollTop)
     const behavior: ScrollBehavior = distancePx > container.clientHeight * 2 ? 'auto' : 'smooth'
     container.scrollTo({ top: targetTop, behavior })
-  }, [page, pageJumpKey, pageY, renderedPages, visibleLocationBias])
+  }, [page, pageJumpKey, pageLayouts, pageY, pdfDoc, renderedPages, visibleLocationBias])
 
   const reload = () => {
     setReloadKey((value) => value + 1)
@@ -808,6 +934,7 @@ export default function PdfViewer({
       <div className="pdf-scroll-container" ref={containerRef}>
         {renderedPages.map((pageNumber) => {
           const pageHighlights = highlightsByPage.get(pageNumber - 1)
+          const pageLayout = pageLayouts[pageNumber - 1]
           return (
             <div
               key={pageNumber}
@@ -815,9 +942,9 @@ export default function PdfViewer({
               ref={(el) => {
                 pageRefs.current[pageNumber - 1] = el
               }}
-              style={placeholderSize ? {
-                width: `${placeholderSize.width}px`,
-                minHeight: `${placeholderSize.height}px`,
+              style={pageLayout ? {
+                width: `${pageLayout.width}px`,
+                minHeight: `${pageLayout.height}px`,
               } : undefined}
             >
               <canvas

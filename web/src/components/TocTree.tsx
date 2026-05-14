@@ -7,10 +7,24 @@ interface TocTreeProps {
   nodes: WorkspaceSectionNode[]
   activeId: number | null
   onSelect: (node: WorkspaceSectionNode) => void
+  revealTargetId?: number | null
+  revealRequestKey?: number | null
   depth?: number
 }
 
-export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTreeProps) {
+function nodeContainsSection(node: WorkspaceSectionNode, sectionId: number): boolean {
+  if (node.section_id === sectionId) return true
+  return node.children.some(child => nodeContainsSection(child, sectionId))
+}
+
+export default function TocTree({
+  nodes,
+  activeId,
+  onSelect,
+  revealTargetId = null,
+  revealRequestKey = null,
+  depth = 0,
+}: TocTreeProps) {
   const [collapsed, setCollapsed] = useState<Set<number>>(() => {
     if (depth >= 2) {
       return new Set(nodes.filter(n => n.children.length > 0).map(n => n.section_id))
@@ -18,16 +32,50 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
     return new Set<number>()
   })
 
+  useEffect(() => {
+    if (revealTargetId == null || revealRequestKey == null) return
+    setCollapsed(prev => {
+      let changed = false
+      const next = new Set(prev)
+      for (const node of nodes) {
+        if (next.has(node.section_id) && nodeContainsSection(node, revealTargetId)) {
+          next.delete(node.section_id)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [nodes, revealRequestKey, revealTargetId])
+
   // Only the root TocTree drives the scroll-into-view: descendants share the
   // same DOM and finding by data attribute is enough.
   useEffect(() => {
     if (depth !== 0 || activeId == null) return
-    const el = document.querySelector(
-      `[data-toc-section-id="${activeId}"]`,
-    ) as HTMLElement | null
-    if (!el) return
-    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-  }, [activeId, depth])
+    let frameId: number | null = null
+    let attempts = 0
+    const targetId = revealTargetId === activeId ? revealTargetId : activeId
+
+    const scrollWhenMounted = () => {
+      attempts += 1
+      const el = document.querySelector(
+        `[data-toc-section-id="${targetId}"]`,
+      ) as HTMLElement | null
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        return
+      }
+      if (attempts < 8) {
+        frameId = window.requestAnimationFrame(scrollWhenMounted)
+      }
+    }
+
+    frameId = window.requestAnimationFrame(scrollWhenMounted)
+    return () => {
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId)
+      }
+    }
+  }, [activeId, depth, revealRequestKey, revealTargetId])
 
   const toggleCollapse = (id: number, e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation()
@@ -84,6 +132,8 @@ export default function TocTree({ nodes, activeId, onSelect, depth = 0 }: TocTre
                 nodes={node.children}
                 activeId={activeId}
                 onSelect={onSelect}
+                revealTargetId={revealTargetId}
+                revealRequestKey={revealRequestKey}
                 depth={depth + 1}
               />
             )}
