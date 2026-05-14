@@ -70,6 +70,33 @@ function getPdfAnchor(node: WorkspaceSectionNode): { page: number; y: number | n
   return { page, y: getPdfStartY(node) }
 }
 
+function getNearestPdfAnchor(
+  node: WorkspaceSectionNode,
+  nodes: WorkspaceSectionNode[],
+): { page: number; y: number | null } | null {
+  const directAnchor = getPdfAnchor(node)
+  if (directAnchor) return directAnchor
+
+  const currentIndex = nodes.findIndex(item => item.section_id === node.section_id)
+  if (currentIndex < 0) return null
+
+  for (let distance = 1; distance < nodes.length; distance += 1) {
+    const previous = nodes[currentIndex - distance]
+    if (previous) {
+      const previousAnchor = getPdfAnchor(previous)
+      if (previousAnchor) return previousAnchor
+    }
+
+    const next = nodes[currentIndex + distance]
+    if (next) {
+      const nextAnchor = getPdfAnchor(next)
+      if (nextAnchor) return nextAnchor
+    }
+  }
+
+  return null
+}
+
 function hasRenderableLandingAsset(node: WorkspaceSectionNode): boolean {
   if (!Array.isArray(node.landing_chunks)) return false
   return node.landing_chunks.some(entry => {
@@ -455,6 +482,7 @@ export default function ViewPage() {
   const [isContentPaneCollapsed, setIsContentPaneCollapsed] = useState(false)
   const [contentScrollBehavior, setContentScrollBehavior] = useState<ScrollBehavior | 'none'>('smooth')
   const [contentScrollKey, setContentScrollKey] = useState(0)
+  const [tocRevealTarget, setTocRevealTarget] = useState<{ sectionId: number; key: number } | null>(null)
   const [pdfJumpState, setPdfJumpState] = useState<{ page?: number; y?: number | null; key: number | null }>({
     page: undefined,
     y: null,
@@ -528,12 +556,18 @@ export default function ViewPage() {
     workspaceRef.current = workspace
   }, [workspace])
 
-  const handleTocSelect = useCallback((node: WorkspaceSectionNode) => {
+  const handleTocSelect = useCallback((
+    node: WorkspaceSectionNode,
+    options?: { revealInToc?: boolean },
+  ) => {
     const jumpKey = nextJumpRequestKey()
+    if (options?.revealInToc) {
+      setTocRevealTarget({ sectionId: node.section_id, key: jumpKey })
+    }
     setContentScrollBehavior('smooth')
     setContentScrollKey(jumpKey)
     setActiveSection(node)
-    const anchor = getPdfAnchor(node)
+    const anchor = getNearestPdfAnchor(node, flattenedSections)
     if (anchor) {
       suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
       setPdfJumpState({
@@ -542,7 +576,7 @@ export default function ViewPage() {
         key: jumpKey,
       })
     }
-  }, [])
+  }, [flattenedSections])
 
   const handleContentVisibleSectionChange = useCallback((sectionId: number) => {
     if (unsavedEditCount > 0) return
@@ -554,7 +588,7 @@ export default function ViewPage() {
     const jumpKey = nextJumpRequestKey()
     setContentScrollBehavior('none')
     setActiveSection(next)
-    const anchor = getPdfAnchor(next)
+    const anchor = getNearestPdfAnchor(next, flattenedSections)
     if (anchor) {
       suppressPdfSyncUntilRef.current = Date.now() + PDF_SYNC_SUPPRESS_MS
       setPdfJumpState({
@@ -917,7 +951,7 @@ export default function ViewPage() {
   }
 
   const handleEmptyLeafSectionSelect = (node: WorkspaceSectionNode) => {
-    handleTocSelect(node)
+    handleTocSelect(node, { revealInToc: true })
     if (!canEditSections || sectionEdits[node.section_id]) return
     handleSectionEditStart(
       node.section_id,
@@ -998,6 +1032,8 @@ export default function ViewPage() {
               nodes={workspace.toc}
               activeId={activeSection?.section_id ?? null}
               onSelect={handleTocSelect}
+              revealTargetId={tocRevealTarget?.sectionId ?? null}
+              revealRequestKey={tocRevealTarget?.key ?? null}
             />
           )}
         </div>

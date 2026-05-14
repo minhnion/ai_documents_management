@@ -60,3 +60,4 @@ tests/
 # Other
 core_and_example_ocr/
 test UI/
+*.md
