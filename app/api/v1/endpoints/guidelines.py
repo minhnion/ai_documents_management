@@ -34,12 +34,12 @@ router = APIRouter(prefix="/guidelines", tags=["Guidelines"])
 async def get_filter_options(
     db: DBSession,
     current_user: ActiveUser,
-    organization_id: Annotated[int | None, Query(gt=0)] = None,
+    owner_user_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> GuidelineFilterOptionsResponse:
     service = GuidelineQueryService(db)
     options = await service.get_filter_options(
         current_user=current_user,
-        organization_id=organization_id,
+        owner_user_id=owner_user_id,
     )
     return GuidelineFilterOptionsResponse(**options)
 
@@ -55,7 +55,7 @@ async def list_guidelines(
     ten_benh: Annotated[str | None, Query(max_length=255)] = None,
     publisher: Annotated[str | None, Query(max_length=255)] = None,
     chuyen_khoa: Annotated[str | None, Query(max_length=255)] = None,
-    organization_id: Annotated[int | None, Query(gt=0)] = None,
+    owner_user_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> GuidelineListResponse:
     service = GuidelineQueryService(db)
     guidelines, active_versions, total = await service.list_guidelines(
@@ -67,7 +67,7 @@ async def list_guidelines(
         ten_benh=ten_benh,
         publisher=publisher,
         chuyen_khoa=chuyen_khoa,
-        organization_id=organization_id,
+        owner_user_id=owner_user_id,
     )
 
     items: list[GuidelineListItem] = []
@@ -80,6 +80,13 @@ async def list_guidelines(
         )
         item = GuidelineListItem.model_validate(guideline)
         item.active_version = active_version
+        item.can_edit = current_user.role == "admin" or guideline.owner_user_id == current_user.user_id
+        item.can_delete = item.can_edit
+        item.access_scope = (
+            "admin"
+            if current_user.role == "admin"
+            else "owned" if guideline.owner_user_id == current_user.user_id else "inherited"
+        )
         items.append(item)
 
     return GuidelineListResponse(
@@ -93,14 +100,13 @@ async def list_guidelines(
 @router.post("", response_model=CreateGuidelineResponse, status_code=202, summary="Create Guideline")
 async def create_guideline(
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("user", "admin"))],
+    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "doctor", "admin"))],
     title: Annotated[str, Form(min_length=1, max_length=1000)],
     file: Annotated[UploadFile, File()],
     ten_benh: Annotated[str | None, Form(max_length=500)] = None,
     publisher: Annotated[str | None, Form(max_length=500)] = None,
     chuyen_khoa: Annotated[str | None, Form(max_length=255)] = None,
-    organization_id: Annotated[int | None, Form()] = None,
-    organization_name: Annotated[str | None, Form(max_length=255)] = None,
+    owner_user_id: Annotated[int | None, Form()] = None,
     version_label: Annotated[str | None, Form(max_length=50)] = None,
     release_date: Annotated[date | None, Form()] = None,
     effective_from: Annotated[date | None, Form()] = None,
@@ -114,8 +120,7 @@ async def create_guideline(
         ten_benh=ten_benh,
         publisher=publisher,
         chuyen_khoa=chuyen_khoa,
-        organization_id=organization_id,
-        organization_name=organization_name,
+        owner_user_id=owner_user_id,
         version_label=version_label,
         release_date=release_date,
         effective_from=effective_from,
@@ -127,7 +132,7 @@ async def create_guideline(
     return CreateGuidelineResponse(
         accepted=bool(job_result["accepted"]),
         guideline_id=guideline.guideline_id,
-        organization_id=guideline.organization_id,
+        owner_user_id=guideline.owner_user_id,
         version_id=guideline_version.version_id,
         document_id=document.document_id,
         storage_uri=document.storage_uri,
@@ -147,7 +152,7 @@ async def update_guideline_metadata(
     guideline_id: int,
     payload: UpdateGuidelineMetadataRequest,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("user", "admin"))],
+    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "doctor", "admin"))],
 ) -> UpdateGuidelineMetadataResponse:
     await TenantAccessService(db).ensure_guideline_access(
         guideline_id=guideline_id,
@@ -170,7 +175,7 @@ async def update_guideline_metadata(
 async def delete_guideline(
     guideline_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("user", "admin"))],
+    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "doctor", "admin"))],
 ) -> DeleteGuidelineResponse:
     await TenantAccessService(db).ensure_guideline_access(
         guideline_id=guideline_id,
@@ -191,7 +196,7 @@ async def delete_guideline(
 async def create_guideline_version(
     guideline_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("user", "admin"))],
+    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "doctor", "admin"))],
     file: Annotated[UploadFile, File()],
     version_label: Annotated[str | None, Form(max_length=50)] = None,
     release_date: Annotated[date | None, Form()] = None,

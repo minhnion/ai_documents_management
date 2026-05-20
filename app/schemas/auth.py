@@ -2,24 +2,26 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.schemas.organization import OrganizationResponse
-
 
 class AvailableRoleResponse(BaseModel):
     name: str
     description: str
 
 
-class UserResponse(BaseModel):
+class UserSummaryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     user_id: int
-    email: EmailStr
+    email: str
     full_name: str | None = None
     role: str
-    organization_id: int | None = None
-    organization: OrganizationResponse | None = None
+    parent_id: int | None = None
     is_active: bool
+
+
+class UserResponse(UserSummaryResponse):
+    parent: UserSummaryResponse | None = None
+    created_by_user_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -37,19 +39,22 @@ class LoginResponse(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    email: EmailStr
+    email: str
     full_name: str | None = Field(default=None, max_length=255)
     password: str = Field(min_length=8, max_length=512)
-    role: str = "user"
-    organization_id: int | None = Field(default=None, gt=0)
-    organization_name: str | None = Field(default=None, max_length=255)
+    role: str = "health_department"
+    parent_id: int | None = Field(default=None, gt=0)
+    parent_name: str | None = Field(default=None, max_length=255)
+    parent_parent_id: int | None = Field(default=None, gt=0)
     is_active: bool = True
 
 
 class UpdateUserRoleRequest(BaseModel):
     role: str
-    organization_id: int | None = Field(default=None, gt=0)
-    organization_name: str | None = Field(default=None, max_length=255)
+    parent_id: int | None = Field(default=None, gt=0)
+    parent_name: str | None = Field(default=None, max_length=255)
+    parent_parent_id: int | None = Field(default=None, gt=0)
+    is_active: bool | None = None
 
 
 class UserListResponse(BaseModel):

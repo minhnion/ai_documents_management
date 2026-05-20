@@ -18,7 +18,7 @@ from app.core.database import (
     migrate_documents_original_filename_schema,
     migrate_documents_pipeline_mode_schema,
     migrate_guidelines_ten_benh_schema,
-    migrate_organization_schema,
+    migrate_user_hierarchy_schema,
     migrate_sections_enriched_schema,
     migrate_sections_quality_schema,
     migrate_auth_schema_to_single_role,
@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
     if settings.AUTO_CREATE_TABLES:
         await init_db_schema()
         await migrate_auth_schema_to_single_role()
-        await migrate_organization_schema()
+        await migrate_user_hierarchy_schema()
         await migrate_guidelines_ten_benh_schema()
         await migrate_sections_quality_schema()
         await migrate_sections_enriched_schema()

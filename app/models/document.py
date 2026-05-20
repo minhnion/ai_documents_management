@@ -15,9 +15,15 @@ class Document(Base):
         ForeignKey("guideline_versions.version_id", ondelete="CASCADE"),
         nullable=False,
     )
-    organization_id: Mapped[int | None] = mapped_column(
+    owner_user_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
+        ForeignKey("users.user_id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -28,12 +34,14 @@ class Document(Base):
     image_uri: Mapped[str | None] = mapped_column(Text, nullable=True)
     pipeline_mode_used: Mapped[str | None] = mapped_column(String(30), nullable=True)
 
-    # Relationships
     version: Mapped["GuidelineVersion"] = relationship(
         "GuidelineVersion", back_populates="documents"
     )
-    organization: Mapped["Organization | None"] = relationship(
-        "Organization", lazy="selectin"
+    owner: Mapped["User"] = relationship(
+        "User", foreign_keys=[owner_user_id], lazy="selectin"
+    )
+    created_by: Mapped["User | None"] = relationship(
+        "User", foreign_keys=[created_by_user_id], lazy="selectin"
     )
 
     def __repr__(self) -> str:

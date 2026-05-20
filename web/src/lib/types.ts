@@ -1,26 +1,16 @@
-// ── Auth ──────────────────────────────────────────────────────────
-export interface OrganizationResponse {
-  organization_id: number
-  slug: string
-  name: string
-  is_active: boolean
-  created_at: string
-  updated_at: string
-}
-
-export interface OrganizationListResponse {
-  items: OrganizationResponse[]
-  total: number
-}
-
-export interface UserResponse {
+// Auth
+export interface UserSummaryResponse {
   user_id: number
   email: string
   full_name: string | null
   role: string
-  organization_id: number | null
-  organization: OrganizationResponse | null
+  parent_id: number | null
   is_active: boolean
+}
+
+export interface UserResponse extends UserSummaryResponse {
+  parent: UserSummaryResponse | null
+  created_by_user_id: number | null
   created_at: string
   updated_at: string
 }
@@ -36,7 +26,36 @@ export interface LoginResponse {
   user: UserResponse
 }
 
-// ── Guidelines ────────────────────────────────────────────────────
+export interface AvailableRoleResponse {
+  name: string
+  description: string
+}
+
+export interface UserListResponse {
+  items: UserResponse[]
+  total: number
+}
+
+export interface CreateUserRequest {
+  email: string
+  full_name: string | null
+  password: string
+  role: string
+  parent_id?: number | null
+  parent_name?: string | null
+  parent_parent_id?: number | null
+  is_active: boolean
+}
+
+export interface UpdateUserRoleRequest {
+  role: string
+  parent_id?: number | null
+  parent_name?: string | null
+  parent_parent_id?: number | null
+  is_active?: boolean | null
+}
+
+// Guidelines
 export interface GuidelineVersionSummary {
   version_id: number
   version_label: string | null
@@ -52,9 +71,13 @@ export interface GuidelineListItem {
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
-  organization_id: number | null
-  organization: OrganizationResponse | null
+  owner_user_id: number
+  owner: UserSummaryResponse | null
+  created_by_user_id: number | null
   active_version: GuidelineVersionSummary | null
+  can_edit: boolean
+  can_delete: boolean
+  access_scope: string
 }
 
 export interface GuidelineListResponse {
@@ -102,14 +125,15 @@ export interface VersionIngestionStatusResponse {
   finished_at: string | null
 }
 
-// ── Workspace ─────────────────────────────────────────────────────
+// Workspace
 export interface WorkspaceGuidelineInfo {
   guideline_id: number
   title: string
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
-  organization_id: number | null
+  owner_user_id: number
+  owner: UserSummaryResponse | null
 }
 
 export interface WorkspaceVersionInfo {
@@ -125,7 +149,8 @@ export interface WorkspaceVersionInfo {
 export interface WorkspaceDocumentInfo {
   document_id: number
   version_id: number
-  organization_id: number | null
+  owner_user_id: number
+  created_by_user_id: number | null
   doc_type: string | null
   storage_uri: string | null
   page_count: number | null
@@ -173,13 +198,16 @@ export interface VersionWorkspaceResponse {
   full_text: string | null
   suspect_score_threshold: number
   suspect_section_count: number
+  can_edit: boolean
+  can_delete: boolean
+  access_scope: string
 }
 
-// ── Mutations ─────────────────────────────────────────────────────
+// Mutations
 export interface CreateGuidelineResponse {
   accepted: boolean
   guideline_id: number
-  organization_id: number | null
+  owner_user_id: number
   version_id: number
   document_id: number
   storage_uri: string | null
@@ -216,7 +244,7 @@ export interface UpdateGuidelineMetadataResponse {
   ten_benh: string | null
   publisher: string | null
   chuyen_khoa: string | null
-  organization_id: number | null
+  owner_user_id: number
 }
 
 export interface UpdateGuidelineVersionMetadataRequest {
@@ -239,34 +267,6 @@ export interface UpdateGuidelineVersionMetadataResponse {
   previous_active_versions_updated: number
 }
 
-// ── Admin ─────────────────────────────────────────────────────────
-export interface AvailableRoleResponse {
-  name: string
-  description: string
-}
-
-export interface UserListResponse {
-  items: UserResponse[]
-  total: number
-}
-
-export interface CreateUserRequest {
-  email: string
-  full_name: string | null
-  password: string
-  role: string
-  organization_id?: number | null
-  organization_name?: string | null
-  is_active: boolean
-}
-
-export interface UpdateUserRoleRequest {
-  role: string
-  organization_id?: number | null
-  organization_name?: string | null
-}
-
-// ── Delete responses ───────────────────────────────────────────────
 export interface DeleteGuidelineResponse {
   guideline_id: number
   deleted_version_count: number
@@ -279,7 +279,6 @@ export interface DeleteGuidelineVersionResponse {
   remaining_version_count: number
 }
 
-// ── Bulk section update ────────────────────────────────────────────
 export interface SectionContentUpdateItem {
   section_id: number
   content: string | null

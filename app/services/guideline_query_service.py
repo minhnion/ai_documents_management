@@ -2,7 +2,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.exceptions import NotFoundException
 from app.core.text_normalization import (
     VIETNAMESE_TRANSLATION_SOURCE,
     VIETNAMESE_TRANSLATION_TARGET,
@@ -11,6 +11,7 @@ from app.core.text_normalization import (
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
 from app.models.user import User
+from app.services.tenant_access_service import TenantAccessService
 
 
 class GuidelineQueryService:
@@ -29,16 +30,16 @@ class GuidelineQueryService:
         ten_benh: str | None = None,
         publisher: str | None = None,
         chuyen_khoa: str | None = None,
-        organization_id: int | None = None,
+        owner_user_id: int | None = None,
     ) -> tuple[list[Guideline], dict[int, dict[str, object]], int]:
-        filters = self._build_guideline_filters(
+        filters = await self._build_guideline_filters(
             current_user=current_user,
             search=search,
             title=title,
             ten_benh=ten_benh,
             publisher=publisher,
             chuyen_khoa=chuyen_khoa,
-            organization_id=organization_id,
+            owner_user_id=owner_user_id,
         )
         offset = (page - 1) * page_size
 
@@ -47,7 +48,7 @@ class GuidelineQueryService:
 
         guidelines_stmt = (
             select(Guideline)
-            .options(selectinload(Guideline.organization))
+            .options(selectinload(Guideline.owner))
             .where(*filters)
             .order_by(Guideline.guideline_id.desc())
             .offset(offset)
@@ -71,7 +72,7 @@ class GuidelineQueryService:
             await self.db.execute(
                 select(Guideline.guideline_id).where(
                     Guideline.guideline_id == guideline_id,
-                    *self._build_tenant_filters(current_user=current_user),
+                    *(await self._build_tenant_filters(current_user=current_user)),
                 )
             )
         ).scalar_one_or_none()
@@ -104,7 +105,7 @@ class GuidelineQueryService:
         versions = list((await self.db.execute(versions_stmt)).scalars().all())
         return versions, total
 
-    def _build_guideline_filters(
+    async def _build_guideline_filters(
         self,
         current_user: User,
         search: str | None,
@@ -112,11 +113,11 @@ class GuidelineQueryService:
         ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
-        organization_id: int | None,
+        owner_user_id: int | None,
     ) -> list[object]:
-        filters: list[object] = self._build_tenant_filters(
+        filters: list[object] = await self._build_tenant_filters(
             current_user=current_user,
-            organization_id=organization_id,
+            owner_user_id=owner_user_id,
         )
 
         normalized_search = normalize_search_text(search)
@@ -130,40 +131,28 @@ class GuidelineQueryService:
                     self._normalized_text_expr(Guideline.chuyen_khoa).like(keyword),
                 )
             )
-        self._append_normalized_contains_filter(
-            filters=filters,
-            column=Guideline.title,
-            value=title,
-        )
-        self._append_normalized_contains_filter(
-            filters=filters,
-            column=Guideline.ten_benh,
-            value=ten_benh,
-        )
-        self._append_normalized_contains_filter(
-            filters=filters,
-            column=Guideline.publisher,
-            value=publisher,
-        )
-        self._append_normalized_contains_filter(
-            filters=filters,
-            column=Guideline.chuyen_khoa,
-            value=chuyen_khoa,
-        )
+        self._append_normalized_contains_filter(filters=filters, column=Guideline.title, value=title)
+        self._append_normalized_contains_filter(filters=filters, column=Guideline.ten_benh, value=ten_benh)
+        self._append_normalized_contains_filter(filters=filters, column=Guideline.publisher, value=publisher)
+        self._append_normalized_contains_filter(filters=filters, column=Guideline.chuyen_khoa, value=chuyen_khoa)
 
         return filters
 
-    def _build_tenant_filters(
+    async def _build_tenant_filters(
         self,
         *,
         current_user: User,
-        organization_id: int | None = None,
+        owner_user_id: int | None = None,
     ) -> list[object]:
         if current_user.role == "admin":
-            return [Guideline.organization_id == organization_id] if organization_id else []
-        if current_user.organization_id is None:
-            raise BadRequestException("User account has no organization assigned.")
-        return [Guideline.organization_id == current_user.organization_id]
+            return [Guideline.owner_user_id == owner_user_id] if owner_user_id else []
+
+        visible_owner_ids = await TenantAccessService(self.db).get_visible_owner_user_ids(current_user)
+        if owner_user_id is not None:
+            if int(owner_user_id) not in visible_owner_ids:
+                return [Guideline.owner_user_id == -1]
+            return [Guideline.owner_user_id == owner_user_id]
+        return [Guideline.owner_user_id.in_(visible_owner_ids)]
 
     def _append_normalized_contains_filter(
         self,
@@ -189,12 +178,11 @@ class GuidelineQueryService:
     async def get_filter_options(
         self,
         current_user: User,
-        organization_id: int | None = None,
+        owner_user_id: int | None = None,
     ) -> dict[str, list[str]]:
-        """Get unique values for filter dropdowns."""
-        tenant_filters = self._build_tenant_filters(
+        tenant_filters = await self._build_tenant_filters(
             current_user=current_user,
-            organization_id=organization_id,
+            owner_user_id=owner_user_id,
         )
         publishers_stmt = (
             select(Guideline.publisher)
@@ -204,9 +192,7 @@ class GuidelineQueryService:
             .distinct()
             .order_by(Guideline.publisher)
         )
-        publishers = [
-            row for row in (await self.db.execute(publishers_stmt)).scalars().all()
-        ]
+        publishers = [row for row in (await self.db.execute(publishers_stmt)).scalars().all()]
 
         ten_benh_stmt = (
             select(Guideline.ten_benh)
@@ -216,9 +202,7 @@ class GuidelineQueryService:
             .distinct()
             .order_by(Guideline.ten_benh)
         )
-        ten_benhs = [
-            row for row in (await self.db.execute(ten_benh_stmt)).scalars().all()
-        ]
+        ten_benhs = [row for row in (await self.db.execute(ten_benh_stmt)).scalars().all()]
 
         return {
             "publishers": publishers,
@@ -260,8 +244,11 @@ class GuidelineQueryService:
             .subquery()
         )
 
-        stmt = select(ranked_active_versions).where(ranked_active_versions.c.rn == 1)
-        rows = (await self.db.execute(stmt)).mappings().all()
+        rows = (
+            await self.db.execute(
+                select(ranked_active_versions).where(ranked_active_versions.c.rn == 1)
+            )
+        ).mappings().all()
         return {
             int(row["guideline_id"]): {
                 "version_id": row["version_id"],

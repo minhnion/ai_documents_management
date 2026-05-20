@@ -15,11 +15,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
-function AdminRoute({ children }: { children: React.ReactNode }) {
+function AccountManagerRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (!user) return null
-  if (user.role !== 'admin') return <Navigate to="/guidelines" replace />
+  if (!['admin', 'health_department', 'hospital'].includes(user.role)) return <Navigate to="/guidelines" replace />
   return <Layout>{children}</Layout>
 }
 
@@ -38,7 +38,7 @@ export default function App() {
           <Route path="/guidelines/:guidelineId/update" element={<ProtectedRoute><UpdatePage /></ProtectedRoute>} />
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
 
-          <Route path="/admin/users" element={<AdminRoute><AdminUsersPage /></AdminRoute>} />
+          <Route path="/admin/users" element={<AccountManagerRoute><AdminUsersPage /></AccountManagerRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />
         </Routes>

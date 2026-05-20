@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.organization import OrganizationResponse
+from app.schemas.auth import UserSummaryResponse
 
 
 class GuidelineVersionSummary(BaseModel):
@@ -23,9 +23,13 @@ class GuidelineListItem(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
-    organization_id: int | None = None
-    organization: OrganizationResponse | None = None
+    owner_user_id: int
+    owner: UserSummaryResponse | None = None
+    created_by_user_id: int | None = None
     active_version: GuidelineVersionSummary | None = None
+    can_edit: bool = False
+    can_delete: bool = False
+    access_scope: str = "owned"
 
 
 class GuidelineListResponse(BaseModel):
@@ -73,7 +77,7 @@ class VersionIngestionStatusResponse(BaseModel):
 class CreateGuidelineResponse(BaseModel):
     accepted: bool
     guideline_id: int
-    organization_id: int | None = None
+    owner_user_id: int
     version_id: int
     document_id: int
     storage_uri: str | None = None
@@ -112,7 +116,7 @@ class UpdateGuidelineMetadataResponse(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
-    organization_id: int | None = None
+    owner_user_id: int
 
 
 class UpdateGuidelineVersionMetadataRequest(BaseModel):
@@ -171,7 +175,8 @@ class WorkspaceGuidelineInfo(BaseModel):
     ten_benh: str | None = None
     publisher: str | None = None
     chuyen_khoa: str | None = None
-    organization_id: int | None = None
+    owner_user_id: int
+    owner: UserSummaryResponse | None = None
 
 
 class WorkspaceVersionInfo(BaseModel):
@@ -191,7 +196,8 @@ class WorkspaceDocumentInfo(BaseModel):
 
     document_id: int
     version_id: int
-    organization_id: int | None = None
+    owner_user_id: int
+    created_by_user_id: int | None = None
     doc_type: str | None = None
     storage_uri: str | None = None
     page_count: int | None = None
@@ -242,6 +248,9 @@ class VersionWorkspaceResponse(BaseModel):
     suspect_score_threshold: float
     suspect_section_count: int
     full_text: str | None = None
+    can_edit: bool = False
+    can_delete: bool = False
+    access_scope: str = "owned"
 
 
 class SectionContentUpdateItem(BaseModel):

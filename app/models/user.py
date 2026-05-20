@@ -20,7 +20,7 @@ class User(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(
-            "role IN ('admin', 'user')",
+            "role IN ('admin', 'health_department', 'hospital', 'doctor')",
             name="ck_users_role",
         ),
     )
@@ -34,12 +34,18 @@ class User(Base):
     role: Mapped[str] = mapped_column(
         String(20),
         nullable=False,
-        default="user",
-        server_default=text("'user'"),
+        default="health_department",
+        server_default=text("'health_department'"),
     )
-    organization_id: Mapped[int | None] = mapped_column(
+    parent_id: Mapped[int | None] = mapped_column(
         BigInteger,
-        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
+        ForeignKey("users.user_id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.user_id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -56,8 +62,24 @@ class User(Base):
         nullable=False,
     )
 
-    organization: Mapped["Organization | None"] = relationship(
-        "Organization", back_populates="users", lazy="selectin"
+    parent: Mapped["User | None"] = relationship(
+        "User",
+        remote_side=[user_id],
+        foreign_keys=[parent_id],
+        back_populates="children",
+        lazy="selectin",
+    )
+    children: Mapped[list["User"]] = relationship(
+        "User",
+        foreign_keys=[parent_id],
+        back_populates="parent",
+        lazy="select",
+    )
+    created_by: Mapped["User | None"] = relationship(
+        "User",
+        remote_side=[user_id],
+        foreign_keys=[created_by_user_id],
+        lazy="selectin",
     )
 
     def __repr__(self) -> str:

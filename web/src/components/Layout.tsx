@@ -14,9 +14,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </Link>
         
         <div className="navbar-spacer" />
-        {user?.role === 'admin' && (
+        {user && ['admin', 'health_department', 'hospital'].includes(user.role) && (
           <Link to="/admin/users" className="btn btn-ghost btn-sm">
-            <Users size={15} /> Người dùng
+            <Users size={15} /> Tài khoản
           </Link>
         )}
         {isAuthenticated && (
@@ -25,8 +25,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               {user?.full_name ?? user?.email}
             </span>
             <span className="badge badge-default text-sm">{user?.role}</span>
-            {user?.role === 'user' && user.organization && (
-              <span className="badge badge-default text-sm">{user.organization.name}</span>
+            {user?.parent && (
+              <span className="badge badge-default text-sm">Thuộc: {user.parent.full_name ?? user.parent.email}</span>
             )}
             <button className="btn btn-ghost btn-sm" onClick={logout} title="Đăng xuất">
               <LogOut size={14} />
