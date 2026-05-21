@@ -71,20 +71,20 @@ async def get_me(current_user: ActiveUser) -> UserResponse:
 )
 async def list_roles(
     auth_service: AuthServiceDep,
-    _: Annotated[object, Depends(require_roles("admin"))],
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
 ) -> list[AvailableRoleResponse]:
     return [
         AvailableRoleResponse(**item)
-        for item in auth_service.get_available_roles()
+        for item in auth_service.get_available_roles(current_user)
     ]
 
 
 @router.get("/users", response_model=UserListResponse, summary="List Users")
 async def list_users(
     auth_service: AuthServiceDep,
-    _: Annotated[object, Depends(require_roles("admin"))],
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
 ) -> UserListResponse:
-    users = await auth_service.list_users()
+    users = await auth_service.list_users(current_user)
     return UserListResponse(
         items=[UserResponse.model_validate(user) for user in users],
         total=len(users),
@@ -95,15 +95,17 @@ async def list_users(
 async def create_user(
     payload: CreateUserRequest,
     auth_service: AuthServiceDep,
-    _: Annotated[object, Depends(require_roles("admin"))],
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
 ) -> UserResponse:
     user = await auth_service.create_user(
+        current_user=current_user,
         email=payload.email,
         password=payload.password,
         role=payload.role,
         full_name=payload.full_name,
-        organization_id=payload.organization_id,
-        organization_name=payload.organization_name,
+        parent_id=payload.parent_id,
+        parent_name=payload.parent_name,
+        parent_parent_id=payload.parent_parent_id,
         is_active=payload.is_active,
     )
     return UserResponse.model_validate(user)
@@ -118,12 +120,15 @@ async def update_user_role(
     user_id: int,
     payload: UpdateUserRoleRequest,
     auth_service: AuthServiceDep,
-    _: Annotated[object, Depends(require_roles("admin"))],
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
 ) -> UserResponse:
     user = await auth_service.update_user_role(
+        current_user=current_user,
         user_id=user_id,
         role=payload.role,
-        organization_id=payload.organization_id,
-        organization_name=payload.organization_name,
+        parent_id=payload.parent_id,
+        parent_name=payload.parent_name,
+        parent_parent_id=payload.parent_parent_id,
+        is_active=payload.is_active,
     )
     return UserResponse.model_validate(user)

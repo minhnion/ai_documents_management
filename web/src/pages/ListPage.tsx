@@ -6,8 +6,8 @@ import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import type {
   GuidelineListItem,
   GuidelineListResponse,
-  OrganizationListResponse,
-  OrganizationResponse,
+  UserListResponse,
+  UserResponse,
   UpdateGuidelineMetadataResponse,
 } from '../lib/types'
 import { useAuth } from '../store/auth'
@@ -29,8 +29,8 @@ export default function ListPage() {
   const [chuyenKhoa, setChuyenKhoa] = useState('')
   const [publisher, setPublisher] = useState('')
   const [tenBenh, setTenBenh] = useState('')
-  const [organizationFilter, setOrganizationFilter] = useState('')
-  const [organizations, setOrganizations] = useState<OrganizationResponse[]>([])
+  const [ownerFilter, setOwnerFilter] = useState('')
+  const [owners, setOwners] = useState<UserResponse[]>([])
   const [page, setPage] = useState(1)
   const [deletingId, setDeletingId] = useState<number | null>(null)
   const [versionModalGuideline, setVersionModalGuideline] = useState<{ id: number; title: string } | null>(null)
@@ -40,8 +40,8 @@ export default function ListPage() {
   const fetchFilterOptions = useCallback(async () => {
     try {
       const params = new URLSearchParams()
-      if (user?.role === 'admin' && organizationFilter) {
-        params.set('organization_id', organizationFilter)
+      if (user?.role === 'admin' && ownerFilter) {
+        params.set('owner_user_id', ownerFilter)
       }
       const suffix = params.toString() ? `?${params.toString()}` : ''
       const res = await api.get<FilterOptions>(`/guidelines/filter-options${suffix}`)
@@ -49,7 +49,7 @@ export default function ListPage() {
     } catch (err) {
       console.error('Failed to fetch filter options:', err)
     }
-  }, [organizationFilter, user?.role])
+  }, [ownerFilter, user?.role])
 
   const fetchGuidelines = useCallback(async () => {
     setLoading(true)
@@ -60,8 +60,8 @@ export default function ListPage() {
     if (chuyenKhoa) params.set('chuyen_khoa', chuyenKhoa)
     if (publisher) params.set('publisher', publisher)
     if (tenBenh) params.set('ten_benh', tenBenh)
-    if (user?.role === 'admin' && organizationFilter) {
-      params.set('organization_id', organizationFilter)
+    if (user?.role === 'admin' && ownerFilter) {
+      params.set('owner_user_id', ownerFilter)
     }
 
     try {
@@ -72,7 +72,7 @@ export default function ListPage() {
     } finally {
       setLoading(false)
     }
-  }, [chuyenKhoa, publisher, tenBenh, page, search, organizationFilter, user?.role])
+  }, [chuyenKhoa, publisher, tenBenh, page, search, ownerFilter, user?.role])
 
   const handleDelete = async (guidelineId: number, title: string) => {
     if (!window.confirm(`Xóa "${title}" và tất cả phiên bản? Thao tác này không thể hoàn tác.`)) return
@@ -98,9 +98,9 @@ export default function ListPage() {
 
   useEffect(() => {
     if (user?.role !== 'admin') return
-    api.get<OrganizationListResponse>('/organizations')
-      .then(res => setOrganizations(res.data.items))
-      .catch(err => console.error('Failed to fetch organizations:', err))
+    api.get<UserListResponse>('/auth/users')
+      .then(res => setOwners(res.data.items.filter(item => item.role !== 'admin')))
+      .catch(err => console.error('Failed to fetch owner accounts:', err))
   }, [user?.role])
 
   useEffect(() => {
@@ -112,7 +112,7 @@ export default function ListPage() {
     await fetchGuidelines()
   }
 
-  const canEdit = user?.role === 'user' || user?.role === 'admin'
+  const canCreate = ['admin', 'health_department', 'hospital', 'doctor'].includes(user?.role ?? '')
 
   return (
     <div className="list-page h-full flex-col">
@@ -121,7 +121,7 @@ export default function ListPage() {
           <h1 className="page-title">Quản lý Guideline</h1>
           <p className="page-subtitle">Danh sách các văn bản, hướng dẫn chuyên môn ({data?.total || 0})</p>
         </div>
-        {canEdit && (
+        {canCreate && (
           <Link to="/guidelines/new" className="btn btn-primary">
             <Plus size={16} /> Thêm Guideline
           </Link>
@@ -131,21 +131,21 @@ export default function ListPage() {
       <div className="card flex-1 flex-col" style={{ padding: 20 }}>
         <div className="filter-bar" style={{ flexWrap: 'wrap', gap: 12 }}>
           {user?.role === 'admin' && (
-            <div className="form-group" style={{ width: 220, minWidth: 180 }}>
+            <div className="form-group" style={{ width: 240, minWidth: 200 }}>
               <select
                 className="form-select"
-                value={organizationFilter}
+                value={ownerFilter}
                 onChange={e => {
-                  setOrganizationFilter(e.target.value)
+                  setOwnerFilter(e.target.value)
                   setPublisher('')
                   setTenBenh('')
                   setPage(1)
                 }}
               >
-                <option value="">Tất cả organization</option>
-                {organizations.map(org => (
-                  <option key={org.organization_id} value={org.organization_id}>
-                    {org.name}
+                <option value="">Tất cả tài khoản sở hữu</option>
+                {owners.map(owner => (
+                  <option key={owner.user_id} value={owner.user_id}>
+                    {owner.full_name || owner.email} - {owner.role}
                   </option>
                 ))}
               </select>
@@ -232,7 +232,7 @@ export default function ListPage() {
                   <th>Tên văn bản</th>
                   <th>Tên bệnh</th>
                   <th>Đơn vị ban hành</th>
-                  {user?.role === 'admin' && <th>Organization</th>}
+                  <th>Chủ sở hữu</th>
                   <th>Chuyên khoa</th>
                   <th>Phiên bản hiện hành</th>
                   <th className="text-center">Thao tác</th>
@@ -244,9 +244,10 @@ export default function ListPage() {
                     <td className="font-medium">{item.title}</td>
                     <td>{item.ten_benh || '-'}</td>
                     <td>{item.publisher || '-'}</td>
-                    {user?.role === 'admin' && (
-                      <td>{item.organization?.name || '-'}</td>
-                    )}
+                    <td>
+                      <div>{item.owner?.full_name || item.owner?.email || '-'}</div>
+                      {item.access_scope === 'inherited' && <span className="badge badge-default">Kế thừa</span>}
+                    </td>
                     <td>{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
                     <td>
                       {item.active_version ? (
@@ -273,7 +274,7 @@ export default function ListPage() {
                             <Eye size={14} /> Xem
                           </button>
                         )}
-                        {canEdit && (
+                        {item.can_edit && (
                           <button
                             className="btn btn-secondary btn-sm"
                             title="Cập nhật metadata guideline"
@@ -282,7 +283,7 @@ export default function ListPage() {
                             <Edit2 size={14} /> Cập nhật
                           </button>
                         )}
-                        {canEdit && (
+                        {item.can_edit && (
                           <Link
                             to={`/guidelines/${item.guideline_id}/update`}
                             className="btn btn-secondary btn-sm"
@@ -291,7 +292,7 @@ export default function ListPage() {
                             <Plus size={14} /> Tạo phiên bản mới
                           </Link>
                         )}
-                        {canEdit && (
+                        {item.can_edit && (
                           <button
                             className="btn btn-secondary btn-sm"
                             title="Quản lý phiên bản"
@@ -301,7 +302,7 @@ export default function ListPage() {
                             <Layers size={14} /> Phiên bản
                           </button>
                         )}
-                        {canEdit && (
+                        {item.can_delete && (
                           <button
                             className="btn btn-danger btn-sm"
                             title="Xóa guideline"

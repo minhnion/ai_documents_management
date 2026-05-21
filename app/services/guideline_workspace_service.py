@@ -1,5 +1,6 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.exceptions import NotFoundException
@@ -22,6 +23,7 @@ class GuidelineWorkspaceService:
         version_row = (
             await self.db.execute(
                 select(GuidelineVersion, Guideline)
+                .options(selectinload(Guideline.owner))
                 .join(
                     Guideline,
                     Guideline.guideline_id == GuidelineVersion.guideline_id,

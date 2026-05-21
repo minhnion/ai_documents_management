@@ -489,7 +489,7 @@ export default function ViewPage() {
     key: null,
   })
 
-  const canEdit = user?.role === 'user' || user?.role === 'admin'
+  const canEdit = Boolean(workspace?.can_edit)
   const pipelineStatus = pipelineProgress?.status ?? 'idle'
   const pipelineIsActive = pipelineStatus === 'queued' || pipelineStatus === 'running'
   const canEditSections = canEdit && !pipelineIsActive

@@ -33,6 +33,18 @@ from app.services.version_asset_service import VersionAssetService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
 
+MANAGE_ROLES = ('health_department', 'hospital', 'doctor', 'admin')
+
+
+def _version_access_flags(current_user, owner_user_id: int) -> tuple[bool, str]:
+    can_manage = current_user.role == 'admin' or int(current_user.user_id) == int(owner_user_id)
+    access_scope = (
+        'admin'
+        if current_user.role == 'admin'
+        else 'owned' if int(current_user.user_id) == int(owner_user_id) else 'inherited'
+    )
+    return can_manage, access_scope
+
 
 @router.get(
     '/{version_id}/workspace',
@@ -56,10 +68,10 @@ async def get_version_workspace(
         include_full_text=include_full_text,
         suspect_threshold=suspect_threshold,
     )
+    guideline = workspace_data['guideline']
+    can_manage, access_scope = _version_access_flags(current_user, guideline.owner_user_id)
     return VersionWorkspaceResponse(
-        guideline=WorkspaceGuidelineInfo.model_validate(
-            workspace_data['guideline']
-        ),
+        guideline=WorkspaceGuidelineInfo.model_validate(guideline),
         version=WorkspaceVersionInfo.model_validate(workspace_data['version']),
         documents=[
             WorkspaceDocumentInfo.model_validate(document)
@@ -75,6 +87,9 @@ async def get_version_workspace(
         suspect_score_threshold=float(workspace_data['suspect_score_threshold']),
         suspect_section_count=int(workspace_data['suspect_section_count']),
         full_text=workspace_data['full_text'],
+        can_edit=can_manage,
+        can_delete=can_manage,
+        access_scope=access_scope,
     )
 
 
@@ -87,7 +102,7 @@ async def update_guideline_version_metadata(
     version_id: int,
     payload: UpdateGuidelineVersionMetadataRequest,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles(*MANAGE_ROLES))],
 ) -> UpdateGuidelineVersionMetadataResponse:
     await TenantAccessService(db).ensure_version_access(
         version_id=version_id,
@@ -111,7 +126,7 @@ async def bulk_update_section_content(
     version_id: int,
     payload: BulkSectionContentUpdateRequest,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles(*MANAGE_ROLES))],
 ) -> BulkSectionContentUpdateResponse:
     await TenantAccessService(db).ensure_version_access(
         version_id=version_id,
@@ -161,11 +176,12 @@ async def get_version_ingestion_status(
 async def rebuild_version_chunks(
     version_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles(*MANAGE_ROLES))],
 ) -> RebuildVersionChunksResponse:
     await TenantAccessService(db).ensure_version_access(
         version_id=version_id,
         current_user=current_user,
+        for_update=True,
     )
     service = GuidelineChunkService(db)
     result = await service.enqueue_version_chunk_rebuild(version_id)
@@ -199,7 +215,7 @@ async def get_version_chunk_rebuild_status(
 async def delete_guideline_version(
     version_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles('user', 'admin'))],
+    current_user: Annotated[object, Depends(require_roles(*MANAGE_ROLES))],
 ) -> DeleteGuidelineVersionResponse:
     await TenantAccessService(db).ensure_version_access(
         version_id=version_id,

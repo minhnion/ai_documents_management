@@ -16,10 +16,10 @@ class Chunk(Base):
         ForeignKey("guideline_versions.version_id", ondelete="CASCADE"),
         nullable=False,
     )
-    organization_id: Mapped[int | None] = mapped_column(
+    owner_user_id: Mapped[int] = mapped_column(
         BigInteger,
-        ForeignKey("organizations.organization_id", ondelete="RESTRICT"),
-        nullable=True,
+        ForeignKey("users.user_id", ondelete="RESTRICT"),
+        nullable=False,
         index=True,
     )
     section_id: Mapped[int | None] = mapped_column(
@@ -31,16 +31,13 @@ class Chunk(Base):
     text_abstract: Mapped[str | None] = mapped_column(Text, nullable=True)
     embedding: Mapped[object | None] = mapped_column(HALFVEC(3072), nullable=True)
 
-    # Relationships
     version: Mapped["GuidelineVersion"] = relationship(
         "GuidelineVersion", back_populates="chunks"
     )
     section: Mapped["Section | None"] = relationship(
         "Section", back_populates="chunks"
     )
-    organization: Mapped["Organization | None"] = relationship(
-        "Organization", lazy="selectin"
-    )
+    owner: Mapped["User"] = relationship("User", lazy="selectin")
 
     def __repr__(self) -> str:
         return f"<Chunk id={self.chunk_id} section_id={self.section_id}>"

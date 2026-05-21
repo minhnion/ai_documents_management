@@ -21,7 +21,6 @@ from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
 from app.models.user import User
 from app.services.guideline_ingestion_job_service import GuidelineIngestionJobService
-from app.services.organization_service import OrganizationService
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +40,7 @@ class GuidelineCommandService:
         ten_benh: str | None,
         publisher: str | None,
         chuyen_khoa: str | None,
-        organization_id: int | None,
-        organization_name: str | None,
+        owner_user_id: int | None,
         version_label: str | None,
         release_date: date | None,
         effective_from: date | None,
@@ -54,10 +52,9 @@ class GuidelineCommandService:
         self._validate_create_payload(title=title, upload_file=upload_file)
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
         target_status = self._normalize_status(status)
-        resolved_organization_id = await self._resolve_target_organization_id(
+        resolved_owner_user_id = await self._resolve_target_owner_user_id(
             current_user=current_user,
-            organization_id=organization_id,
-            organization_name=organization_name,
+            owner_user_id=owner_user_id,
         )
 
         guideline = Guideline(
@@ -65,7 +62,8 @@ class GuidelineCommandService:
             ten_benh=ten_benh.strip() if ten_benh else None,
             publisher=publisher.strip() if publisher else None,
             chuyen_khoa=chuyen_khoa.strip() if chuyen_khoa else None,
-            organization_id=resolved_organization_id,
+            owner_user_id=resolved_owner_user_id,
+            created_by_user_id=int(current_user.user_id),
         )
         self.db.add(guideline)
         await self.db.flush()
@@ -100,7 +98,8 @@ class GuidelineCommandService:
 
             document = Document(
                 version_id=guideline_version.version_id,
-                organization_id=resolved_organization_id,
+                owner_user_id=resolved_owner_user_id,
+                created_by_user_id=int(current_user.user_id),
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
                 original_filename=original_filename,
@@ -181,7 +180,8 @@ class GuidelineCommandService:
             )
             document = Document(
                 version_id=guideline_version.version_id,
-                organization_id=guideline.organization_id,
+                owner_user_id=guideline.owner_user_id,
+                created_by_user_id=int(current_user.user_id),
                 doc_type=doc_type,
                 storage_uri=storage_path.as_posix(),
                 original_filename=original_filename,
@@ -258,9 +258,7 @@ class GuidelineCommandService:
             .with_for_update()
         )
         if current_user.role != "admin":
-            if current_user.organization_id is None:
-                raise BadRequestException("User account has no organization assigned.")
-            stmt = stmt.where(Guideline.organization_id == current_user.organization_id)
+            stmt = stmt.where(Guideline.owner_user_id == current_user.user_id)
         guideline = (
             await self.db.execute(stmt)
         ).scalar_one_or_none()
@@ -268,22 +266,28 @@ class GuidelineCommandService:
             raise NotFoundException("Guideline", guideline_id)
         return guideline
 
-    async def _resolve_target_organization_id(
+    async def _resolve_target_owner_user_id(
         self,
         *,
         current_user: User,
-        organization_id: int | None,
-        organization_name: str | None,
+        owner_user_id: int | None,
     ) -> int:
-        if current_user.role == "admin":
-            organization = await OrganizationService(self.db).resolve_from_payload(
-                organization_id=organization_id,
-                organization_name=organization_name,
+        if current_user.role != "admin":
+            return int(current_user.user_id)
+        if owner_user_id is None:
+            raise BadRequestException("Owner account is required when admin uploads a guideline.")
+        owner = (
+            await self.db.execute(
+                select(User).where(
+                    User.user_id == owner_user_id,
+                    User.role != "admin",
+                    User.is_active.is_(True),
+                )
             )
-            return int(organization.organization_id)
-        if current_user.organization_id is None:
-            raise BadRequestException("User account has no organization assigned.")
-        return int(current_user.organization_id)
+        ).scalar_one_or_none()
+        if owner is None:
+            raise BadRequestException("Owner account must be an active non-admin account.")
+        return int(owner.user_id)
 
     async def _resolve_version_label(
         self,
