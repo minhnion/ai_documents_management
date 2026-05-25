@@ -7,6 +7,8 @@ import {
   AlertTriangle,
   Check,
   Edit3,
+  Eye,
+  EyeOff,
   LoaderCircle,
   LocateFixed,
   X,
@@ -476,6 +478,7 @@ export default function ViewPage() {
   const [chunking, setChunking] = useState(false)
   const [chunkError, setChunkError] = useState('')
   const [chunkSuccess, setChunkSuccess] = useState('')
+  const [showEmptyLeafNotice, setShowEmptyLeafNotice] = useState(true)
   const [chunkProgress, setChunkProgress] = useState<VersionChunkRebuildStatusResponse | null>(null)
   const [pipelineProgress, setPipelineProgress] = useState<VersionIngestionStatusResponse | null>(null)
   const [pipelineError, setPipelineError] = useState('')
@@ -1068,6 +1071,18 @@ export default function ViewPage() {
             </span>
           )}
           <div className="content-toolbar-actions">
+            {!pipelineIsActive && emptyLeafSections.length > 0 && (
+              <button
+                className="btn btn-secondary btn-xs"
+                onClick={() => setShowEmptyLeafNotice(prev => !prev)}
+                title={showEmptyLeafNotice ? 'Tắt thông báo mục lá chưa có nội dung' : 'Mở thông báo mục lá chưa có nội dung'}
+              >
+                {showEmptyLeafNotice
+                  ? <><EyeOff size={12} /> Tắt thông báo</>
+                  : <><Eye size={12} /> Mở thông báo</>
+                }
+              </button>
+            )}
             {canEdit && (
               <button
                 className="btn btn-secondary btn-xs"
@@ -1124,7 +1139,7 @@ export default function ViewPage() {
         {saveError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{saveError}</div>}
         {chunkError && <div className="alert alert-error" style={{ margin: '8px 20px 0' }}>{chunkError}</div>}
         {chunkSuccess && <div className="alert alert-success" style={{ margin: '8px 20px 0' }}>{chunkSuccess}</div>}
-        {!pipelineIsActive && emptyLeafSections.length > 0 && (
+        {!pipelineIsActive && showEmptyLeafNotice && emptyLeafSections.length > 0 && (
           <EmptyLeafSectionsNotice
             sections={emptyLeafSections}
             activeSectionId={activeSection?.section_id ?? null}

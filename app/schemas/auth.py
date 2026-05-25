@@ -39,21 +39,17 @@ class LoginResponse(BaseModel):
 
 
 class CreateUserRequest(BaseModel):
-    email: str
+    email: EmailStr
     full_name: str | None = Field(default=None, max_length=255)
     password: str = Field(min_length=8, max_length=512)
     role: str = "health_department"
     parent_id: int | None = Field(default=None, gt=0)
-    parent_name: str | None = Field(default=None, max_length=255)
-    parent_parent_id: int | None = Field(default=None, gt=0)
     is_active: bool = True
 
 
 class UpdateUserRoleRequest(BaseModel):
     role: str
     parent_id: int | None = Field(default=None, gt=0)
-    parent_name: str | None = Field(default=None, max_length=255)
-    parent_parent_id: int | None = Field(default=None, gt=0)
     is_active: bool | None = None
 
 

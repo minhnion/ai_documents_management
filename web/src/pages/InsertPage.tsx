@@ -28,14 +28,14 @@ export default function InsertPage() {
 
   useEffect(() => {
     if (user?.role !== 'admin') return
+    setOwnerChoice(user.user_id ? String(user.user_id) : '')
     api.get<UserListResponse>('/auth/users')
       .then(res => {
         const availableOwners = res.data.items.filter(item => item.role !== 'admin' && item.is_active)
         setOwners(availableOwners)
-        setOwnerChoice(availableOwners[0]?.user_id ? String(availableOwners[0].user_id) : '')
       })
       .catch(() => setError('Không thể tải danh sách tài khoản sở hữu.'))
-  }, [user?.role])
+  }, [user?.role, user?.user_id])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -106,6 +106,9 @@ export default function InsertPage() {
                     value={ownerChoice}
                     onChange={e => setOwnerChoice(e.target.value)}
                   >
+                    {user?.user_id && (
+                      <option value={user.user_id}>Tài liệu chung</option>
+                    )}
                     {owners.map(owner => (
                       <option key={owner.user_id} value={owner.user_id}>
                         {owner.full_name || owner.email} - {owner.role}

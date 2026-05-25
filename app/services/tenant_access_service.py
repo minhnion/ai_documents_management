@@ -22,7 +22,10 @@ class TenantAccessService:
         stmt = select(Guideline).where(Guideline.guideline_id == guideline_id)
         if current_user.role != "admin":
             if for_update:
-                stmt = stmt.where(Guideline.owner_user_id == current_user.user_id)
+                if current_user.role == "doctor":
+                    stmt = stmt.where(Guideline.owner_user_id == -1)
+                else:
+                    stmt = stmt.where(Guideline.owner_user_id == current_user.user_id)
             else:
                 stmt = stmt.where(
                     Guideline.owner_user_id.in_(
@@ -50,7 +53,10 @@ class TenantAccessService:
         )
         if current_user.role != "admin":
             if for_update:
-                stmt = stmt.where(Guideline.owner_user_id == current_user.user_id)
+                if current_user.role == "doctor":
+                    stmt = stmt.where(Guideline.owner_user_id == -1)
+                else:
+                    stmt = stmt.where(Guideline.owner_user_id == current_user.user_id)
             else:
                 stmt = stmt.where(
                     Guideline.owner_user_id.in_(
@@ -101,14 +107,41 @@ class TenantAccessService:
             owner_ids.append(int(user_id))
             visited.add(int(user_id))
             parent_id = next_parent_id
+
+        if current_user.role != "admin":
+            admin_owner_ids = list(
+                (
+                    await self.db.execute(
+                        select(User.user_id).where(User.role == "admin")
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for admin_owner_id in admin_owner_ids:
+                normalized_admin_owner_id = int(admin_owner_id)
+                if normalized_admin_owner_id not in visited:
+                    owner_ids.append(normalized_admin_owner_id)
+                    visited.add(normalized_admin_owner_id)
         return owner_ids
 
     def can_manage_owner(self, *, current_user: User, owner_user_id: int) -> bool:
-        return current_user.role == "admin" or int(current_user.user_id) == int(owner_user_id)
+        return current_user.role == "admin" or (
+            current_user.role != "doctor"
+            and int(current_user.user_id) == int(owner_user_id)
+        )
 
-    def access_scope(self, *, current_user: User, owner_user_id: int) -> str:
+    def access_scope(
+        self,
+        *,
+        current_user: User,
+        owner_user_id: int,
+        owner_role: str | None = None,
+    ) -> str:
         if current_user.role == "admin":
             return "admin"
+        if owner_role == "admin":
+            return "global"
         if int(current_user.user_id) == int(owner_user_id):
             return "owned"
         return "inherited"

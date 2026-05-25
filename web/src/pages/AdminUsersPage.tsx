@@ -10,8 +10,6 @@ import type {
   UpdateUserRoleRequest,
 } from '../lib/types'
 
-const CUSTOM_PARENT_VALUE = '__custom_parent__'
-
 const ROLE_LABELS: Record<string, string> = {
   admin: 'Admin',
   health_department: 'Sở y tế',
@@ -45,25 +43,42 @@ export default function AdminUsersPage() {
     password: '',
     role: 'health_department',
     parent_id: null,
-    parent_name: null,
-    parent_parent_id: null,
     is_active: true,
   })
   const [parentChoice, setParentChoice] = useState('')
-  const [customParentName, setCustomParentName] = useState('')
   const [doctorDepartmentChoice, setDoctorDepartmentChoice] = useState('')
 
   const [updatingUserId, setUpdatingUserId] = useState<number | null>(null)
   const [roleError, setRoleError] = useState('')
 
   const departments = useMemo(
-    () => users.filter(u => u.role === 'health_department'),
+    () => users.filter(u => u.role === 'health_department' && u.is_active),
     [users],
   )
   const hospitals = useMemo(
-    () => users.filter(u => u.role === 'hospital'),
+    () => users.filter(u => u.role === 'hospital' && u.is_active),
     [users],
   )
+
+  const filteredHospitals = useMemo(
+    () => form.role === 'doctor' && doctorDepartmentChoice
+      ? hospitals.filter(h => h.parent_id === Number(doctorDepartmentChoice))
+      : hospitals,
+    [doctorDepartmentChoice, form.role, hospitals],
+  )
+
+  const parentSelectionError = useMemo(() => {
+    if (currentUser?.role !== 'admin') return ''
+    if (form.role === 'hospital' && !parentChoice) {
+      return 'Cần có ít nhất một tài khoản sở y tế hoạt động để tạo bệnh viện.'
+    }
+    if (form.role === 'doctor' && !parentChoice) {
+      return doctorDepartmentChoice
+        ? 'Cần có ít nhất một bệnh viện hoạt động thuộc sở y tế đã chọn để tạo bác sĩ.'
+        : 'Cần có sở y tế và bệnh viện hoạt động trước khi tạo bác sĩ.'
+    }
+    return ''
+  }, [currentUser?.role, doctorDepartmentChoice, form.role, parentChoice])
 
   const loadData = async () => {
     setLoading(true)
@@ -90,17 +105,25 @@ export default function AdminUsersPage() {
 
   useEffect(() => {
     if (form.role === 'hospital' && currentUser?.role === 'admin') {
-      setParentChoice(departments[0]?.user_id ? String(departments[0].user_id) : CUSTOM_PARENT_VALUE)
+      setParentChoice(departments[0]?.user_id ? String(departments[0].user_id) : '')
+      setDoctorDepartmentChoice('')
     } else if (form.role === 'doctor' && currentUser?.role === 'admin') {
       setDoctorDepartmentChoice(departments[0]?.user_id ? String(departments[0].user_id) : '')
-      const visibleHospitals = hospitals.filter(h => !departments[0]?.user_id || h.parent_id === departments[0].user_id)
-      setParentChoice(visibleHospitals[0]?.user_id ? String(visibleHospitals[0].user_id) : CUSTOM_PARENT_VALUE)
     } else {
       setParentChoice('')
-      setCustomParentName('')
       setDoctorDepartmentChoice('')
     }
-  }, [form.role, currentUser?.role, departments, hospitals])
+  }, [form.role, currentUser?.role, departments])
+
+  useEffect(() => {
+    if (form.role !== 'doctor' || currentUser?.role !== 'admin') return
+    setParentChoice(prev => {
+      if (filteredHospitals.some(hospital => String(hospital.user_id) === prev)) {
+        return prev
+      }
+      return filteredHospitals[0]?.user_id ? String(filteredHospitals[0].user_id) : ''
+    })
+  }, [form.role, currentUser?.role, filteredHospitals])
 
   const availableRoles = roles.map(r => r.name)
 
@@ -113,25 +136,8 @@ export default function AdminUsersPage() {
       is_active: form.is_active,
     }
 
-    if (currentUser?.role !== 'admin') {
-      return payload
-    }
-
-    if (form.role === 'hospital') {
-      if (parentChoice === CUSTOM_PARENT_VALUE) {
-        payload.parent_name = customParentName.trim()
-      } else if (parentChoice) {
-        payload.parent_id = Number(parentChoice)
-      }
-    }
-
-    if (form.role === 'doctor') {
-      if (parentChoice === CUSTOM_PARENT_VALUE) {
-        payload.parent_name = customParentName.trim()
-        if (doctorDepartmentChoice) payload.parent_parent_id = Number(doctorDepartmentChoice)
-      } else if (parentChoice) {
-        payload.parent_id = Number(parentChoice)
-      }
+    if (currentUser?.role === 'admin' && ['hospital', 'doctor'].includes(form.role) && parentChoice) {
+      payload.parent_id = Number(parentChoice)
     }
 
     return payload
@@ -139,8 +145,13 @@ export default function AdminUsersPage() {
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault()
-    setCreating(true)
     setCreateError('')
+    if (parentSelectionError) {
+      setCreateError(parentSelectionError)
+      return
+    }
+
+    setCreating(true)
     try {
       const res = await api.post<UserResponse>('/auth/users', buildCreatePayload())
       setUsers(prev => [...prev, res.data])
@@ -151,11 +162,8 @@ export default function AdminUsersPage() {
         password: '',
         role: availableRoles[0] ?? 'health_department',
         parent_id: null,
-        parent_name: null,
-        parent_parent_id: null,
         is_active: true,
       })
-      setCustomParentName('')
     } catch (err: any) {
       setCreateError(err.response?.data?.detail || 'Không thể tạo tài khoản.')
     } finally {
@@ -180,10 +188,6 @@ export default function AdminUsersPage() {
       setUpdatingUserId(null)
     }
   }
-
-  const filteredHospitals = form.role === 'doctor' && doctorDepartmentChoice
-    ? hospitals.filter(h => h.parent_id === Number(doctorDepartmentChoice))
-    : hospitals
 
   const canInlineUpdate = currentUser?.role === 'admin'
 
@@ -238,11 +242,16 @@ export default function AdminUsersPage() {
               {currentUser?.role === 'admin' && form.role === 'hospital' && (
                 <div className="form-group">
                   <label className="form-label">Sở y tế cha *</label>
-                  <select className="form-select" value={parentChoice} onChange={e => setParentChoice(e.target.value)}>
+                  <select
+                    className="form-select"
+                    value={parentChoice}
+                    disabled={departments.length === 0}
+                    onChange={e => setParentChoice(e.target.value)}
+                  >
+                    {departments.length === 0 && <option value="">Chưa có sở y tế</option>}
                     {departments.map(item => (
                       <option key={item.user_id} value={item.user_id}>{accountName(item)}</option>
                     ))}
-                    <option value={CUSTOM_PARENT_VALUE}>Khác...</option>
                   </select>
                 </div>
               )}
@@ -250,7 +259,13 @@ export default function AdminUsersPage() {
               {currentUser?.role === 'admin' && form.role === 'doctor' && (
                 <div className="form-group">
                   <label className="form-label">Sở y tế</label>
-                  <select className="form-select" value={doctorDepartmentChoice} onChange={e => setDoctorDepartmentChoice(e.target.value)}>
+                  <select
+                    className="form-select"
+                    value={doctorDepartmentChoice}
+                    disabled={departments.length === 0}
+                    onChange={e => setDoctorDepartmentChoice(e.target.value)}
+                  >
+                    {departments.length === 0 && <option value="">Chưa có sở y tế</option>}
                     {departments.map(item => (
                       <option key={item.user_id} value={item.user_id}>{accountName(item)}</option>
                     ))}
@@ -261,26 +276,23 @@ export default function AdminUsersPage() {
               {currentUser?.role === 'admin' && form.role === 'doctor' && (
                 <div className="form-group">
                   <label className="form-label">Bệnh viện cha *</label>
-                  <select className="form-select" value={parentChoice} onChange={e => setParentChoice(e.target.value)}>
+                  <select
+                    className="form-select"
+                    value={parentChoice}
+                    disabled={filteredHospitals.length === 0}
+                    onChange={e => setParentChoice(e.target.value)}
+                  >
+                    {filteredHospitals.length === 0 && <option value="">Chưa có bệnh viện</option>}
                     {filteredHospitals.map(item => (
                       <option key={item.user_id} value={item.user_id}>{accountName(item)}</option>
                     ))}
-                    <option value={CUSTOM_PARENT_VALUE}>Khác...</option>
                   </select>
                 </div>
               )}
 
-              {currentUser?.role === 'admin' && parentChoice === CUSTOM_PARENT_VALUE && ['hospital', 'doctor'].includes(form.role) && (
-                <div className="form-group">
-                  <label className="form-label">Tên cấp cha mới *</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    required
-                    value={customParentName}
-                    onChange={e => setCustomParentName(e.target.value)}
-                    placeholder={form.role === 'hospital' ? 'Nhập tên sở y tế' : 'Nhập tên bệnh viện'}
-                  />
+              {parentSelectionError && (
+                <div className="alert alert-info" style={{ gridColumn: '1 / -1' }}>
+                  {parentSelectionError}
                 </div>
               )}
 
@@ -301,7 +313,7 @@ export default function AdminUsersPage() {
             </div>
             <div className="form-actions">
               <button type="button" className="btn btn-secondary" onClick={() => setShowCreateForm(false)}>Hủy</button>
-              <button type="submit" className="btn btn-primary" disabled={creating}>
+              <button type="submit" className="btn btn-primary" disabled={creating || Boolean(parentSelectionError)}>
                 {creating ? <span className="loading-spinner" style={{ width: 14, height: 14 }} /> : 'Tạo tài khoản'}
               </button>
             </div>
