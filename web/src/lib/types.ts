@@ -42,16 +42,12 @@ export interface CreateUserRequest {
   password: string
   role: string
   parent_id?: number | null
-  parent_name?: string | null
-  parent_parent_id?: number | null
   is_active: boolean
 }
 
 export interface UpdateUserRoleRequest {
   role: string
   parent_id?: number | null
-  parent_name?: string | null
-  parent_parent_id?: number | null
   is_active?: boolean | null
 }
 

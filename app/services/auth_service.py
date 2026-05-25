@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import re
-import secrets
-import unicodedata
-
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -28,7 +24,7 @@ class AuthService:
         ROLE_ADMIN: "Full access to all accounts and documents.",
         ROLE_HEALTH_DEPARTMENT: "Cap so y te: manage own documents and create hospital accounts.",
         ROLE_HOSPITAL: "Cap benh vien: inherit parent documents, manage own documents, and create doctor accounts.",
-        ROLE_DOCTOR: "Cap bac si: inherit hospital/department documents and manage own documents.",
+        ROLE_DOCTOR: "Cap bac si: inherit hospital/department documents with read-only access.",
     }
     ROLE_ORDER: tuple[str, ...] = (
         ROLE_ADMIN,
@@ -157,8 +153,6 @@ class AuthService:
         role: str,
         full_name: str | None = None,
         parent_id: int | None = None,
-        parent_name: str | None = None,
-        parent_parent_id: int | None = None,
         is_active: bool = True,
     ) -> User:
         normalized_email = self.normalize_email(email)
@@ -173,8 +167,6 @@ class AuthService:
             current_user=current_user,
             role=normalized_role,
             parent_id=parent_id,
-            parent_name=parent_name,
-            parent_parent_id=parent_parent_id,
         )
         normalized_full_name = self._normalize_display_name(full_name, role=normalized_role)
 
@@ -201,8 +193,6 @@ class AuthService:
         user_id: int,
         role: str,
         parent_id: int | None = None,
-        parent_name: str | None = None,
-        parent_parent_id: int | None = None,
         is_active: bool | None = None,
     ) -> User:
         user = await self.get_user_by_id(user_id)
@@ -220,8 +210,6 @@ class AuthService:
             current_user=current_user,
             role=normalized_role,
             parent_id=parent_id,
-            parent_name=parent_name,
-            parent_parent_id=parent_parent_id,
         )
         if is_active is not None:
             user.is_active = bool(is_active)
@@ -250,8 +238,6 @@ class AuthService:
         current_user: User,
         role: str,
         parent_id: int | None,
-        parent_name: str | None,
-        parent_parent_id: int | None,
     ) -> int | None:
         if role in (self.ROLE_ADMIN, self.ROLE_HEALTH_DEPARTMENT):
             return None
@@ -272,68 +258,7 @@ class AuthService:
                 )
             return int(parent.user_id)
 
-        if parent_name and parent_name.strip():
-            return await self._get_or_create_placeholder_parent(
-                current_user=current_user,
-                role=expected_parent_role,
-                full_name=parent_name,
-                parent_parent_id=parent_parent_id,
-            )
-
         raise BadRequestException(f"Parent account is required for role '{role}'.")
-
-    async def _get_or_create_placeholder_parent(
-        self,
-        *,
-        current_user: User,
-        role: str,
-        full_name: str,
-        parent_parent_id: int | None,
-    ) -> int:
-        normalized_name = self._normalize_display_name(full_name, role=role)
-        resolved_parent_id: int | None = None
-        if role == self.ROLE_HOSPITAL:
-            if parent_parent_id is None:
-                raise BadRequestException("Health department parent is required for a new hospital option.")
-            parent = await self.get_user_by_id(parent_parent_id)
-            if parent is None or parent.role != self.ROLE_HEALTH_DEPARTMENT:
-                raise BadRequestException("Hospital parent must be a health department account.")
-            resolved_parent_id = int(parent.user_id)
-
-        existing = (
-            await self.db.execute(
-                select(User).where(
-                    User.role == role,
-                    func.lower(func.coalesce(User.full_name, "")) == normalized_name.lower(),
-                    User.parent_id.is_(None) if resolved_parent_id is None else User.parent_id == resolved_parent_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return int(existing.user_id)
-
-        placeholder = User(
-            email=await self._build_placeholder_email(role=role, full_name=normalized_name),
-            full_name=normalized_name,
-            password_hash=get_password_hash(secrets.token_urlsafe(32)),
-            role=role,
-            parent_id=resolved_parent_id,
-            created_by_user_id=int(current_user.user_id),
-            is_active=False,
-        )
-        self.db.add(placeholder)
-        await self.db.flush()
-        return int(placeholder.user_id)
-
-    async def _build_placeholder_email(self, *, role: str, full_name: str) -> str:
-        slug = self._slugify(full_name)
-        base = f"unit-{role}-{slug}"[:200].strip("-") or f"unit-{role}"
-        for index in range(0, 1000):
-            suffix = "" if index == 0 else f"-{index}"
-            email = f"{base}{suffix}@local.invalid"
-            if await self.get_user_by_email(email) is None:
-                return email
-        raise ConflictException("Cannot generate a placeholder account email.")
 
     def _normalize_display_name(self, full_name: str | None, *, role: str) -> str | None:
         value = full_name.strip() if full_name else ""
@@ -359,9 +284,3 @@ class AuthService:
             descendants.add(user_id)
             stack.extend(children_by_parent.get(user_id, []))
         return descendants
-
-    def _slugify(self, value: str) -> str:
-        normalized = unicodedata.normalize("NFKD", value.strip().lower())
-        ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
-        slug = re.sub(r"[^a-z0-9]+", "-", ascii_value).strip("-")
-        return slug or "account"

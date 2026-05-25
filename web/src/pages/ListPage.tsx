@@ -99,7 +99,7 @@ export default function ListPage() {
   useEffect(() => {
     if (user?.role !== 'admin') return
     api.get<UserListResponse>('/auth/users')
-      .then(res => setOwners(res.data.items.filter(item => item.role !== 'admin')))
+      .then(res => setOwners(res.data.items))
       .catch(err => console.error('Failed to fetch owner accounts:', err))
   }, [user?.role])
 
@@ -112,7 +112,7 @@ export default function ListPage() {
     await fetchGuidelines()
   }
 
-  const canCreate = ['admin', 'health_department', 'hospital', 'doctor'].includes(user?.role ?? '')
+  const canCreate = ['admin', 'health_department', 'hospital'].includes(user?.role ?? '')
 
   return (
     <div className="list-page h-full flex-col">
@@ -145,7 +145,7 @@ export default function ListPage() {
                 <option value="">Tất cả tài khoản sở hữu</option>
                 {owners.map(owner => (
                   <option key={owner.user_id} value={owner.user_id}>
-                    {owner.full_name || owner.email} - {owner.role}
+                    {owner.role === 'admin' ? 'Tài liệu chung' : (owner.full_name || owner.email)} - {owner.role === 'admin' ? (owner.full_name || owner.email) : owner.role}
                   </option>
                 ))}
               </select>
@@ -246,6 +246,7 @@ export default function ListPage() {
                     <td>{item.publisher || '-'}</td>
                     <td>
                       <div>{item.owner?.full_name || item.owner?.email || '-'}</div>
+                      {(item.access_scope === 'global' || item.owner?.role === 'admin') && <span className="badge badge-default">Tài liệu chung</span>}
                       {item.access_scope === 'inherited' && <span className="badge badge-default">Kế thừa</span>}
                     </td>
                     <td>{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>

@@ -252,6 +252,9 @@ class GuidelineCommandService:
         guideline_id: int,
         current_user: User,
     ) -> Guideline:
+        if current_user.role == "doctor":
+            raise NotFoundException("Guideline", guideline_id)
+
         stmt = (
             select(Guideline)
             .where(Guideline.guideline_id == guideline_id)
@@ -272,6 +275,8 @@ class GuidelineCommandService:
         current_user: User,
         owner_user_id: int | None,
     ) -> int:
+        if current_user.role == "doctor":
+            raise BadRequestException("Doctor accounts are read-only for guideline documents.")
         if current_user.role != "admin":
             return int(current_user.user_id)
         if owner_user_id is None:
@@ -280,13 +285,12 @@ class GuidelineCommandService:
             await self.db.execute(
                 select(User).where(
                     User.user_id == owner_user_id,
-                    User.role != "admin",
                     User.is_active.is_(True),
                 )
             )
         ).scalar_one_or_none()
         if owner is None:
-            raise BadRequestException("Owner account must be an active non-admin account.")
+            raise BadRequestException("Owner account must be active.")
         return int(owner.user_id)
 
     async def _resolve_version_label(

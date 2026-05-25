@@ -33,14 +33,22 @@ from app.services.version_asset_service import VersionAssetService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
 
-MANAGE_ROLES = ('health_department', 'hospital', 'doctor', 'admin')
+MANAGE_ROLES = ('health_department', 'hospital', 'admin')
 
 
-def _version_access_flags(current_user, owner_user_id: int) -> tuple[bool, str]:
-    can_manage = current_user.role == 'admin' or int(current_user.user_id) == int(owner_user_id)
+def _version_access_flags(
+    current_user,
+    owner_user_id: int,
+    owner_role: str | None = None,
+) -> tuple[bool, str]:
+    can_manage = current_user.role == 'admin' or (
+        current_user.role != 'doctor'
+        and int(current_user.user_id) == int(owner_user_id)
+    )
     access_scope = (
         'admin'
         if current_user.role == 'admin'
+        else 'global' if owner_role == 'admin'
         else 'owned' if int(current_user.user_id) == int(owner_user_id) else 'inherited'
     )
     return can_manage, access_scope
@@ -69,7 +77,11 @@ async def get_version_workspace(
         suspect_threshold=suspect_threshold,
     )
     guideline = workspace_data['guideline']
-    can_manage, access_scope = _version_access_flags(current_user, guideline.owner_user_id)
+    can_manage, access_scope = _version_access_flags(
+        current_user,
+        guideline.owner_user_id,
+        getattr(guideline.owner, 'role', None),
+    )
     return VersionWorkspaceResponse(
         guideline=WorkspaceGuidelineInfo.model_validate(guideline),
         version=WorkspaceVersionInfo.model_validate(workspace_data['version']),

@@ -23,6 +23,14 @@ function AccountManagerRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
+function DocumentManagerRoute({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated } = useAuth()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (!user) return null
+  if (!['admin', 'health_department', 'hospital'].includes(user.role)) return <Navigate to="/guidelines" replace />
+  return <Layout>{children}</Layout>
+}
+
 // Global default export wrapped with providers
 export default function App() {
   return (
@@ -34,8 +42,8 @@ export default function App() {
           <Route path="/" element={<Navigate to="/guidelines" replace />} />
 
           <Route path="/guidelines" element={<ProtectedRoute><ListPage /></ProtectedRoute>} />
-          <Route path="/guidelines/new" element={<ProtectedRoute><InsertPage /></ProtectedRoute>} />
-          <Route path="/guidelines/:guidelineId/update" element={<ProtectedRoute><UpdatePage /></ProtectedRoute>} />
+          <Route path="/guidelines/new" element={<DocumentManagerRoute><InsertPage /></DocumentManagerRoute>} />
+          <Route path="/guidelines/:guidelineId/update" element={<DocumentManagerRoute><UpdatePage /></DocumentManagerRoute>} />
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
 
           <Route path="/admin/users" element={<AccountManagerRoute><AdminUsersPage /></AccountManagerRoute>} />
