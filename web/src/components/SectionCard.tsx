@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Edit3, Check, X, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
 import type { WorkspaceSectionNode } from '../lib/types'
 import SectionAssets from './SectionAssets'
-import SectionContentRenderer from './SectionContentRenderer'
+import SectionContentRenderer, { collectAssetPlaceholderIds } from './SectionContentRenderer'
 import { normalizeSectionContent } from './sectionContent'
 
 function collectDescendantAssetIds(children: WorkspaceSectionNode[]): Set<string> {
@@ -69,6 +69,15 @@ export default function SectionCard({
   const isEditing = editValue !== null
   const hasRenderableContent = normalizeSectionContent(node.content).length > 0
   const ownAssets = useMemo(() => selectOwnAssets(node), [node])
+  const placedAssetIds = useMemo(() => collectAssetPlaceholderIds(node.content), [node.content])
+  const unplacedAssets = useMemo(
+    () => ownAssets.filter((entry) => {
+      if (!entry || typeof entry !== 'object') return false
+      const id = (entry as Record<string, unknown>).id
+      return typeof id === 'string' && !placedAssetIds.has(id)
+    }),
+    [ownAssets, placedAssetIds],
+  )
   const ownAssetCount = ownAssets.filter(
     (entry) =>
       !!entry &&
@@ -156,9 +165,10 @@ export default function SectionCard({
             <div className="section-card-content">
               <SectionContentRenderer
                 content={node.content}
+                assets={ownAssets}
                 hideEmptyMessage={ownAssetCount > 0}
               />
-              <SectionAssets assets={ownAssets} />
+              <SectionAssets assets={unplacedAssets} />
             </div>
           )}
         </div>

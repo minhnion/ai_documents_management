@@ -1,8 +1,10 @@
-import { Fragment, type ElementType, type ReactNode } from 'react'
+import { Fragment, useMemo, type ElementType, type ReactNode } from 'react'
 import { normalizeSectionContent } from './sectionContent'
+import { SectionInlineAsset, normalizeSectionAssets, type LandingAsset } from './SectionAssets'
 
 interface SectionContentRendererProps {
   content: string | null
+  assets?: unknown
   hideEmptyMessage?: boolean
 }
 
@@ -15,6 +17,7 @@ interface TableCellData {
 
 type ContentBlock =
   | { type: 'text'; value: string }
+  | { type: 'asset'; placeholderType: 'figure' | 'table'; id: string; raw: string }
   | { type: 'table'; rows: TableCellData[][] }
   | { type: 'flowchart'; steps: string[] }
   | {
@@ -24,12 +27,19 @@ type ContentBlock =
       value: string
     }
 
+interface AssetLookup {
+  byId: Map<string, LandingAsset>
+  byTypedKey: Map<string, LandingAsset>
+  indexById: Map<string, number>
+}
+
 interface ParsedListItem {
   marker: string
   text: string
 }
 
 const TABLE_BLOCK_RE = /<table\b[\s\S]*?<\/table>/gi
+const ASSET_PLACEHOLDER_RE = /\[(figure|table):([^\]]+)\]/gi
 const HEADING_RE = /^(#{1,6})\s+(.+)$/
 const LIST_ITEM_RE = /^([-*•–—]|(?:\d+|[A-Za-z])[.)])\s+(.+)$/
 const BOLD_RE = /\*\*(.+?)\*\*/g
@@ -58,9 +68,12 @@ void CUSTOM_BLOCK_EXAMPLES
 
 export default function SectionContentRenderer({
   content,
+  assets,
   hideEmptyMessage = false,
 }: SectionContentRendererProps) {
   const normalized = normalizeSectionContent(content)
+  const normalizedAssets = useMemo(() => normalizeSectionAssets(assets), [assets])
+  const assetLookup = useMemo(() => buildAssetLookup(normalizedAssets), [normalizedAssets])
 
   if (!normalized) {
     if (hideEmptyMessage) return null
@@ -72,6 +85,20 @@ export default function SectionContentRenderer({
   return (
     <div className="section-rich-content">
       {blocks.map((block, index) => {
+        if (block.type === 'asset') {
+          const asset = resolvePlaceholderAsset(block, assetLookup)
+          if (!asset) {
+            return null;
+          }
+          return (
+            <SectionInlineAsset
+              key={`asset-${asset.id}-${index}`}
+              asset={asset}
+              index={assetLookup.indexById.get(asset.id) ?? index}
+              total={normalizedAssets.length}
+            />
+          )
+        }
         if (block.type === 'table') {
           return <TableBlock key={`table-${index}`} rows={block.rows} />
         }
@@ -93,6 +120,66 @@ export default function SectionContentRenderer({
   )
 }
 
+export function collectAssetPlaceholderIds(content: string | null): Set<string> {
+  const ids = new Set<string>()
+  if (!content) return ids
+  ASSET_PLACEHOLDER_RE.lastIndex = 0
+  let match = ASSET_PLACEHOLDER_RE.exec(content)
+  while (match) {
+    const id = match[2]?.trim()
+    if (id) ids.add(id)
+    match = ASSET_PLACEHOLDER_RE.exec(content)
+  }
+  return ids
+}
+
+function buildAssetLookup(assets: LandingAsset[]): AssetLookup {
+  const byId = new Map<string, LandingAsset>()
+  const byTypedKey = new Map<string, LandingAsset>()
+  const indexById = new Map<string, number>()
+
+  assets.forEach((asset, index) => {
+    byId.set(asset.id, asset)
+    byTypedKey.set(`${asset.type}:${asset.id}`, asset)
+    if (!indexById.has(asset.id)) {
+      indexById.set(asset.id, index)
+    }
+  })
+
+  return { byId, byTypedKey, indexById }
+}
+
+function resolvePlaceholderAsset(
+  block: Extract<ContentBlock, { type: 'asset' }>,
+  lookup: AssetLookup,
+): LandingAsset | null {
+  return lookup.byTypedKey.get(`${block.placeholderType}:${block.id}`)
+    ?? lookup.byId.get(block.id)
+    ?? null
+}
+
+function findNextAssetPlaceholder(
+  content: string,
+  start: number,
+): { index: number; raw: string; placeholderType: 'figure' | 'table'; id: string } | null {
+  ASSET_PLACEHOLDER_RE.lastIndex = start
+  const match = ASSET_PLACEHOLDER_RE.exec(content)
+  if (!match) return null
+
+  const placeholderType = match[1]?.toLowerCase()
+  const id = match[2]?.trim()
+  if ((placeholderType !== 'figure' && placeholderType !== 'table') || !id) {
+    return null
+  }
+
+  return {
+    index: match.index,
+    raw: match[0],
+    placeholderType,
+    id,
+  }
+}
+
 function parseContentBlocks(content: string): ContentBlock[] {
   const blocks: ContentBlock[] = []
 
@@ -100,7 +187,8 @@ function parseContentBlocks(content: string): ContentBlock[] {
   while (cursor < content.length) {
     const nextTable = content.indexOf('<table', cursor)
     const nextCustom = content.indexOf('<::', cursor)
-    const nextIndex = chooseNearest(nextTable, nextCustom)
+    const nextAsset = findNextAssetPlaceholder(content, cursor)
+    const nextIndex = chooseNearest(nextTable, nextCustom, nextAsset?.index ?? -1)
 
     if (nextIndex === -1) {
       pushTextBlock(blocks, content.slice(cursor))
@@ -109,6 +197,17 @@ function parseContentBlocks(content: string): ContentBlock[] {
 
     if (nextIndex > cursor) {
       pushTextBlock(blocks, content.slice(cursor, nextIndex))
+    }
+
+    if (nextAsset && nextIndex === nextAsset.index) {
+      blocks.push({
+        type: 'asset',
+        placeholderType: nextAsset.placeholderType,
+        id: nextAsset.id,
+        raw: nextAsset.raw,
+      })
+      cursor = nextIndex + nextAsset.raw.length
+      continue
     }
 
     if (nextIndex === nextTable) {
@@ -210,7 +309,9 @@ function findNextBlockBoundary(content: string, start: number): number {
 
   while (cursor < content.length) {
     const nextCustom = content.indexOf('<::', cursor)
-    const nextIndex = chooseNearest(nextTable, nextCustom)
+    const nextAsset = findNextAssetPlaceholder(content, cursor)
+    const nextAssetIndex = nextAsset?.index ?? -1
+    const nextIndex = chooseNearest(nextTable, nextCustom, nextAssetIndex)
 
     if (nextIndex === -1) {
       return -1
@@ -218,6 +319,10 @@ function findNextBlockBoundary(content: string, start: number): number {
 
     if (nextIndex === nextTable) {
       return nextTable
+    }
+
+    if (nextIndex === nextAssetIndex) {
+      return nextAssetIndex
     }
 
     if (isStructuralBoundaryStart(content, nextIndex)) {
@@ -320,6 +425,7 @@ function sanitizeRenderableText(value: string): string {
     .replace(/<::\s*[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*)*\s*::>/gi, ' ')
     .replace(/<\/(?:table|tbody|thead|tfoot|tr|td|th)\s*>/gi, ' ')
     .replace(/<(?:table|tbody|thead|tfoot|tr|td|th)\b[^>]*>/gi, ' ')
+    .replace(ASSET_PLACEHOLDER_RE, ' ')
     .replace(/<::\s*/g, ' ')
     .replace(/\s*::>/g, ' ')
     .replace(/\n?[ \t]*:[ \t]*[A-Za-z][\w-]*(?:\s+[A-Za-z][\w-]*)*[ \t]*::>\s*$/gim, ' ')
@@ -384,6 +490,20 @@ function parseTable(tableHtml: string): TableCellData[][] {
       })),
     )
     .filter((row) => row.length > 0)
+}
+
+function MissingAssetPlaceholderBlock({
+  placeholderType,
+}: {
+  placeholderType: 'figure' | 'table'
+}) {
+  return (
+    <div className="section-inline-asset section-inline-asset--missing">
+      <div className="section-inline-asset-missing-body">
+        {placeholderType === 'table' ? 'Không tải được bảng biểu.' : 'Không tải được hình ảnh.'}
+      </div>
+    </div>
+  )
 }
 
 function TableBlock({ rows }: { rows: TableCellData[][] }) {

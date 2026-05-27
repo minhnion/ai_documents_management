@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Image as ImageIcon, Table2, X } from 'lucide-react'
 import { api } from '../lib/api'
 
-interface LandingAsset {
+export interface LandingAsset {
   id: string
   type: string
   image_url: string
@@ -15,7 +15,7 @@ interface SectionAssetsProps {
 const TABLE_TYPES = new Set(['table'])
 const FIGURE_TYPES = new Set(['figure', 'diagram', 'chart', 'image', 'logo'])
 
-function normalizeAssets(raw: unknown): LandingAsset[] {
+export function normalizeSectionAssets(raw: unknown): LandingAsset[] {
   if (!Array.isArray(raw)) return []
   const out: LandingAsset[] = []
   for (const entry of raw) {
@@ -35,7 +35,7 @@ function normalizeAssets(raw: unknown): LandingAsset[] {
   return out
 }
 
-function assetLabel(type: string): string {
+export function assetLabel(type: string): string {
   if (TABLE_TYPES.has(type)) return 'Bảng biểu'
   if (FIGURE_TYPES.has(type)) return 'Hình ảnh'
   return type ? type.charAt(0).toUpperCase() + type.slice(1) : 'Tài liệu'
@@ -184,8 +184,55 @@ function AssetLightbox({
   )
 }
 
+export function SectionInlineAsset({
+  asset,
+  index,
+  total,
+}: {
+  asset: LandingAsset
+  index: number
+  total: number
+}) {
+  const { url, status } = useAssetBlobUrl(asset.image_url)
+  const [isOpen, setIsOpen] = useState(false)
+  const label = `${assetLabel(asset.type)} ${index + 1}`
+
+  return (
+    <>
+      <figure className={`section-inline-asset section-inline-asset--${asset.type}`}>
+        <button
+          type="button"
+          className="section-inline-asset-frame"
+          onClick={() => setIsOpen(true)}
+          title={label}
+        >
+          {status === 'ready' && url ? (
+            <img src={url} alt={label} loading="lazy" />
+          ) : status === 'error' ? (
+            <span className="section-asset-thumb-error">Không tải được</span>
+          ) : (
+            <span className="section-asset-thumb-spinner" aria-hidden />
+          )}
+        </button>
+        <figcaption className="section-inline-asset-caption">
+          <AssetIcon type={asset.type} />
+          {label}
+        </figcaption>
+      </figure>
+      {isOpen && (
+        <AssetLightbox
+          asset={asset}
+          index={index}
+          total={total}
+          onClose={() => setIsOpen(false)}
+        />
+      )}
+    </>
+  )
+}
+
 export default function SectionAssets({ assets }: SectionAssetsProps) {
-  const items = useMemo(() => normalizeAssets(assets), [assets])
+  const items = useMemo(() => normalizeSectionAssets(assets), [assets])
   const [openIndex, setOpenIndex] = useState<number | null>(null)
 
   if (items.length === 0) return null
