@@ -1149,6 +1149,59 @@ a:hover {
   display: block;
 }
 
+.section-inline-asset {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.section-inline-asset-frame {
+  min-height: 180px;
+  max-height: 420px;
+  width: 100%;
+  padding: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.04);
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.section-inline-asset-frame img {
+  max-width: 100%;
+  max-height: 390px;
+  object-fit: contain;
+  display: block;
+}
+
+.section-inline-asset-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.section-inline-asset--table .section-inline-asset-caption {
+  color: #15803d;
+}
+
+.section-inline-asset-missing-body {
+  padding: 14px;
+  color: var(--danger, #b91c1c);
+  font-size: 13px;
+}
+
 .section-asset-thumb-error {
   font-size: 12px;
   color: var(--danger, #b91c1c);
