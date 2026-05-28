@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
-import { UserPlus } from 'lucide-react'
+import { Trash2, UserPlus } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import type {
   UserResponse,
   UserListResponse,
+  DeleteUserResponse,
   AvailableRoleResponse,
   CreateUserRequest,
   UpdateUserRoleRequest,
@@ -24,6 +25,11 @@ function roleLabel(role: string) {
 function accountName(user: UserResponse | null | undefined) {
   if (!user) return '-'
   return user.full_name || user.email
+}
+
+function getApiErrorMessage(error: unknown, fallback: string) {
+  const response = (error as { response?: { data?: { detail?: unknown } } }).response
+  return typeof response?.data?.detail === 'string' ? response.data.detail : fallback
 }
 
 export default function AdminUsersPage() {
@@ -49,7 +55,9 @@ export default function AdminUsersPage() {
   const [doctorDepartmentChoice, setDoctorDepartmentChoice] = useState('')
 
   const [updatingUserId, setUpdatingUserId] = useState<number | null>(null)
+  const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
   const [roleError, setRoleError] = useState('')
+  const [deleteError, setDeleteError] = useState('')
 
   const departments = useMemo(
     () => users.filter(u => u.role === 'health_department' && u.is_active),
@@ -164,8 +172,8 @@ export default function AdminUsersPage() {
         parent_id: null,
         is_active: true,
       })
-    } catch (err: any) {
-      setCreateError(err.response?.data?.detail || 'Không thể tạo tài khoản.')
+    } catch (err: unknown) {
+      setCreateError(getApiErrorMessage(err, 'Không thể tạo tài khoản.'))
     } finally {
       setCreating(false)
     }
@@ -182,10 +190,46 @@ export default function AdminUsersPage() {
       }
       const res = await api.patch<UserResponse>(`/auth/users/${targetUser.user_id}/role`, payload)
       setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? res.data : u))
-    } catch (err: any) {
-      setRoleError(err.response?.data?.detail || 'Không thể cập nhật tài khoản.')
+    } catch (err: unknown) {
+      setRoleError(getApiErrorMessage(err, 'Không thể cập nhật tài khoản.'))
     } finally {
       setUpdatingUserId(null)
+    }
+  }
+
+  const canDeleteUser = (targetUser: UserResponse) => {
+    if (!currentUser) return false
+    if (targetUser.user_id === currentUser.user_id) return false
+    if (targetUser.role === 'admin') return false
+    if (currentUser.role === 'admin') return true
+    return targetUser.parent_id === currentUser.user_id
+  }
+
+  const getDeleteUserTitle = (targetUser: UserResponse) => {
+    if (targetUser.user_id === currentUser?.user_id) return 'Không thể xóa chính tài khoản đang đăng nhập'
+    if (targetUser.role === 'admin') return 'Không xóa tài khoản admin tại màn hình này'
+    if (!canDeleteUser(targetUser)) return 'Bạn chỉ có thể xóa tài khoản con trực tiếp'
+    return 'Xóa cứng tài khoản này'
+  }
+
+  const handleDeleteUser = async (targetUser: UserResponse) => {
+    if (!canDeleteUser(targetUser)) return
+    const confirmed = window.confirm(
+      `Xóa tài khoản "${accountName(targetUser)}"?\n\n`
+      + 'Thao tác này sẽ xóa cứng tài khoản, các tài khoản con nếu có, và toàn bộ tài liệu do các tài khoản đó quản lý.'
+    )
+    if (!confirmed) return
+
+    setDeletingUserId(targetUser.user_id)
+    setDeleteError('')
+    try {
+      const res = await api.delete<DeleteUserResponse>(`/auth/users/${targetUser.user_id}`)
+      const deletedIds = new Set(res.data.deleted_user_ids)
+      setUsers(prev => prev.filter(item => !deletedIds.has(item.user_id)))
+    } catch (err: unknown) {
+      setDeleteError(getApiErrorMessage(err, 'Không thể xóa tài khoản.'))
+    } finally {
+      setDeletingUserId(null)
     }
   }
 
@@ -323,6 +367,7 @@ export default function AdminUsersPage() {
 
       <div className="table-wrapper">
         {roleError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{roleError}</div>}
+        {deleteError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{deleteError}</div>}
         {loading ? (
           <div className="loading-center"><span className="loading-spinner" /></div>
         ) : (
@@ -335,11 +380,12 @@ export default function AdminUsersPage() {
                 <th>Cấp cha</th>
                 <th>Trạng thái</th>
                 <th>Ngày tạo</th>
+                <th>Thao tác</th>
               </tr>
             </thead>
             <tbody>
               {users.length === 0 && (
-                <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Không có tài khoản nào.</td></tr>
+                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Không có tài khoản nào.</td></tr>
               )}
               {users.map(u => (
                 <tr key={u.user_id}>
@@ -368,6 +414,20 @@ export default function AdminUsersPage() {
                   </td>
                   <td className="text-sm text-muted">
                     {new Date(u.created_at).toLocaleDateString('vi-VN')}
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      className="btn btn-danger btn-sm"
+                      disabled={!canDeleteUser(u) || deletingUserId === u.user_id}
+                      title={getDeleteUserTitle(u)}
+                      onClick={() => handleDeleteUser(u)}
+                    >
+                      {deletingUserId === u.user_id
+                        ? <span className="loading-spinner" style={{ width: 14, height: 14 }} />
+                        : <><Trash2 size={14} /> Xóa</>
+                      }
+                    </button>
                   </td>
                 </tr>
               ))}

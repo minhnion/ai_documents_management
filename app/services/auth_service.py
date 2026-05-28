@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -11,7 +11,9 @@ from app.core.exceptions import (
     UnprocessableEntityException,
 )
 from app.core.security import get_password_hash, verify_password
+from app.models.guideline import Guideline
 from app.models.user import User
+from app.services.guideline_delete_service import GuidelineDeleteService
 
 
 class AuthService:
@@ -136,13 +138,26 @@ class AuthService:
             )
             self.db.add(user)
             await self.db.flush()
+            await self.assign_orphan_health_departments_to_admin(int(user.user_id))
             return await self.get_user_by_id(user.user_id)
 
         if user.role != self.ROLE_ADMIN or user.parent_id is not None:
             user.role = self.ROLE_ADMIN
             user.parent_id = None
             await self.db.flush()
+        await self.assign_orphan_health_departments_to_admin(int(user.user_id))
         return user
+
+    async def assign_orphan_health_departments_to_admin(self, admin_user_id: int) -> int:
+        result = await self.db.execute(
+            update(User)
+            .where(User.role == self.ROLE_HEALTH_DEPARTMENT)
+            .where(User.parent_id.is_(None))
+            .where(User.user_id != admin_user_id)
+            .values(parent_id=admin_user_id)
+        )
+        await self.db.flush()
+        return int(result.rowcount or 0)
 
     async def create_user(
         self,
@@ -219,6 +234,57 @@ class AuthService:
             raise UnprocessableEntityException("Cannot load updated user.")
         return updated_user
 
+    async def delete_user(
+        self,
+        *,
+        current_user: User,
+        user_id: int,
+    ) -> dict[str, int | list[int]]:
+        target_user = await self.get_user_by_id(user_id)
+        if target_user is None:
+            raise NotFoundException("User", user_id)
+        if int(target_user.user_id) == int(current_user.user_id):
+            raise BadRequestException("Cannot delete your own account.")
+        if target_user.role == self.ROLE_ADMIN:
+            raise BadRequestException("Admin accounts cannot be deleted from this screen.")
+
+        self._ensure_can_manage_user(current_user=current_user, target_user=target_user)
+
+        users = list((await self.db.execute(select(User))).scalars().all())
+        target_ids = self._collect_descendant_ids(users, int(target_user.user_id))
+        target_ids.add(int(target_user.user_id))
+
+        guideline_ids = list(
+            (
+                await self.db.execute(
+                    select(Guideline.guideline_id)
+                    .where(Guideline.owner_user_id.in_(target_ids))
+                    .order_by(Guideline.guideline_id.asc())
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        delete_service = GuidelineDeleteService(self.db)
+        for guideline_id in guideline_ids:
+            await delete_service.delete_guideline(int(guideline_id))
+
+        users_by_id = {int(user.user_id): user for user in users}
+        for deleted_user_id in self._sort_user_ids_for_bottom_up_delete(users, target_ids):
+            user = users_by_id.get(int(deleted_user_id))
+            if user is not None:
+                await self.db.delete(user)
+        await self.db.flush()
+
+        deleted_user_ids = sorted(int(deleted_user_id) for deleted_user_id in target_ids)
+        return {
+            "deleted_user_id": int(target_user.user_id),
+            "deleted_user_ids": deleted_user_ids,
+            "deleted_user_count": len(deleted_user_ids),
+            "deleted_guideline_count": len(guideline_ids),
+        }
+
     def _ensure_can_create_role(self, *, current_user: User, role: str) -> None:
         if current_user.role == self.ROLE_ADMIN:
             return
@@ -239,8 +305,12 @@ class AuthService:
         role: str,
         parent_id: int | None,
     ) -> int | None:
-        if role in (self.ROLE_ADMIN, self.ROLE_HEALTH_DEPARTMENT):
+        if role == self.ROLE_ADMIN:
             return None
+        if role == self.ROLE_HEALTH_DEPARTMENT:
+            if current_user.role != self.ROLE_ADMIN:
+                raise BadRequestException("Health department accounts must be created by an admin.")
+            return int(current_user.user_id)
 
         expected_parent_role = self.PARENT_ROLE_BY_ROLE[role]
         if current_user.role != self.ROLE_ADMIN:
@@ -284,3 +354,26 @@ class AuthService:
             descendants.add(user_id)
             stack.extend(children_by_parent.get(user_id, []))
         return descendants
+
+    def _sort_user_ids_for_bottom_up_delete(
+        self,
+        users: list[User],
+        user_ids: set[int],
+    ) -> list[int]:
+        children_by_parent: dict[int, list[int]] = {}
+        for user in users:
+            if user.parent_id is None:
+                continue
+            children_by_parent.setdefault(int(user.parent_id), []).append(int(user.user_id))
+
+        depths: dict[int, int] = {}
+
+        def depth_for(user_id: int) -> int:
+            if user_id in depths:
+                return depths[user_id]
+            children = [child_id for child_id in children_by_parent.get(user_id, []) if child_id in user_ids]
+            depth = 0 if not children else 1 + max(depth_for(child_id) for child_id in children)
+            depths[user_id] = depth
+            return depth
+
+        return sorted(user_ids, key=lambda item: (depth_for(item), item))

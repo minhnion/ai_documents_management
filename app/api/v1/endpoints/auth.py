@@ -8,6 +8,7 @@ from app.core.security import create_access_token
 from app.schemas.auth import (
     AvailableRoleResponse,
     CreateUserRequest,
+    DeleteUserResponse,
     LoginRequest,
     LoginResponse,
     UpdateUserRoleRequest,
@@ -128,3 +129,20 @@ async def update_user_role(
         is_active=payload.is_active,
     )
     return UserResponse.model_validate(user)
+
+
+@router.delete(
+    "/users/{user_id}",
+    response_model=DeleteUserResponse,
+    summary="Delete User",
+)
+async def delete_user(
+    user_id: int,
+    auth_service: AuthServiceDep,
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+) -> DeleteUserResponse:
+    result = await auth_service.delete_user(
+        current_user=current_user,
+        user_id=user_id,
+    )
+    return DeleteUserResponse(**result)

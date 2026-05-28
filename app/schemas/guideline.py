@@ -161,6 +161,7 @@ class VersionChunkRebuildStatusResponse(BaseModel):
     requested_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    last_succeeded_at: datetime | None = None
 
 
 class RebuildVersionChunksResponse(VersionChunkRebuildStatusResponse):

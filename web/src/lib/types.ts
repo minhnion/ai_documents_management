@@ -51,6 +51,13 @@ export interface UpdateUserRoleRequest {
   is_active?: boolean | null
 }
 
+export interface DeleteUserResponse {
+  deleted_user_id: number
+  deleted_user_ids: number[]
+  deleted_user_count: number
+  deleted_guideline_count: number
+}
+
 // Guidelines
 export interface GuidelineVersionSummary {
   version_id: number
@@ -302,6 +309,7 @@ export interface VersionChunkRebuildStatusResponse {
   requested_at: string | null
   started_at: string | null
   finished_at: string | null
+  last_succeeded_at: string | null
 }
 
 export interface RebuildVersionChunksResponse extends VersionChunkRebuildStatusResponse {
