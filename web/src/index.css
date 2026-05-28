@@ -773,6 +773,22 @@ a:hover {
   justify-content: flex-end;
 }
 
+.chunk-rebuild-control {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+}
+
+.chunk-rebuild-meta {
+  max-width: 220px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
+  text-align: right;
+  white-space: normal;
+}
+
 .content-body {
   flex: 1;
   overflow-y: auto;

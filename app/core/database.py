@@ -335,6 +335,24 @@ async def migrate_user_hierarchy_schema() -> None:
                 """
             )
         )
+        await conn.execute(
+            text(
+                """
+                WITH root_admin AS (
+                    SELECT user_id
+                    FROM users
+                    WHERE role = 'admin'
+                    ORDER BY is_active DESC, user_id ASC
+                    LIMIT 1
+                )
+                UPDATE users
+                SET parent_id = (SELECT user_id FROM root_admin)
+                WHERE role = 'health_department'
+                  AND parent_id IS NULL
+                  AND EXISTS (SELECT 1 FROM root_admin)
+                """
+            )
+        )
         for table_name, column_name in (
             ("users", "parent_id"),
             ("users", "created_by_user_id"),

@@ -37,7 +37,10 @@ class GuidelineChunkService:
         if active_job is not None:
             return {
                 'accepted': False,
-                **self._serialize_job(active_job),
+                **self._serialize_job(
+                    active_job,
+                    last_succeeded_at=await self._get_last_succeeded_finished_at(version_id),
+                ),
             }
 
         job = ChunkRebuildJob(
@@ -58,11 +61,15 @@ class GuidelineChunkService:
         self._schedule_rebuild_task(job.job_id)
         return {
             'accepted': True,
-            **self._serialize_job(job),
+            **self._serialize_job(
+                job,
+                last_succeeded_at=await self._get_last_succeeded_finished_at(version_id),
+            ),
         }
 
     async def get_version_chunk_rebuild_status(self, version_id: int) -> dict[str, Any]:
         await self._ensure_version_exists(version_id)
+        last_succeeded_at = await self._get_last_succeeded_finished_at(version_id)
         latest_job = await self._get_latest_job_for_version(version_id)
         if latest_job is None:
             return {
@@ -75,8 +82,9 @@ class GuidelineChunkService:
                 'requested_at': None,
                 'started_at': None,
                 'finished_at': None,
+                'last_succeeded_at': last_succeeded_at,
             }
-        return self._serialize_job(latest_job)
+        return self._serialize_job(latest_job, last_succeeded_at=last_succeeded_at)
 
     def _schedule_rebuild_task(self, job_id: int) -> None:
         task = asyncio.create_task(self._run_rebuild_task(job_id))
@@ -137,6 +145,20 @@ class GuidelineChunkService:
                 select(ChunkRebuildJob)
                 .where(ChunkRebuildJob.version_id == version_id)
                 .order_by(desc(ChunkRebuildJob.job_id))
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+    async def _get_last_succeeded_finished_at(self, version_id: int) -> datetime | None:
+        return (
+            await self.db.execute(
+                select(ChunkRebuildJob.finished_at)
+                .where(
+                    ChunkRebuildJob.version_id == version_id,
+                    ChunkRebuildJob.status == self.SUCCEEDED,
+                    ChunkRebuildJob.finished_at.isnot(None),
+                )
+                .order_by(desc(ChunkRebuildJob.finished_at), desc(ChunkRebuildJob.job_id))
                 .limit(1)
             )
         ).scalar_one_or_none()
@@ -204,7 +226,12 @@ class GuidelineChunkService:
             job.error_message = error_message[:4000] if error_message else 'Unknown chunk rebuild error.'
             await session.commit()
 
-    def _serialize_job(self, job: ChunkRebuildJob) -> dict[str, Any]:
+    def _serialize_job(
+        self,
+        job: ChunkRebuildJob,
+        *,
+        last_succeeded_at: datetime | None = None,
+    ) -> dict[str, Any]:
         return {
             'job_id': int(job.job_id),
             'version_id': int(job.version_id),
@@ -215,6 +242,7 @@ class GuidelineChunkService:
             'requested_at': job.requested_at,
             'started_at': job.started_at,
             'finished_at': job.finished_at,
+            'last_succeeded_at': last_succeeded_at,
         }
 
     def _utcnow(self) -> datetime:

@@ -53,6 +53,13 @@ class UpdateUserRoleRequest(BaseModel):
     is_active: bool | None = None
 
 
+class DeleteUserResponse(BaseModel):
+    deleted_user_id: int
+    deleted_user_ids: list[int]
+    deleted_user_count: int
+    deleted_guideline_count: int
+
+
 class UserListResponse(BaseModel):
     items: list[UserResponse]
     total: int

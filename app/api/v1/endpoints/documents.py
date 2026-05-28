@@ -3,9 +3,8 @@ from typing import Annotated
 from fastapi import APIRouter, Header
 from fastapi.responses import StreamingResponse
 
-from app.api.deps import ActiveUser, DBSession
+from app.api.deps import DBSession
 from app.services.document_file_service import DocumentFileService
-from app.services.tenant_access_service import TenantAccessService
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -23,13 +22,8 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 async def get_document_file(
     document_id: int,
     db: DBSession,
-    current_user: ActiveUser,
     range_header: Annotated[str | None, Header(alias="Range")] = None,
 ) -> StreamingResponse:
-    await TenantAccessService(db).ensure_document_access(
-        document_id=document_id,
-        current_user=current_user,
-    )
     service = DocumentFileService(db)
     stream_result = await service.get_document_file_stream(
         document_id=document_id,

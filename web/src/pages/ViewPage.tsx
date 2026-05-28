@@ -133,6 +133,19 @@ function getSectionLocator(node: WorkspaceSectionNode): string {
   return node.section_path?.trim() || node.node_id?.trim() || `#${node.section_id}`
 }
 
+function formatChunkTimestamp(value: string | null | undefined): string {
+  if (!value) return 'Chưa tạo chunk'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Chưa rõ lần tạo chunk gần nhất'
+  return `Tạo chunk gần nhất: ${date.toLocaleString('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })}`
+}
+
 interface SpatialHighlightBbox {
   page: number
   left: number
@@ -531,6 +544,8 @@ export default function ViewPage() {
   )
   const positioningMode = workspace?.positioning_mode ?? 'page_range'
   const isSpatialPositioning = positioningMode === 'spatial_heading_anchor'
+  const lastChunkCreatedAt = chunkProgress?.last_succeeded_at
+    ?? (chunkProgress?.status === 'succeeded' ? chunkProgress.finished_at : null)
 
   const nextJumpRequestKey = () => {
     jumpRequestSequenceRef.current += 1
@@ -1084,23 +1099,26 @@ export default function ViewPage() {
               </button>
             )}
             {canEdit && (
-              <button
-                className="btn btn-secondary btn-xs"
-                disabled={chunking || saving || unsavedEditCount > 0 || pipelineIsActive}
-                onClick={handleRebuildChunks}
-                title={
-                  pipelineIsActive
-                    ? 'Hãy đợi hệ thống xử lý xong OCR, TOC và sections trước khi tạo chunks.'
-                    : unsavedEditCount > 0
-                      ? 'Hãy lưu hoặc hủy chỉnh sửa trước khi tạo chunks.'
-                      : 'Tạo chunks từ dữ liệu sections hiện tại'
-                }
-              >
-                {chunking
-                  ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
-                  : <><Check size={12} /> Tạo chunks</>
-                }
-              </button>
+              <div className="chunk-rebuild-control">
+                <button
+                  className="btn btn-secondary btn-xs"
+                  disabled={chunking || saving || unsavedEditCount > 0 || pipelineIsActive}
+                  onClick={handleRebuildChunks}
+                  title={
+                    pipelineIsActive
+                      ? 'Hãy đợi hệ thống xử lý xong OCR, TOC và sections trước khi tạo chunks.'
+                      : unsavedEditCount > 0
+                        ? 'Hãy lưu hoặc hủy chỉnh sửa trước khi tạo chunks.'
+                        : 'Tạo chunks từ dữ liệu sections hiện tại'
+                  }
+                >
+                  {chunking
+                    ? <span className="loading-spinner" style={{ width: 12, height: 12 }} />
+                    : <><Check size={12} /> Tạo chunks</>
+                  }
+                </button>
+                <span className="chunk-rebuild-meta">{formatChunkTimestamp(lastChunkCreatedAt)}</span>
+              </div>
             )}
             {unsavedEditCount > 0 && (
               <>
