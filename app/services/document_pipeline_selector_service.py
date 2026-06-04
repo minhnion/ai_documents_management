@@ -133,6 +133,16 @@ class DocumentPipelineSelectorService:
                 "text_layer_extractable": text_layer_extractable,
             }
 
+            # Force OCR for Vietnamese documents: conservative heuristic
+            detected_vietnamese = self._detect_vietnamese(document, sample_pages)
+            metrics["detected_vietnamese"] = detected_vietnamese
+            if detected_vietnamese:
+                return DocumentPipelineSelection(
+                    mode="ocr_llm",
+                    reason="detected_vietnamese_forced_ocr",
+                    metrics=metrics,
+                )
+
             if not has_native_outline_tree:
                 return DocumentPipelineSelection(
                     mode="ocr_llm",
@@ -166,6 +176,35 @@ class DocumentPipelineSelectorService:
         except Exception:
             return []
         return raw_toc if isinstance(raw_toc, list) else []
+
+    def _detect_vietnamese(self, document: fitz.Document, sample_pages: int) -> bool:
+        """Rudimentary check whether the document is Vietnamese.
+
+        Heuristic: sample the first `sample_pages` pages' text and look for
+        (a) Vietnamese-specific diacritic characters, or
+        (b) a handful of very common Vietnamese stopwords/markers.
+        This is intentionally conservative and fast.
+        """
+        diacritic_re = re.compile(
+            r"[ăâđêôơưáàảãạắằẳẵặấầẩẫậéèẻẽẹíìỉĩịóòỏõọúùủũụýỳỷỹỵ]",
+            re.IGNORECASE,
+        )
+        stopwords = ("và", "của", "những", "như", "được", "các", "trong", "cho", "với")
+        diacritic_count = 0
+        stopword_hits = 0
+        pages = min(len(document), sample_pages)
+        for i in range(pages):
+            try:
+                text = document[i].get_text("text") or ""
+            except Exception:
+                continue
+            diacritic_count += len(diacritic_re.findall(text))
+            lowered = text.lower()
+            for w in stopwords:
+                stopword_hits += lowered.count(w)
+
+        # thresholds chosen to avoid false positives on short English docs
+        return diacritic_count >= 20 or stopword_hits >= 8 or "việt" in (document.metadata or {}).get("title", "").lower()
 
     def _has_outline_root(self, document: fitz.Document) -> bool:
         pdf_catalog = getattr(document, "pdf_catalog", None)

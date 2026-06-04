@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +47,7 @@ _RE_ATTRIB_ALTEXT = re.compile(
 )
 
 _INTRA_CHUNK_SEARCH_WINDOW = 60_000
+_BOUNDARY_SEARCH_SLACK     = 5_000
 _HEADING_MATCH_THRESHOLD   = 0.55
 
 _NOISE_CHUNK_TYPES      = {"marginalia", "logo", "scan_code", "attestation"}
@@ -82,7 +82,6 @@ def _score_line_heading(
     max_b: int,
     truncate: bool = False,
 ) -> float:
-    """Dice score of one OCR line vs heading word set, with prefix filtering. Shared by _refine_start_char."""
     if prefix_type == "alpha" and title_prefix:
         cand_m = _RE_ALPHA_PREFIX.match(clean)
         if cand_m and cand_m.group(1).upper() != title_prefix.upper():
@@ -100,17 +99,14 @@ def _score_line_heading(
 # ── Page / position helpers ──────────────────────────────────────────────────
 
 def build_page_breaks(ocr_md: str) -> list[int]:
-    """Return sorted list of character offsets where PAGE BREAK markers appear."""
     return [m.start() for m in re.finditer(re.escape(_PAGE_BREAK), ocr_md)]
 
 
 def page_at(char_pos: int, breaks: list[int]) -> int:
-    """1-based page number containing character position `char_pos`."""
     return bisect.bisect_right(breaks, char_pos) + 1
 
 
 def build_ade_offset_map(ocr_md: str, ade_chunks: list[dict]) -> list[dict]:
-    """Locate each ADE chunk's <a id='...'> anchor in ocr_md; add start_char, end_char, _anchor_len."""
     enriched: list[dict] = []
     for ch in ade_chunks:
         anchor = f"<a id='{ch['id']}'></a>"
@@ -131,12 +127,10 @@ def build_ade_offset_map(ocr_md: str, ade_chunks: list[dict]) -> list[dict]:
 
 
 def build_id_to_idx(ade_enriched: list[dict]) -> dict[str, int]:
-    """Map ADE chunk id → index in ade_enriched list."""
     return {ch["id"]: i for i, ch in enumerate(ade_enriched) if ch.get("id")}
 
 
 def _char_pos_of_ade_boundary(ade_enriched: list[dict], from_idx: int, fallback: int) -> int:
-    """Return the start_char of the first anchored chunk at or after from_idx, else fallback."""
     for i in range(from_idx, len(ade_enriched)):
         sc = ade_enriched[i]["start_char"]
         if sc >= 0:
@@ -147,7 +141,6 @@ def _char_pos_of_ade_boundary(ade_enriched: list[dict], from_idx: int, fallback:
 # ── Noise detection ──────────────────────────────────────────────────────────
 
 def _detect_repeated_noise(ade_enriched: list[dict]) -> set[str]:
-    """Return IDs of short text chunks in header/footer zones that repeat across ≥ N pages."""
     text_to_ids: dict[str, list[str]] = {}
     for ch in ade_enriched:
         if ch.get("type") != "text":
@@ -176,20 +169,32 @@ def _detect_repeated_noise(ade_enriched: list[dict]) -> set[str]:
     }
 
 
+def _is_heading_only_chunk(ade_enriched: list[dict], chunk_idx: int) -> bool:
+    if chunk_idx >= len(ade_enriched):
+        return False
+    md = ade_enriched[chunk_idx].get("markdown", "")
+    md_clean = _RE_ANCHOR.sub("", md).strip()
+    if not md_clean or len(md_clean) > 500:
+        return False
+    non_empty = [l.strip() for l in md_clean.splitlines() if l.strip()]
+    if not non_empty:
+        return False
+    return all(
+        _RE_HEADING.match(l) or (len(md_clean) <= 100 and l == l.upper())
+        for l in non_empty
+    )
+
+
+def _end_char_to_chunk_idx(
+    end_char: int, ade_enriched: list[dict], from_idx: int, to_idx: int
+) -> int:
+    for i in range(from_idx, min(to_idx, len(ade_enriched))):
+        if ade_enriched[i].get("start_char", -1) >= end_char:
+            return i
+    return to_idx
+
+
 def build_noise_intervals(ade_enriched: list[dict], ocr_md: str = "") -> list[tuple[int, int, str]]:
-    """Return sorted (start_char, end_char, placeholder) spans to suppress during content
-    extraction. The placeholder is inserted at the suppression boundary in the assembled
-    content; it is empty for non-visual noise (logos, marginalia, etc.).
-
-    • figure chunks: suppressed from their first <:: marker onward (any clinical text
-      before the visual element is preserved); placeholder = [figure:ID].
-    • table chunks with real <table> HTML: only the anchor span is suppressed and
-      replaced by [table:ID]; the <table> HTML content that follows is preserved.
-    • table chunks without <table> HTML: suppressed entirely; placeholder = [table:ID].
-
-    All placeholders reference the chunk ID used by extract_image.py to name the
-    cropped image: {type}/p{page:03d}_{chunk_id}.png.
-    """
     repeated_ids = _detect_repeated_noise(ade_enriched)
     intervals: list[tuple[int, int, str]] = []
     for ch in ade_enriched:
@@ -225,14 +230,6 @@ def _search_heading_char_pos(
     min_advance: int = 1,
     min_score: float = _HEADING_MATCH_THRESHOLD,
 ) -> int | None:
-    """
-    Scan forward in ocr_md for the character position where heading `title` appears.
-
-    Uses dice similarity per line. Numeric-prefix titles get a boost when the prefix
-    appears as a standalone token. Table rows are truncated at " | " before scoring
-    to prevent trailing cells from diluting the match. Returns None if no line scores
-    above min_score.
-    """
     a_words = _words(title)
     if not a_words:
         return None
@@ -244,7 +241,7 @@ def _search_heading_char_pos(
 
     num_m           = _RE_NUM_PREFIX.match(title.strip())
     num_prefix      = num_m.group(1).rstrip(".").lower() if num_m else None
-    num_re          = re.compile(re.escape(num_prefix) + r"(?:[\.\s ]|$)") if num_prefix else None
+    num_re          = re.compile(re.escape(num_prefix) + r"(?:[.\s ]|$)") if num_prefix else None
     max_b_for_boost = max(len(a_words) * 2 + 2, 8)
 
     def _is_standalone(pos: int) -> bool:
@@ -259,7 +256,6 @@ def _search_heading_char_pos(
         clean = _RE_HTML.sub(" ", line)
         clean = _RE_HEADING.sub("", clean).strip()
         if clean:
-            # Truncate at " | " so table-row trailing cells don't dilute the score.
             clean_for_b = clean
             if num_re and num_re.match(clean.lower()) and " | " in clean:
                 pipe_pos = clean.find(" | ")
@@ -314,7 +310,6 @@ def _refine_start_char(
     anchor_len: int = 46,
     min_score: float = 0.55,
 ) -> int | None:
-    """Return the position of the heading text within the chunk, or None if too close to anchor."""
     a_words = _words(title)
     if not a_words:
         return None
@@ -353,11 +348,6 @@ def _refine_start_char(
 
 
 def _find_heading_end(text: str, toc_title: str) -> int:
-    """
-    Return the char offset within `text` where the heading line ends (for content stripping).
-
-    Returns 0 if no confident match. Handles "Title: inline content" by cutting at the colon.
-    """
     a_words = _words(toc_title)
     if not a_words:
         return 0
@@ -413,14 +403,6 @@ def _resolve_sibling_boundaries(
     ocr_md: str,
     boundary_title: str | None = None,
 ) -> None:
-    """
-    Set _chunk_end, _end_char_override, _start_char_override for every node in a sibling list.
-
-    Case 1  — same-chunk siblings: text-search split inside the shared chunk.
-    Normal  — cross-chunk siblings: refine heading position past the anchor.
-    Case 3a — last node, chunk bleeds into next section: cap at boundary_title.
-    Case 3b — last node, unmatched: find nearest ref chunk, search boundary_title.
-    """
     last_split_by_chunk: dict[int, int] = {}
 
     for i, node in enumerate(nodes):
@@ -431,13 +413,8 @@ def _resolve_sibling_boundaries(
         if valid_nxt:
             node["_chunk_end"] = nxt_idx
         elif nxt_idx is not None and cur_idx is not None and nxt_idx == cur_idx:
-            # SHARED_CHUNK: content is bounded by the shared chunk itself, not parent_end.
-            # _end_char_override will refine further if the text-search split succeeds.
             node["_chunk_end"] = min(cur_idx + 1, parent_end)
         elif nxt_idx is not None and cur_idx is not None and nxt_idx < cur_idx:
-            # BACKWARD: the next sibling's chunk_idx regressed (usually because
-            # build_toc.py's Parent-Inherit pass gave it its parent's chunk).
-            # Look ahead for the first sibling whose chunk_idx is actually > cur_idx.
             fwd = next(
                 (nodes[j].get("_chunk_idx") for j in range(i + 1, len(nodes))
                  if nodes[j].get("_chunk_idx") is not None
@@ -454,7 +431,10 @@ def _resolve_sibling_boundaries(
             if chunk_start >= 0 and nxt_title:
                 search_from = last_split_by_chunk.get(cur_idx, chunk_start)
                 chunk_end   = ade_enriched[cur_idx].get("end_char")
-                split = _search_heading_char_pos(ocr_md, nxt_title, search_from, search_end=chunk_end)
+                is_breadcrumb = _is_heading_only_chunk(ade_enriched, cur_idx)
+                split = None
+                if not is_breadcrumb:
+                    split = _search_heading_char_pos(ocr_md, nxt_title, search_from, search_end=chunk_end)
                 if split is not None and split > search_from:
                     node["_end_char_override"]           = split
                     nodes[i + 1]["_start_char_override"] = split
@@ -464,15 +444,16 @@ def _resolve_sibling_boundaries(
                         node["title"][:40], split, ade_enriched[cur_idx].get("id", ""),
                     )
                 else:
-                    # Not found within shared chunk — extend search to parent boundary.
-                    # The next sibling's heading may physically appear in a later chunk
-                    # because build_toc.py's Parent-Inherit assigned all siblings the
-                    # same (parent) chunk_id even when headings span multiple ADE chunks.
                     parent_end_char = _char_pos_of_ade_boundary(ade_enriched, parent_end, len(ocr_md))
-                    split = _search_heading_char_pos(
-                        ocr_md, nxt_title, search_from, search_end=parent_end_char
+                    ext_from = (
+                        max(search_from, chunk_end - 1)
+                        if is_breadcrumb and chunk_end is not None and chunk_end > search_from
+                        else search_from
                     )
-                    if split is not None and split > search_from:
+                    split = _search_heading_char_pos(
+                        ocr_md, nxt_title, ext_from, search_end=parent_end_char
+                    )
+                    if split is not None and split > ext_from:
                         node["_end_char_override"]           = split
                         nodes[i + 1]["_start_char_override"] = split
                         last_split_by_chunk[cur_idx]         = split
@@ -492,14 +473,6 @@ def _resolve_sibling_boundaries(
             nxt_title = nodes[i + 1].get("title", "")
             if nxt_sc >= 0 and nxt_title:
                 anchor_len = ade_enriched[nxt_idx].get("_anchor_len", 46)
-                # Use _refine_start_char (not _search_heading_char_pos) here.
-                # _refine_start_char has prefix filtering (_score_line_heading) which
-                # rejects lines whose numeric/alpha prefix differs from the title prefix.
-                # This prevents false-positive matches where a child heading (e.g.
-                # "2. Xử trí cấp cứu hạ glucose máu") is matched instead of the actual
-                # section heading (e.g. "D. Xử trí cấp cứu") — which would propagate
-                # a wrong _start_char_override downstream and collapse child ranges.
-                # _refine_start_char already enforces the anchor_len guard internally.
                 split = _refine_start_char(ocr_md, nxt_title, nxt_sc, nxt_ec, anchor_len=anchor_len)
                 if split is not None:
                     node["_end_char_override"]           = split
@@ -510,7 +483,7 @@ def _resolve_sibling_boundaries(
                     )
                 else:
                     logger.debug(
-                        "  [CROSS_CHUNK/heading-at-anchor] %-40s  chunk %d heading starts at anchor, no override needed",
+                        "  [CROSS_CHUNK/heading-at-anchor] %-40s  chunk %d",
                         node["title"][:40], nxt_idx,
                     )
 
@@ -518,8 +491,6 @@ def _resolve_sibling_boundaries(
             not valid_nxt
             and nxt_idx is not None and cur_idx is not None and nxt_idx < cur_idx
         ):
-            # BACKWARD: next sibling's chunk_idx regressed (Parent-Inherit artefact).
-            # The next sibling's heading may be embedded inside cur_idx's chunk text.
             nxt_title = nodes[i + 1].get("title", "")
             if nxt_title and cur_idx < len(ade_enriched):
                 chunk_start  = ade_enriched[cur_idx].get("start_char", -1)
@@ -553,9 +524,23 @@ def _resolve_sibling_boundaries(
                 search_from = last_split_by_chunk.get(cur_idx, chunk_start)
                 if node.get("_start_char_override") is not None:
                     search_from = max(search_from, node["_start_char_override"])
+                if parent_end < len(ade_enriched):
+                    boundary_chunk_end = (
+                        ade_enriched[parent_end].get("end_char")
+                        or _char_pos_of_ade_boundary(ade_enriched, parent_end, len(ocr_md))
+                        + _BOUNDARY_SEARCH_SLACK
+                    )
+                else:
+                    boundary_chunk_end = _char_pos_of_ade_boundary(
+                        ade_enriched, parent_end, len(ocr_md)
+                    ) + _BOUNDARY_SEARCH_SLACK
+                search_end = min(
+                    search_from + _INTRA_CHUNK_SEARCH_WINDOW,
+                    boundary_chunk_end,
+                )
+                search_end = max(search_end, search_from + _BOUNDARY_SEARCH_SLACK)
                 split = _search_heading_char_pos(
-                    ocr_md, boundary_title, search_from,
-                    search_end=search_from + _INTRA_CHUNK_SEARCH_WINDOW,
+                    ocr_md, boundary_title, search_from, search_end=search_end,
                 )
                 if split is not None and split > search_from:
                     node["_end_char_override"]   = split
@@ -603,7 +588,6 @@ def _resolve_sibling_boundaries(
 
 
 def _infer_from_children(node: dict) -> None:
-    """Infer _chunk_idx (min) and _chunk_end (max) from children when the node has no direct match."""
     child_idxs, child_ends = [], []
     for key in _CHILD_KEYS:
         for ch in node.get(key, []):
@@ -618,7 +602,6 @@ def _infer_from_children(node: dict) -> None:
 
 
 def _propagate_inferred_bounds(node: dict) -> None:
-    """Post-order traversal: push _chunk_idx/_chunk_end up to unmatched ancestors."""
     for key in _CHILD_KEYS:
         for child in node.get(key, []):
             _propagate_inferred_bounds(child)
@@ -695,7 +678,17 @@ def _assign_offsets_to_level(
             continue
 
         child_start = idx if idx is not None else prev_chunk_end
-        child_end   = end if end is not None else p_end
+        end_override = node.get("_end_char_override")
+        if end is not None and end_override is not None:
+            end_char_at_idx = (
+                ade_enriched[end].get("start_char", -1) if end < len(ade_enriched) else -1
+            )
+            if 0 <= end_char_at_idx < end_override:
+                child_end = _end_char_to_chunk_idx(end_override, ade_enriched, end, p_end)
+            else:
+                child_end = end
+        else:
+            child_end = end if end is not None else p_end
 
         children_min_idx = min(
             (id_to_idx[ch.get("heading_chunk_id")]
@@ -711,14 +704,6 @@ def _assign_offsets_to_level(
             nxt     = nodes[i + 1]
             nxt_idx = nxt.get("_chunk_idx")
             if nxt_idx is not None and nxt_idx == child_end:
-                # nxt's chunk_idx coincides with the current child_end, which typically
-                # means CHILD_START_FLOOR pulled nxt's start back to an early child chunk.
-                # Use nxt's own title as the primary boundary: its heading always appears
-                # physically before its first child, giving the correct (earlier) cut point.
-                # fc_title (first child) is kept as fallback only if nxt has no title.
-                # Previously fc_title was primary, which caused bleeding: the last sibling
-                # of the current node got its end_char set to the grandchild position,
-                # including nxt's own heading text in its content.
                 fc_title = next(
                     (c.get("title") for k in _CHILD_KEYS for c in nxt.get(k, []) if c.get("title")),
                     None,
@@ -741,7 +726,6 @@ def _assign_all_toc_offsets(
     id_to_idx: dict[str, int],
     ocr_md: str,
 ) -> None:
-    """Entry point: assign offsets to all TOC nodes, then propagate bounds to unmatched parents."""
     top = [ch for k in _CHILD_KEYS for ch in toc_root.get(k, [])]
     if not top:
         return
@@ -753,19 +737,6 @@ def _assign_all_toc_offsets(
 # ── Content extraction ───────────────────────────────────────────────────────
 
 def _strip_attrib_blocks(text: str) -> str:
-    """
-    Remove or unwrap LandingAI ADE attribution blocks (<:: ... ::>).
-
-    Decision logic for each closed block:
-    • Single non-empty line → discard (structural tag or one-line caption).
-    • Last line is a known media-type tag (_ATTRIB_MEDIA_TAGS):
-        – First line is English alt-text (_RE_ATTRIB_ALTEXT) or a known junk
-          label (_ATTRIB_BODY_JUNK_FIRST) → discard all.
-        – Otherwise → real document content: return body lines, strip tag line.
-    • Last line is not a known tag → LandingAI caption → discard all.
-
-    Unclosed <:: and stray ::> are always removed.
-    """
     def _replace(m: re.Match) -> str:
         content   = m.group(1)
         lines     = content.split("\n")
@@ -776,23 +747,17 @@ def _strip_attrib_blocks(text: str) -> str:
         last  = non_empty[-1]
         first = non_empty[0]
 
-        # Single line → structural tag or one-line caption: discard.
         if len(non_empty) == 1:
             return ""
 
-        # Last line is a known media-type tag.
         if last.strip().lstrip(":").strip().lower() in _ATTRIB_MEDIA_TAGS:
-            # First line is English alt-text or a known junk label → discard all.
             if (_RE_ATTRIB_ALTEXT.match(first.strip())
                     or first.strip().lower() in _ATTRIB_BODY_JUNK_FIRST):
                 return ""
-            # Real content: strip only the trailing tag line, return body.
             body_lines = [l for l in lines
                           if l.strip() and l.strip() != last.strip()]
             return "\n".join(body_lines).strip()
 
-        # Last line is a complex sentence (e.g. full description) → LandingAI
-        # caption, not document prose → discard.
         return ""
 
     text = _RE_ATTRIB_CLOSED.sub(_replace, text)
@@ -808,7 +773,6 @@ def _extract_content(
     end: int,
     noise_intervals: list[tuple[int, int, str]] | None = None,
 ) -> str | None:
-    """Slice ocr_md[start:end], suppress noise intervals, strip anchors/breaks/heading. Returns None if empty."""
     if start < 0 or end <= start:
         return None
     if noise_intervals:
@@ -846,7 +810,6 @@ def _extract_content(
 # ── BBox aggregation ─────────────────────────────────────────────────────────
 
 def _union_bboxes_by_page(bboxes: list[dict]) -> list[dict]:
-    """Merge bboxes into one union rectangle per page (normalised 0–1 coordinates)."""
     by_page: dict[int, list[dict]] = {}
     for b in bboxes:
         by_page.setdefault(b["page"], []).append(b)
@@ -863,14 +826,12 @@ def _union_bboxes_by_page(bboxes: list[dict]) -> list[dict]:
 
 
 def _make_node_id(path: str) -> str:
-    """Stable 12-char SHA-1 hash of the node's full TOC path string."""
     return hashlib.sha1(path.encode("utf-8")).hexdigest()[:12]
 
 
-# ── Child helpers ─────────────────────────────────────────────────────────────
+# ── Child helpers ────────────────────────────────────────────────────────────
 
 def _get_first_child_chunk_idx(toc_node: dict) -> int | None:
-    """Return _chunk_idx of the first child that has one, across all child key types."""
     for key in _CHILD_KEYS:
         for child in toc_node.get(key, []):
             idx = child.get("_chunk_idx")
@@ -885,12 +846,6 @@ def _resolve_first_child_start_char(
     ocr_md: str,
     parent_start_char: int | None = None,
 ) -> int | None:
-    """
-    Return the char position where the first child's heading begins (= end of parent's own content).
-
-    Case 2 (parent and child share chunk): text-searches for the child's heading.
-    Normal (different chunks): returns child's _start_char_override if set, else anchor start_char.
-    """
     parent_idx = toc_node.get("_chunk_idx")
     had_shared_chunk_child = False
 
@@ -911,15 +866,48 @@ def _resolve_first_child_start_char(
                     if parent_start_char is not None and parent_start_char >= sc
                     else sc
                 )
+                child_title = child.get("title", "")
+                if _is_heading_only_chunk(ade_enriched, idx):
+                    beyond_from = (
+                        max(search_from, chunk_end - 1)
+                        if chunk_end is not None and chunk_end > search_from
+                        else search_from
+                    )
+                    if child_title:
+                        split = _search_heading_char_pos(
+                            ocr_md, child_title, beyond_from,
+                            search_end=beyond_from + _INTRA_CHUNK_SEARCH_WINDOW,
+                        )
+                        if split is not None and split > beyond_from:
+                            logger.info(
+                                "  [SHARED_CHUNK/parent-child-beyond-breadcrumb] %-40s ← child @char %d",
+                                toc_node["title"][:40], split,
+                            )
+                            return split
+                    continue
+                if not child_title:
+                    continue
                 split = _search_heading_char_pos(
-                    ocr_md, child.get("title", ""), search_from, search_end=chunk_end
+                    ocr_md, child_title, search_from, search_end=chunk_end
                 )
                 if split is None or split <= search_from:
                     split = _search_heading_char_pos(
-                        ocr_md, child.get("title", ""), search_from,
+                        ocr_md, child_title, search_from,
                         search_end=chunk_end,
                         min_score=_HEADING_MATCH_THRESHOLD * 0.82,
                     )
+                if split is None and chunk_end is not None and search_from >= chunk_end:
+                    split = _search_heading_char_pos(
+                        ocr_md, child_title, search_from,
+                        search_end=search_from + _INTRA_CHUNK_SEARCH_WINDOW,
+                    )
+                    if split is not None and split > search_from:
+                        logger.info(
+                            "  [SHARED_CHUNK/parent-child-beyond-chunk] %-40s ← child @char %d",
+                            toc_node["title"][:40], split,
+                        )
+                        return split
+                    continue
                 if split is not None and split > search_from:
                     logger.info(
                         "  [SHARED_CHUNK/parent-child] %-40s ← child heading @char %d",
@@ -938,9 +926,41 @@ def _resolve_first_child_start_char(
                     return override
                 return sc
 
+    if had_shared_chunk_child:
+        for key in _CHILD_KEYS:
+            for child in toc_node.get(key, []):
+                c_override = child.get("_start_char_override")
+                if c_override is not None and (parent_start_char is None or c_override > parent_start_char):
+                    logger.info(
+                        "  [SHARED_CHUNK/parent-child-real-override] %-40s ← child real override @char %d",
+                        toc_node["title"][:40], c_override,
+                    )
+                    return c_override
+                c_idx = child.get("_chunk_idx")
+                if c_idx is not None and parent_idx is not None and c_idx != parent_idx and c_idx < len(ade_enriched):
+                    real_sc = ade_enriched[c_idx]["start_char"]
+                    if real_sc > 0 and (parent_start_char is None or real_sc > parent_start_char):
+                        logger.info(
+                            "  [SHARED_CHUNK/parent-child-real-chunk] %-40s ← child real chunk @char %d",
+                            toc_node["title"][:40], real_sc,
+                        )
+                        return real_sc
+
     if had_shared_chunk_child and parent_idx is not None and parent_start_char is not None:
         if parent_idx < len(ade_enriched):
             chunk_end = ade_enriched[parent_idx].get("end_char")
+            if chunk_end is not None and parent_start_char >= chunk_end:
+                for key in _CHILD_KEYS:
+                    children = toc_node.get(key, [])
+                    if children:
+                        c_override = children[0].get("_start_char_override")
+                        if c_override is not None and c_override > parent_start_char:
+                            logger.info(
+                                "  [PARENT_CONTENT_END/child-override-beyond-chunk] %-40s ← @char %d",
+                                toc_node["title"][:40], c_override,
+                            )
+                            return c_override
+                        break
             raw = ocr_md[parent_start_char:(chunk_end or parent_start_char + _INTRA_CHUNK_SEARCH_WINDOW)]
             heading_end = _find_heading_end(raw, toc_node["title"])
             if heading_end > 0:
@@ -954,7 +974,7 @@ def _resolve_first_child_start_char(
     return None
 
 
-# ── Node builder ──────────────────────────────────────────────────────────────
+# ── Node builder ─────────────────────────────────────────────────────────────
 
 def _build_chunk_node(
     toc_node: dict,
@@ -966,7 +986,6 @@ def _build_chunk_node(
     boundary_title: str | None = None,
     noise_intervals: list[tuple[int, int, str]] | None = None,
 ) -> dict:
-    """Build the output dict for one TOC node: resolve char offsets, extract content, collect bboxes, recurse."""
     h_idx: int | None = toc_node.get("_chunk_idx")
     s_end: int | None = toc_node.get("_chunk_end")
 
@@ -1044,7 +1063,17 @@ def _build_chunk_node(
             "  [INVERTED_RANGE]  %-40s  start=%d end=%d",
             toc_node["title"][:40], start_char, end_char,
         )
-        end_char = None
+        fallback_end: int | None = None
+        if h_idx is not None and h_idx < len(ade_enriched):
+            fallback_end = ade_enriched[h_idx].get("end_char")
+        if fallback_end is not None and fallback_end > start_char:
+            end_char = fallback_end
+            logger.info(
+                "  [INVERTED_RANGE/fallback] %-40s  end_char → chunk end %d",
+                toc_node["title"][:40], end_char,
+            )
+        else:
+            end_char = None
 
     page_start = page_at(start_char, page_breaks) if start_char is not None else None
     page_end   = page_at(end_char - 1, page_breaks) if end_char else None
@@ -1057,8 +1086,6 @@ def _build_chunk_node(
     has_children = any(toc_node.get(k) for k in _CHILD_KEYS)
     if has_children:
         fci = _get_first_child_chunk_idx(toc_node)
-        # Only use fci as upper bound when child is strictly after parent.
-        # CHILD_START_FLOOR can produce fci <= h_idx, collapsing the bbox range.
         effective_s_end = (
             fci if (fci is not None and (h_idx is None or fci > h_idx)) else s_end
         )
@@ -1158,7 +1185,7 @@ def _build_chunk_node(
     return node_out
 
 
-# ── Public service class ──────────────────────────────────────────────────────
+# ── Public service class ─────────────────────────────────────────────────────
 
 class BBoxChunkingService:
     """Service wrapper for in-process use (e.g. FastAPI)."""

@@ -9,13 +9,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# ── Directories ───────────────────────────────────────────────────────────────
 INPUT_DIR      = Path("./data/02_ocr_markdown")
 OUTPUT_DIR     = Path("./data/03_toc_json")
 ADE_CHUNKS_DIR = Path("./data/06_ade_chunks")
 MD_FILES: list[str] = []
 
-# ── Tuning constants ──────────────────────────────────────────────────────────
 PAGE_BREAK               = "<!-- PAGE BREAK -->"
 MODEL                    = "gpt-5.1"
 TOC_SCAN_PAGES           = 20
@@ -23,7 +21,7 @@ MIN_SECTION_DEPTH_SHORT  = 3
 MIN_SECTION_DEPTH_LONG   = 4
 PAGE_THRESHOLD_FOR_DEPTH = 99
 MIN_SECTION_DEPTH        = MIN_SECTION_DEPTH_LONG
-PHASE2_CHUNK_PAGES       = 30
+PHASE2_CHUNK_PAGES       = 20
 PHASE3_PREVIEW_CHARS     = 1500
 PHASE3_MAX_USER_CHARS    = 200_000
 PHASE3_BATCH_TOC_SIZE    = 15
@@ -34,15 +32,38 @@ PHASE3_EDGE_RATIO        = 0.15
 PHASE3_EXPAND_FACTOR     = 2
 PHASE3_MAX_EXPAND_WINDOW = 600
 PHASE3_MAX_EXPAND_TRIES  = 2
-LANDMARK_BATCH_SIZE      = 100
-LANDMARK_OVERLAP         = 10
+LANDMARK_BATCH_SIZE          = 100
+LANDMARK_OVERLAP             = 10
+PHASE3_DEEP_INHERIT_CUTOFF   = 4
 
-# ── TOC schema ────────────────────────────────────────────────────────────────
 _METADATA_KEYS = [
     "title", "publisher", "decision_number", "specialty",
     "date", "isbn_electronic", "isbn_print", "total_pages",
     "source_file", "chapters",
 ]
+
+_RE_STRUCT_KEY: re.Pattern = re.compile(
+    r"^(tài\s*liệu|chương|phần|mục|bài)\s+([0-9]+|[IVXivx]+)",
+    re.IGNORECASE | re.UNICODE,
+)
+
+
+def _structural_key(title: str) -> tuple[str, str] | None:
+    """
+    Extract (keyword, number) structural identifier from Vietnamese numbered headings.
+    E.g. "Bài 4 ..." → ("bài","4"),  "BÀI 4. ..." → ("bài","4"),
+         "CHƯƠNG IV ..." → ("chương","IV"),  "TÀI LIỆU 2 ..." → ("tàiliệu","2").
+    Returns None for non-structural titles like "I. Đại cương", "1. Nguyên tắc",
+    "III. Can thiệp sớm" etc., ensuring those are never filtered.
+    """
+    t = re.sub(r"^#+\s*", "", title).strip()
+    m = _RE_STRUCT_KEY.match(t)
+    if not m:
+        return None
+    kw  = re.sub(r"\s+", "", m.group(1).lower())  # "tàiliệu", "chương", "bài" …
+    num = m.group(2).upper()                        # "4", "IV", "III" …
+    return (kw, num)
+
 
 _DEPTH_CHILD_KEYS: dict[int, str] = {
     1: "sections",
@@ -52,19 +73,19 @@ _DEPTH_CHILD_KEYS: dict[int, str] = {
     5: "subsubsubsubsections",
 }
 
+_RE_MD_HEADING_PREFIX = re.compile(r'^#+\s*')
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PROMPTS
-# ══════════════════════════════════════════════════════════════════════════════
+def _norm_title(t: str) -> str:
+    return _RE_MD_HEADING_PREFIX.sub('', t).strip()
 
 _METADATA_SCHEMA = """\
 | Trường            | Nguồn                                                          |
 |-------------------|----------------------------------------------------------------|
 | title             | Tên đầy đủ tài liệu, thường ở trang bìa hoặc đầu file.        |
 | publisher         | Cơ quan ban hành (Bộ Y tế, Bệnh viện, Hội Y học…).            |
-| decision_number   | Số quyết định dạng "XXXX/QĐ-YYY" (ví dụ: "2855/QĐ-BYT").     |
+| decision_number   | Số quyết định dạng \"XXXX/QĐ-YYY\" (ví dụ: \"2855/QĐ-BYT\").     |
 | specialty         | Chuyên khoa (Tim mạch, Nội tiết, Hô hấp, Truyền nhiễm…).      |
-| date              | Ngày ban hành ISO 8601: "YYYY-MM-DD".                          |
+| date              | Ngày ban hành ISO 8601: \"YYYY-MM-DD\".                          |
 | isbn_electronic   | ISBN điện tử nếu có, ngược lại null.                           |
 | isbn_print        | ISBN in nếu có, ngược lại null.                                |
 | total_pages       | Tổng số trang (số nguyên), tìm ở cuối file hoặc trang bìa.    |
@@ -73,14 +94,20 @@ _METADATA_SCHEMA = """\
 _STRUCTURE_RULES = """\
 CẤU TRÚC PHÂN CẤP (lồng nhau):
   chapters → sections → subsections → subsubsections → subsubsubsections
-  Mỗi node chỉ có "title" và key mảng con tương ứng. Mảng con rỗng thì để [].
+  Mỗi node chỉ có \"title\" và key mảng con tương ứng. Mảng con rỗng thì để [].
 
 NHẬN DIỆN TIÊU ĐỀ (Tiếng Việt):
-  - Cấp 1 (chapters): "Phần X", "Chương X", các mục lớn không có cha.
-  - Cấp 2 (sections): "Bước X", "Mục X", "I, II, III", tiêu đề in đậm dưới chapter.
+  - Cấp 1 (chapters): \"Tài liệu X\", \"Phần X\", hoặc các mục lớn nhất không có cha.
+  - Cấp 2 (sections): \"Chương X\", \"Bước X\", \"Mục X\", \"I, II, III\", tiêu đề in đậm dưới chapter.
   - Cấp 3+ (subsections…): đánh số thập phân (2.1, 2.1.1…).
   - Phụ lục có số → lồng dưới chapter tương ứng. Phụ lục không số → chapter riêng.
-  - Loại bỏ: số trang, dòng chân trang, tên tác giả, đoạn văn bản nội dung."""
+  - Loại bỏ: số trang, dòng chân trang, tên tác giả, đoạn văn bản nội dung.
+  - GHÉP TIÊU ĐỀ NHIỀU DÒNG: Trong body text, nếu \"PHẦN X\", \"CHƯƠNG X\", hoặc \"TÀI LIỆU X\" nằm trên
+    một dòng riêng và ngay dòng sau là phần nội dung của tên chương (không có anchor, không có
+    số trang, không phải heading mới) → Ghép thành 1 node duy nhất.
+    Ví dụ: \"PHẦN 1\" / \"HƯỚNG DẪN...\" → 1 node \"PHẦN 1 HƯỚNG DẪN...\".
+    Ví dụ: \"PHẦN III\" / \"XUẤT HUYẾT NÃO\" → 1 node \"PHẦN III XUẤT HUYẾT NÃO\".
+    Ví dụ: \"TÀI LIỆU 1\" / \"HƯỚNG DẪN TỔ CHỨC...\" → 1 node \"TÀI LIỆU 1 HƯỚNG DẪN TỔ CHỨC...\"."""
 
 PROMPT_PHASE1 = f"""\
 Bạn là hệ thống trích xuất cấu trúc tài liệu y tế. Trả về DUY NHẤT một JSON hợp lệ, không markdown, không giải thích.
@@ -131,37 +158,70 @@ TRƯỜNG HỢP 1 — TÌM THẤY PHẦN MỤC LỤC/TABLE OF CONTENTS:
   - Ghép nội dung toàn bộ các trang đó vào cùng một bảng MỤC LỤC thống nhất.
   - TUYỆT ĐỐI KHÔNG bỏ qua bất kỳ hàng nào trong các trang tiếp theo này.
 
+  ⚠ TIÊU ĐỀ NHIỀU DÒNG — HAI QUY TẮC GHÉP CHÍNH XÁC:
+
+  QUY TẮC 1 — NHẬN DIỆN "IDENTIFIER TRẦN" (quan trọng nhất):
+  Một dòng MỤC LỤC là "identifier trần" khi nội dung của nó (sau khi bỏ dấu chấm dẫn và số trang)
+  CHỈ còn đúng "PHẦN X" hoặc "CHƯƠNG X" (X là số La Mã hoặc Ả rập) — KHÔNG có bất kỳ chữ mô
+  tả nào đi kèm.
+  Ví dụ: "PHẦN I........6" → bỏ dấu chấm và số trang → còn "PHẦN I" → là identifier trần.
+  Đối lập: "Phần 1. HƯỚNG DẪN CHẨN ĐOÁN... 2" → còn "Phần 1. HƯỚNG DẪN CHẨN ĐOÁN..." → KHÔNG phải.
+  Khi gặp identifier trần: GHÉP ngay với dòng liền sau (dòng đó là phần mô tả của tiêu đề).
+  Kết quả: 1 node duy nhất = "PHẦN X [dòng liền sau]" hoặc "CHƯƠNG X [dòng liền sau]".
+  Ví dụ:
+    "PHẦN I.......6"  (identifier trần) ─┐ → title = "PHẦN I ĐẠI CƯƠNG VỀ ĐỘT QUỴ NÃO"
+    "ĐẠI CƯƠNG VỀ ĐỘT QUỴ NÃO....6"   ─┘
+    "CHƯƠNG 1......8" (identifier trần) ─┐ → title = "CHƯƠNG 1 TỔNG QUAN"
+    "TỔNG QUAN......8"                  ─┘
+
+  QUY TẮC 2 — DÒNG BẮT ĐẦU BẰNG CHỮ THƯỜNG:
+  Một dòng MỤC LỤC bắt đầu bằng ký tự CHỮ THƯỜNG (viết thường, không viết hoa) là phần
+  TIẾP THEO của tiêu đề dòng ngay trên — GHÉP vào dòng trên.
+  Ví dụ:
+    "TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU...48"       ─┐ → title = "TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU
+    "trong thực hành lâm sàng đột quỵ não..48" ─┘    trong thực hành lâm sàng đột quỵ não"
+
+  Hai quy tắc này có thể kết hợp cho tiêu đề 3 dòng:
+    "PHẦN V......48"                              (identifier trần → ghép với dòng sau)
+    "TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU...48"          (kết quả trung gian)
+    "trong thực hành lâm sàng đột quỵ não....48"  (dòng thường → ghép vào dòng trên)
+    → title cuối = "PHẦN V TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU trong thực hành lâm sàng đột quỵ não"
+
+  ⚠ LƯU Ý: Không phải mọi dòng cùng số trang đều là ghép tiêu đề — chỉ áp dụng 2 quy tắc trên.
+  Ví dụ "Bước 3: Chẩn đoán...2" và "A. Phân độ...2" có cùng trang nhưng là các mục KHÁC NHAU
+  (A. không phải identifier trần, không bắt đầu chữ thường).
+
 {_STRUCTURE_RULES}"""
 
 _PHASE2_SCHEMA = """\
-{
+{{
   "chapters": [
-    {
+    {{
       "title": "...",
       "sections": [
-        {
+        {{
           "title": "...",
           "subsections": [
-            {
+            {{
               "title": "...",
               "subsubsections": [
-                {
+                {{
                   "title": "...",
                   "subsubsubsections": [
-                    {
+                    {{
                       "title": "...",
                       "subsubsubsubsections": []
-                    }
+                    }}
                   ]
-                }
+                }}
               ]
-            }
+            }}
           ]
-        }
+        }}
       ]
-    }
+    }}
   ]
-}"""
+}}"""
 
 _PHASE2_READING_RULES = """\
 ══════════════════════════════════════════════
@@ -201,6 +261,18 @@ CẤP 3, 4+ — subsections, subsubsections... (Chi tiết hoá Section):
     (vì xuất hiện sau câu "Dược sĩ lâm sàng có các nhiệm vụ chung sau:" và kết thúc bằng ";")
   Các "Phụ lục 1.1", "Phụ lục 1.2" thường là subsections thuộc về "PHẦN 1" tương ứng.
 
+  LƯU Ý VỀ TIÊU ĐỀ KẾT THÚC BẰNG ":":
+  Điều kiện (c) chỉ loại những mục XUẤT HIỆN SAU câu dẫn nhập kết thúc bằng ":".
+  Bản thân một tiêu đề kết thúc bằng ":" (ví dụ "1. Tầm quan trọng của dữ liệu:")
+  KHÔNG phải câu dẫn nhập → VẪN là heading hợp lệ nếu thoả (a)(b)(d).
+
+  OVERRIDE IN ĐẬM / MARKDOWN HEADING — LUÔN ƯU TIÊN:
+  Nếu text được in đậm (**...**) hoặc là heading Markdown (#, ##, ###):
+  → ĐÓ LUÔN LÀ HEADING, bất kể điều kiện (a)–(d) có thoả hay không.
+  Các điều kiện (a)–(d) chỉ dùng để phân loại text THƯỜNG (không bold, không ##).
+  Ví dụ: "**1. Tầm quan trọng của dữ liệu nguyên nhân tử vong:**" → heading (vì in đậm).
+         "**2. Mục tiêu**" → heading (vì in đậm).
+
 ══════════════════════════════════════════════
 BƯỚC 2: DUY TRÌ HIERARCHY VÀ LOẠI BỎ NHIỄU
 ══════════════════════════════════════════════
@@ -210,7 +282,16 @@ BƯỚC 2: DUY TRÌ HIERARCHY VÀ LOẠI BỎ NHIỄU
     xuất hiện ngay sau câu dẫn nhập kết thúc bằng ":" là danh sách liệt kê nội dung của section cha,
     KHÔNG phải tiêu đề con. Dấu hiệu nhận biết: câu dài (> 80 ký tự), kết thúc bằng ";" hoặc ",",
     hoặc mang tính mô tả/quy định chi tiết. Những mục này là CONTENT của section, để nguyên.
-  • GHÉP TIÊU ĐỀ BỊ CẮT: Nếu "PHẦN 1" ở dòng trên, "HƯỚNG DẪN..." ở dòng dưới → Ghép thành 1 node ("PHẦN 1. HƯỚNG DẪN...").
+  • GHÉP TIÊU ĐỀ NHIỀU DÒNG — HAI QUY TẮC CHÍNH XÁC:
+    QUY TẮC 1 — Identifier trần: nếu một heading chỉ có "PHẦN X" hoặc "CHƯƠNG X" (không có
+    chữ mô tả nào), và tiếp theo là một dòng/heading không bắt đầu bằng indicator cấu trúc (A.,
+    B., I., II., 1., 2., Bước, Mục, Phụ lục, PHẦN, CHƯƠNG) → ghép thành 1 heading duy nhất.
+    Ví dụ: "**PHẦN III**" rồi "XUẤT HUYẾT NÃO" → 1 heading "PHẦN III XUẤT HUYẾT NÃO".
+    Ví dụ: "CHƯƠNG 1" rồi "TỔNG QUAN" → 1 heading "CHƯƠNG 1 TỔNG QUAN".
+    QUY TẮC 2 — Dòng bắt đầu bằng chữ thường: nếu một dòng trong OCR bắt đầu bằng chữ thường
+    → nó là phần tiếp theo của heading dòng trước, KHÔNG phải heading mới → ghép vào heading trên.
+    Ví dụ: "TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU" / "trong thực hành lâm sàng đột quỵ não"
+    → "TÓM TẮT NHỮNG ĐIỂM THIẾT YẾU trong thực hành lâm sàng đột quỵ não" (1 heading).
 
 ══════════════════════════════════════════════
 CHUẨN HÓA ĐẦU RA
@@ -262,6 +343,19 @@ _PROMPT_PHASE3_SYS = (
     "Chương 2 = CHƯƠNG II, v.v. Đây KHÔNG phải là chương khác — hãy map vào chunk có tiêu đề tương đương."
 )
 
+_PROMPT_TITLE_MATCH_SYS = (
+    "Bạn là hệ thống so khớp tiêu đề mục lục tài liệu y tế tiếng Việt. "
+    'Trả về DUY NHẤT JSON hợp lệ: {"matches": [{"u": "...", "b": "..." | null}]}\n\n'
+    "QUY TẮC SO KHỚP:\n"
+    "• Hai tiêu đề là CÙNG MỤC nếu chỉ khác do: lỗi OCR (sai/thiếu dấu tiếng Việt), "
+    "prefix ##/### Markdown, khoảng trắng thừa, viết tắt, khác chữ hoa/thường, "
+    "số thứ tự Roman vs Ả rập (IV = 4, III = 3).\n"
+    "• Hai tiêu đề là KHÁC MỤC nếu nội dung thực sự khác nhau.\n"
+    "• Mỗi UPDATED title phải có đúng 1 entry trong kết quả.\n"
+    "• Nếu không có base nào khớp → b = null.\n"
+    "• Không bịa đặt — chỉ khớp khi thực sự chắc chắn."
+)
+
 _PROMPT_LANDMARK_SYS = (
     "Bạn là hệ thống định vị chương cấp 1 trong tài liệu y tế OCR. "
     'Trả về DUY NHẤT JSON hợp lệ: {"mappings": [{"toc_idx": int, "chunk_id": str_or_null}]}\n\n'
@@ -272,6 +366,12 @@ _PROMPT_LANDMARK_SYS = (
     "• Nếu heading chương không xuất hiện là chunk text riêng — hãy tìm chunk gần nhất "
     "có nội dung đầu chương đó (chunk đầu tiên của phần nội dung mới, được in đậm hoặc tiêu đề). \n"
     "• SỐ LA MÃ = SỐ THƯỜNG: Phần 4 = PHẦN IV, Chương 3 = CHƯƠNG III. Nhận diện linh hoạt.\n"
+    "• TIÊU ĐỀ NHIỀU DÒNG TRONG MỘT CHUNK: Nhiều chapter heading có dạng 2 dòng trong cùng "
+    "1 chunk OCR, ví dụ: chunk có nội dung 'PHẦN III\\nXUẤT HUYẾT NÃO' hoặc "
+    "'CHƯƠNG 4\\nĐIỀU TRỊ BẰNG PHƯƠNG PHÁP TÁI TƯỚI MÁU'. "
+    "Nếu TOC node cần tìm là 'PHẦN III XUẤT HUYẾT NÃO' (merged title), "
+    "hãy map vào chunk chứa cả 2 dòng đó. Nếu TOC vẫn có title riêng như 'PHẦN III', "
+    "hãy chọn chunk chứa 'PHẦN III' (có thể cùng chunk với subtitle).\n"
     "• Heading đôi khi bị OCR tách thành 2 chunk liên tiếp ngắn "
     "(ví dụ chunk A: 'CHƯƠNG 7', chunk B: 'Tiêu đề nội dung'). "
     "Chọn chunk_id của chunk ĐẦU TIÊN chứa 'CHƯƠNG 7'.\n"
@@ -330,9 +430,40 @@ def _init_phase2_prompts() -> None:
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LLM UTILITIES
-# ══════════════════════════════════════════════════════════════════════════════
+def _json_scan_state(s: str) -> tuple[bool, list[str]]:
+    in_str = escaped = False
+    stack: list[str] = []
+    for ch in s:
+        if escaped:
+            escaped = False
+            continue
+        if in_str:
+            if ch == "\\": escaped = True
+            elif ch == '"':  in_str = False
+        else:
+            if   ch == '"':        in_str = True
+            elif ch in ('{', '['): stack.append(ch)
+            elif ch == '}' and stack and stack[-1] == '{': stack.pop()
+            elif ch == ']' and stack and stack[-1] == '[': stack.pop()
+    return in_str, stack
+
+
+def _close_json(candidate: str) -> tuple[str, bool]:
+    s = re.sub(r',\s*$', '', candidate.rstrip())
+    in_str, stack = _json_scan_state(s)
+    repaired = in_str or bool(stack)
+    if in_str:
+        last_comma = s.rfind(',')
+        last_open  = max(s.rfind('{'), s.rfind('['))
+        cut = last_comma if last_comma > last_open else (last_open + 1 if last_open >= 0 else -1)
+        if cut > 0:
+            s = re.sub(r',\s*$', '', s[:cut].rstrip())
+        else:
+            s += '"'
+        in_str, stack = _json_scan_state(s)
+    closing = ''.join('}' if c == '{' else ']' for c in reversed(stack))
+    return s + closing, repaired
+
 
 def parse_json_response(text: str) -> dict:
     s = text.strip()
@@ -343,19 +474,40 @@ def parse_json_response(text: str) -> dict:
     try:
         return json.loads(s)
     except json.JSONDecodeError:
-        m = re.search(r"\{[\s\S]*\}", s)
-        if not m:
-            raise
-        candidate = m.group(0)
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            candidate = re.sub(r",\s*$", "", candidate.rstrip())
-            open_sq = candidate.count("[") - candidate.count("]")
-            open_br = candidate.count("{") - candidate.count("}")
-            candidate += "]" * max(0, open_sq) + "}" * max(0, open_br)
-            print(f"  [Warning] JSON response was truncated! Auto-closed {open_sq} arrays and {open_br} objects.")
-            return json.loads(candidate)
+        pass
+    fixed_full, repaired_full = _close_json(s)
+    try:
+        result = json.loads(fixed_full)
+        if repaired_full:
+            print("  [Warning] JSON response was truncated — partial result recovered via state-machine.")
+        return result
+    except json.JSONDecodeError:
+        pass
+    m = re.search(r"\{[\s\S]*\}", s)
+    if not m:
+        raise ValueError("No JSON object found in response")
+    candidate = m.group(0)
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        pass
+    fixed, repaired = _close_json(candidate)
+    try:
+        result = json.loads(fixed)
+        if repaired:
+            print("  [Warning] JSON response was truncated — partial result recovered (regex candidate).")
+        return result
+    except json.JSONDecodeError:
+        for end in range(len(s) - 1, max(len(s) - 8000, 0), -1):
+            if s[end] != '}':
+                continue
+            try:
+                result = json.loads(s[:end + 1])
+                print(f"  [Warning] JSON truncated — trimmed to last complete object at char {end}.")
+                return result
+            except json.JSONDecodeError:
+                continue
+        raise ValueError("Could not parse or recover truncated JSON response")
 
 
 def call_ai(client: OpenAI, system: str, user: str) -> dict:
@@ -372,10 +524,6 @@ def call_ai(client: OpenAI, system: str, user: str) -> dict:
     return parse_json_response(response.output_text or "")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# TOC SCHEMA & TREE HELPERS
-# ══════════════════════════════════════════════════════════════════════════════
-
 def _normalize_nodes(items: list, depth: int) -> list:
     if not isinstance(items, list):
         return []
@@ -383,12 +531,15 @@ def _normalize_nodes(items: list, depth: int) -> list:
     out = []
     for item in items:
         if isinstance(item, str):
-            if item.strip():
-                out.append({"title": item.strip()})
+            clean = _norm_title(item)
+            if clean:
+                out.append({"title": clean})
             continue
         if not isinstance(item, dict):
             continue
-        node: dict = {"title": str(item.get("title", "")).strip()}
+        node: dict = {"title": _norm_title(str(item.get("title", "")))}
+        if "heading_chunk_id" in item:
+            node["heading_chunk_id"] = item["heading_chunk_id"]
         if child_key:
             node[child_key] = _normalize_nodes(item.get(child_key, []), depth + 1)
         out.append(node)
@@ -431,45 +582,250 @@ def toc_is_shallow(toc: dict) -> bool:
     return not chapters or get_toc_depth(chapters) < MIN_SECTION_DEPTH
 
 
-def _merge_nodes(base: list, updated: list, depth: int) -> list:
+def _collect_titles_deep(nodes: list, child_key: str) -> set[str]:
+    titles: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        titles.add(_norm_title(node.get("title", "")))
+        for key in _DEPTH_CHILD_KEYS.values():
+            titles.update(_collect_titles_deep(node.get(key, []), key))
+    return titles
+
+
+def _remove_title_deep(nodes: list, title: str, depth: int) -> list:
+    child_key = _DEPTH_CHILD_KEYS.get(depth)
+    cleaned = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            cleaned.append(node)
+            continue
+        if _norm_title(node.get("title", "")) == title:
+            continue
+        if child_key:
+            new_children = _remove_title_deep(node.get(child_key, []), title, depth + 1)
+            cleaned.append({**node, child_key: new_children})
+        else:
+            cleaned.append(node)
+    return cleaned
+
+
+def _merge_nodes(base: list, updated: list, depth: int, lock_depth: int = 0, _parent_struct_keys: frozenset = frozenset()) -> list:
+    """
+    Merge updated nodes into base at the given depth.
+    lock_depth: nodes at depth <= lock_depth are never added from updated
+    (0 = no lock, 1 = lock D1 only, 2 = lock D1+D2, …).
+    """
     if not updated:
         return base
     child_key        = _DEPTH_CHILD_KEYS.get(depth)
-    updated_by_title = {n.get("title", ""): n for n in updated if isinstance(n, dict)}
-    base_titles      = {n.get("title", "") for n in base if isinstance(n, dict)}
+    updated_by_title = {_norm_title(n.get("title", "")): n for n in updated if isinstance(n, dict)}
+    base_titles      = {_norm_title(n.get("title", "")) for n in base if isinstance(n, dict)}
+    corrected_base   = base
+    if child_key and depth > lock_depth:
+        for node in updated:
+            if not isinstance(node, dict):
+                continue
+            title = _norm_title(node.get("title", ""))
+            if title in base_titles:
+                continue
+            for base_node in corrected_base:
+                if not isinstance(base_node, dict):
+                    continue
+                deep_titles = _collect_titles_deep(base_node.get(child_key, []), child_key)
+                if title in deep_titles:
+                    new_children = _remove_title_deep(base_node.get(child_key, []), title, depth + 1)
+                    corrected_base = [
+                        {**n, child_key: new_children} if n is base_node else n
+                        for n in corrected_base
+                    ]
+                    break
+
+    base_titles = {_norm_title(n.get("title", "")) for n in corrected_base if isinstance(n, dict)}
+
+    # Structural keys at THIS level — used to guard children from being placed here by mistake
+    curr_struct_keys: frozenset = frozenset(
+        k for t in base_titles
+        for k in [_structural_key(t)] if k is not None
+    )
+
     merged: list = []
-    for node in base:
+    for node in corrected_base:
         if not isinstance(node, dict):
             continue
-        title = node.get("title", "")
+        title = _norm_title(node.get("title", ""))
         if title in updated_by_title and child_key:
             base_children    = node.get(child_key, [])
             updated_children = updated_by_title[title].get(child_key, [])
-            merged_children  = (
-                _merge_nodes(base_children, updated_children, depth + 1)
-                if base_children else updated_children
-            )
+            if base_children:
+                merged_children = _merge_nodes(
+                    base_children, updated_children, depth + 1, lock_depth, curr_struct_keys
+                )
+            else:
+                # Bypass — but guard against children whose structural key already
+                # exists at the current level (sibling of this node).
+                # E.g. "BÀI 4." at D4 under Bài 3 when D3 already has "Bài 4".
+                merged_children = [
+                    c for c in updated_children
+                    if not isinstance(c, dict)
+                    or _structural_key(c.get("title", "")) not in curr_struct_keys
+                ]
             merged.append({**node, child_key: merged_children})
         else:
             merged.append(node)
-    # Append nodes from updated that do not yet exist in base (new nodes discovered in later chunks)
-    for node in updated:
-        if isinstance(node, dict) and node.get("title", "") not in base_titles:
+    if depth > lock_depth:
+        for node in updated:
+            if not isinstance(node, dict):
+                continue
+            if _norm_title(node.get("title", "")) in base_titles:
+                continue
+            # Reject if this node's structural key matches a node at the PARENT level.
+            # Prevents "BÀI 4" at D4 when D3 already has "Bài 4" as a sibling of parent.
+            sk = _structural_key(node.get("title", ""))
+            if sk and sk in _parent_struct_keys:
+                continue
             merged.append(node)
     return merged
 
 
-def _merge_chapters(base: list, updated: list) -> list:
-    return _merge_nodes(base, updated, depth=1)
+def _merge_chapters(base: list, updated: list, lock_depth: int = 0) -> list:
+    return _merge_nodes(base, updated, depth=1, lock_depth=lock_depth)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 1 — TOC PAGE DETECTION & METADATA EXTRACTION
-# ══════════════════════════════════════════════════════════════════════════════
+def _flatten_titles_from_tree(nodes: list, depth: int = 1) -> list[str]:
+    titles: list[str] = []
+    child_key = _DEPTH_CHILD_KEYS.get(depth)
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        t = node.get("title", "").strip()
+        if t:
+            titles.append(t)
+        if child_key:
+            titles.extend(_flatten_titles_from_tree(node.get(child_key, []), depth + 1))
+    return titles
+
+
+def _llm_build_title_map(
+    client: OpenAI,
+    base_titles: list[str],
+    updated_titles: list[str],
+) -> dict[str, str]:
+    if not base_titles or not updated_titles:
+        return {}
+    try:
+        user = (
+            "BASE TITLES (tiêu đề gốc từ MỤC LỤC):\n"
+            + "\n".join(f"  {t}" for t in base_titles)
+            + "\n\nUPDATED TITLES (tiêu đề từ OCR body text — có thể có lỗi):\n"
+            + "\n".join(f"  {t}" for t in updated_titles)
+            + "\n\nNHIỆM VỤ: Với mỗi UPDATED title, tìm BASE title khớp nhất (hoặc null)."
+        )
+        result: dict    = call_ai(client, _PROMPT_TITLE_MATCH_SYS, user)
+        title_map: dict[str, str] = {}
+        for item in result.get("matches", []):
+            u = str(item.get("u") or "").strip()
+            b = item.get("b")
+            if u and b and isinstance(b, str) and b.strip():
+                title_map[u] = b.strip()
+        return title_map
+    except Exception as e:
+        print(f"  [title_map] LLM call failed: {e} — dùng _norm_title fallback")
+        return {}
+
+
+def _apply_title_map(nodes: list, title_map: dict[str, str], depth: int) -> list:
+    child_key = _DEPTH_CHILD_KEYS.get(depth)
+    out: list = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            out.append(node)
+            continue
+        raw      = node.get("title", "")
+        canon    = title_map.get(raw, _norm_title(raw))
+        new_node = {**node, "title": canon}
+        if child_key:
+            new_node[child_key] = _apply_title_map(node.get(child_key, []), title_map, depth + 1)
+        out.append(new_node)
+    return out
+
+
+def _collect_all_titles_at_depth(nodes: list, target_depth: int, current_depth: int = 1) -> set[str]:
+    titles: set[str] = set()
+    child_key = _DEPTH_CHILD_KEYS.get(current_depth)
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if current_depth == target_depth:
+            titles.add(node.get("title", ""))
+        elif child_key:
+            titles.update(
+                _collect_all_titles_at_depth(node.get(child_key, []), target_depth, current_depth + 1)
+            )
+    return titles
+
+
+def _remove_duplicates_deep(nodes: list, canonical_titles: dict[str, int], current_depth: int) -> list:
+    child_key = _DEPTH_CHILD_KEYS.get(current_depth)
+    cleaned = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            cleaned.append(node)
+            continue
+        title = _norm_title(node.get("title", ""))
+        canon = canonical_titles.get(title)
+        if canon is not None and canon < current_depth:
+            continue
+        if child_key:
+            new_children = _remove_duplicates_deep(node.get(child_key, []), canonical_titles, current_depth + 1)
+            cleaned.append({**node, child_key: new_children})
+        else:
+            cleaned.append(node)
+    return cleaned
+
+
+def _build_canonical_depths(nodes: list, current_depth: int = 1) -> dict[str, int]:
+    result: dict[str, int] = {}
+    child_key = _DEPTH_CHILD_KEYS.get(current_depth)
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        title = _norm_title(node.get("title", ""))
+        if title:
+            if title not in result or current_depth < result[title]:
+                result[title] = current_depth
+        if child_key:
+            deeper = _build_canonical_depths(node.get(child_key, []), current_depth + 1)
+            for t, d in deeper.items():
+                if t not in result or d < result[t]:
+                    result[t] = d
+    return result
+
+
+def _deduplicate_chapters(chapters: list) -> list:
+    canonical = _build_canonical_depths(chapters, current_depth=1)
+    cleaned = _remove_duplicates_deep(chapters, canonical, current_depth=1)
+    removed = _count_nodes(chapters) - _count_nodes(cleaned)
+    if removed > 0:
+        print(f"  Phase 2 [Dedup]: removed {removed} misplaced duplicate node(s)")
+    return cleaned
+
+
+def _count_nodes(nodes: list, depth: int = 1) -> int:
+    child_key = _DEPTH_CHILD_KEYS.get(depth)
+    count = 0
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        count += 1
+        if child_key:
+            count += _count_nodes(node.get(child_key, []), depth + 1)
+    return count
+
 
 _RE_ANCHOR_STRIP_LEAD = re.compile(r"^(\s*<a\s+[^>]+>\s*</a>\s*)+", re.IGNORECASE)
 _RE_TOC_MARKER        = re.compile(r"MUC\s*LUC|MỤC\s*LỤC|TABLE\s+OF\s+CONTENTS", re.IGNORECASE)
-_RE_TOC_ENTRY_LINE    = re.compile(r"^\s*\d+[\.\)]\s+\S.{3,}\s+\d{1,4}\s*$", re.MULTILINE)
+_RE_TOC_ENTRY_LINE    = re.compile(r"^\s*\d+[\.\ )]\s+\S.{3,}\s+\d{1,4}\s*$", re.MULTILINE)
 _RE_TOC_HEADING_LINE  = re.compile(
     r"^\s*(?:\*{1,2})?(?:PHẦN|CHƯƠNG|PHỤ LỤC)\s+\d+.{0,80}\d{1,4}\s*(?:\*{1,2})?\s*$",
     re.MULTILINE | re.IGNORECASE,
@@ -536,10 +892,6 @@ def get_scan_for_phase1(text: str, n_pages: int) -> tuple[str, int | None, int |
     return PAGE_BREAK.join(base_pages), toc_start, toc_end
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 2 — BODY TEXT SCAN & DEEP TOC BUILD
-# ══════════════════════════════════════════════════════════════════════════════
-
 _RE_ANCHOR_EMPTY  = re.compile(r"<a\s+id=['\"][^'\"]*['\"]>\s*</a>", re.IGNORECASE)
 _RE_ATTRIB_BLOCK  = re.compile(r"<::.*?::>", re.DOTALL)
 _RE_TABLE_STRUCT  = re.compile(r"</?(?:table|thead|tbody|tfoot|tr)(?:\s[^>]*)?>", re.IGNORECASE)
@@ -559,10 +911,6 @@ def clean_text_for_phase2(text: str) -> str:
     text  = _RE_MULTI_BLANK.sub("\n\n", "\n".join(lines))
     return text.strip()
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE 3 — ADE CHUNK MAPPING
-# ══════════════════════════════════════════════════════════════════════════════
 
 _SKIP_ADE_TYPES  = {"marginalia", "logo", "scan_code", "attestation"}
 _RE_ANCHOR_STRIP = re.compile(r"<a[^>]+>.*?</a>", re.DOTALL | re.IGNORECASE)
@@ -598,9 +946,8 @@ def _build_ade_summary(ade_chunks: list[dict], toc_end_page: int | None = None) 
 
 
 def _is_ade_page_toc_continuation(page_chunks: list[dict]) -> bool:
-    """Return True if ADE chunks from one PDF page look like TOC continuation."""
     for ch in page_chunks:
-        md      = ch.get("markdown", "")
+        md       = ch.get("markdown", "")
         stripped = _RE_ANCHOR_STRIP_LEAD.sub("", md.lstrip()).lstrip()
         if stripped.startswith("<table"):
             return True
@@ -613,13 +960,6 @@ def _compute_toc_end_ade_page(
     ade_chunks: list[dict],
     toc_end_md_page: int | None,
 ) -> int | None:
-    """Convert a markdown TOC page index to the corresponding ADE bbox page number.
-
-    LandingAI omits PAGE_BREAK for blank PDF pages, so the markdown index
-    can lag behind the real PDF page in ADE bboxes. We anchor via chunk
-    ``<a id='...'>`` positions in the markdown to find the true cutoff page.
-    A forward scan extends the cutoff if adjacent pages also look like TOC.
-    """
     if toc_end_md_page is None:
         return None
 
@@ -639,9 +979,6 @@ def _compute_toc_end_ade_page(
         if max_ade_page is None or p > max_ade_page:
             max_ade_page = p
 
-    # Forward scan: _is_toc_continuation may have missed TOC pages that appear
-    # on ADE pages > max_ade_page due to blank-page numbering gaps.
-    # Walk forward page-by-page until we find a page that is NOT TOC.
     if max_ade_page is not None:
         ade_by_page: dict[int, list[dict]] = {}
         for ch in ade_chunks:
@@ -748,7 +1085,7 @@ def _phase3_apply_mappings(
         if idx is None or not (0 <= idx < len(flat_refs)):
             continue
         _, node = flat_refs[idx]
-        if node.get("heading_chunk_id"):
+        if "heading_chunk_id" in node:
             continue
         clean_id = _sanitize_chunk_id(cid, valid_ids)
         node["heading_chunk_id"] = clean_id
@@ -772,6 +1109,8 @@ def _validate_and_apply_mappings(
     for m in mappings:
         idx      = m.get("toc_idx")
         cid      = m.get("chunk_id")
+        if idx is not None and 0 <= idx < len(flat_refs) and "heading_chunk_id" in flat_refs[idx][1]:
+            continue
         clean_id = _sanitize_chunk_id(cid, valid_ids) if cid else None
         if clean_id and clean_id in id_to_ade_pos:
             ade_pos = id_to_ade_pos[clean_id]
@@ -787,7 +1126,6 @@ def _validate_and_apply_mappings(
 
 
 def _lis_anchors(anchors: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Longest Increasing Subsequence filter on (toc_idx, ade_pos) pairs."""
     if len(anchors) <= 1:
         return list(anchors)
     tails:    list[int] = []
@@ -817,6 +1155,84 @@ def _lis_anchors(anchors: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return result
 
 
+def _lis_anchors_nondecreasing(anchors: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """
+    Non-decreasing variant of _lis_anchors: equal ade_pos values are ALLOWED
+    (multiple TOC nodes may legitimately share the same chunk).
+    Only strictly decreasing steps are violations.
+    """
+    if len(anchors) <= 1:
+        return list(anchors)
+    tails:    list[int] = []
+    tail_idx: list[int] = []
+    parent: list[int]   = [-1] * len(anchors)
+    for i, (_, ade_pos) in enumerate(anchors):
+        lo, hi = 0, len(tails)
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if tails[mid] <= ade_pos:   # <= instead of < — allows equal
+                lo = mid + 1
+            else:
+                hi = mid
+        if lo == len(tails):
+            tails.append(ade_pos)
+            tail_idx.append(i)
+        else:
+            tails[lo] = ade_pos
+            tail_idx[lo] = i
+        parent[i] = tail_idx[lo - 1] if lo > 0 else -1
+    result: list[tuple[int, int]] = []
+    idx = tail_idx[-1]
+    while idx >= 0:
+        result.append(anchors[idx])
+        idx = parent[idx]
+    result.reverse()
+    return result
+
+
+def _phase3_global_order_check(
+    flat_refs: list[tuple],
+    id_to_ade_pos: dict[str, int],
+    landmarks: dict[int, int],
+) -> int:
+    """
+    After LLM bounded/orphan passes, enforce document ordering: TOC nodes appear
+    in the document in the same order as in the TOC tree. Any assignment that
+    creates a strictly-decreasing step in ade_pos (relative to toc_idx order)
+    is an LLM error — clear it so downstream fallbacks can resolve it correctly.
+
+    Uses non-decreasing LIS so equal ade_pos values (multiple nodes → same chunk)
+    are preserved. Only landmark-phase assignments are excluded (authoritative).
+    """
+    lm_toc_idxs = set(landmarks.keys())
+    assigned: list[tuple[int, int]] = []
+    for i, (_, node) in enumerate(flat_refs):
+        cid = node.get("heading_chunk_id")
+        if cid and cid in id_to_ade_pos and i not in lm_toc_idxs:
+            assigned.append((i, id_to_ade_pos[cid]))
+
+    if len(assigned) < 2:
+        return 0
+
+    valid_pairs = _lis_anchors_nondecreasing(assigned)
+    valid_set   = {toc_idx for toc_idx, _ in valid_pairs}
+
+    cleared = 0
+    for toc_idx, ade_pos in assigned:
+        if toc_idx not in valid_set:
+            title = flat_refs[toc_idx][1].get("title", "")[:50]
+            print(
+                f"  Phase 3 [OrderCheck]: cleared [{toc_idx}] {title!r} "
+                f"(ade_pos={ade_pos} breaks document order)"
+            )
+            del flat_refs[toc_idx][1]["heading_chunk_id"]
+            cleared += 1
+
+    if cleared:
+        print(f"  Phase 3 [OrderCheck]: {cleared} out-of-order assignment(s) cleared")
+    return cleared
+
+
 def _get_bounded_window(
     toc_s: int,
     toc_e: int,
@@ -829,12 +1245,13 @@ def _get_bounded_window(
     sorted_lm     = sorted(landmarks.items())
     prev_ade      = max((pos for t, pos in sorted_lm if t <= toc_s), default=0)
     next_ade      = min((pos for t, pos in sorted_lm if t >= toc_e), default=n_ade)
-    # Back-bound: midpoint of previous chapter prevents hitting its start.
-    # Forward-bound: tight +2 avoids absorbing identical subheadings at next chapter start.
     prev_chap_ade = max((pos for t, pos in sorted_lm if t <  toc_s), default=0)
     mid_prev      = (prev_chap_ade + prev_ade) // 2 if prev_chap_ade > 0 else 0
     win_s = max(mid_prev, prev_ade - buffer)
     win_e = min(n_ade, next_ade + 2)
+    if win_s >= win_e:
+        win_s = max(0, prev_ade - buffer)
+        win_e = min(n_ade, prev_ade + buffer * 4)
     return win_s, win_e
 
 
@@ -874,12 +1291,6 @@ def _phase3_get_landmarks(
     ade_summary: list[dict],
     valid_ids: set[str],
 ) -> dict[int, int]:
-    """Exhaustive sliding-window scan over all ADE chunks to locate top-level
-    chapter positions.  Every chunk is shown to the LLM in overlapping batches
-    (size=LANDMARK_BATCH_SIZE, overlap=LANDMARK_OVERLAP) so no chapter can slip
-    through regardless of OCR quality or keyword presence.  Results are
-    deduplicated (earliest position wins) and LIS-filtered to remove
-    hallucinated out-of-order placements."""
     id_to_ade_pos: dict[str, int] = {ch["id"]: j for j, ch in enumerate(ade_summary)}
     n_ade = len(ade_summary)
 
@@ -968,16 +1379,9 @@ def _phase3_get_section_landmarks(
     chapter_ranges: list[tuple[int, int]],
     n_ade: int,
 ) -> dict[int, int]:
-    """Intermediate landmark pass: find depth-2 nodes (sections) for chapters
-    whose ADE window exceeds PHASE3_MAX_EXPAND_WINDOW.  Results are added to
-    `landmarks` so the subsequent bounded pass has dense anchors (~100-300
-    chunks apart) instead of sparse chapter-level anchors (~1900 chunks apart).
-    Chapters with window <= PHASE3_MAX_EXPAND_WINDOW are skipped — they already
-    work well with per-subgroup anchor-based windowing.
-    """
     id_to_ade_pos: dict[str, int] = {ch["id"]: j for j, ch in enumerate(ade_summary)}
     new_landmarks:  dict[int, int] = {}
-    combined_lm = dict(landmarks)  # grows as we find sections chapter-by-chapter
+    combined_lm = dict(landmarks)
 
     for ci, (chap_s, chap_e) in enumerate(chapter_ranges):
         chap_win_s, chap_win_e = _get_bounded_window(
@@ -1043,11 +1447,25 @@ def _phase3_get_section_landmarks(
                 print(f"    SectionLM batch {b_no+1}/{n_batches} failed: {e}")
 
         chapter_new: dict[int, int] = {}
-        for idx, positions in raw_hits.items():
-            if positions:
-                best = min(positions)
-                flat_refs[idx][1]["heading_chunk_id"] = ade_summary[best]["id"]
+        sorted_section_indices = sorted(idx for idx in raw_hits if raw_hits[idx])
+        last_pos = max(
+            (combined_lm[t] for t in combined_lm
+             if t < (sorted_section_indices[0] if sorted_section_indices else float("inf"))),
+            default=0,
+        )
+        for idx in sorted_section_indices:
+            positions  = raw_hits[idx]
+            candidates = sorted(positions)
+            valid      = [p for p in candidates if p > last_pos]
+            if valid:
+                best = valid[0]
                 chapter_new[idx] = best
+                last_pos = best
+                if len(positions) > 1:
+                    print(f"    SectionLM dedup [{idx}]: {len(positions)} hits, selected ADE[{best}]")
+
+        for idx, best in chapter_new.items():
+            flat_refs[idx][1]["heading_chunk_id"] = ade_summary[best]["id"]
 
         if chapter_new:
             all_for_lis = sorted({**combined_lm, **chapter_new}.items())
@@ -1076,33 +1494,24 @@ def _phase3_deterministic_fallbacks(
     total_applied: int = 0,
     total_nulled: int = 0,
 ) -> tuple[int, int]:
-    """Three deterministic fallback passes that require no API calls.
-
-    1. Inherit:      null node inherits parent's chunk_id (headings sharing a chunk).
-    2. ChildFallback: null chapter inherits earliest-mapped descendant's chunk_id.
-    3. PredFallback: absolute safety net — inherit nearest previously-mapped predecessor.
-    """
-    n_toc         = len(flat_refs)
     id_to_ade_pos = {ch["id"]: j for j, ch in enumerate(ade_summary)}
 
-    # Pass 1 — Parent Inherit
-    inherited = 0
+    predecessor_fixed = 0
     for i, (path, node) in enumerate(flat_refs):
-        if node.get("heading_chunk_id") or "/" not in path:
+        if node.get("heading_chunk_id"):
             continue
-        parent_path = path.rsplit("/", 1)[0]
-        for fpath, fnode in flat_refs:
-            if fpath == parent_path and fnode.get("heading_chunk_id"):
-                node["heading_chunk_id"] = fnode["heading_chunk_id"]
-                total_applied += 1
-                total_nulled  -= 1
-                inherited     += 1
-                print(f"    Inherit [{i}] {path!r} ← parent chunk {fnode['heading_chunk_id']}")
+        for j in range(i - 1, -1, -1):
+            pred_cid = flat_refs[j][1].get("heading_chunk_id")
+            if pred_cid:
+                node["heading_chunk_id"] = pred_cid
+                total_applied     += 1
+                total_nulled      -= 1
+                predecessor_fixed += 1
+                print(f"    PredFallback [{i}] {path!r} ← [{j}] chunk {pred_cid}")
                 break
-    if inherited:
-        print(f"  Phase 3 [Inherit]: {inherited} node(s) resolved via parent chunk")
+    if predecessor_fixed:
+        print(f"  Phase 3 [PredFallback]: {predecessor_fixed} node(s) resolved via nearest predecessor")
 
-    # Pass 2 — First Child Fallback
     child_fallback = 0
     for i, (path, node) in enumerate(flat_refs):
         if node.get("heading_chunk_id"):
@@ -1125,24 +1534,63 @@ def _phase3_deterministic_fallbacks(
     if child_fallback:
         print(f"  Phase 3 [ChildFallback]: {child_fallback} node(s) resolved via first child")
 
-    # Pass 3 — Nearest Predecessor Fallback (absolute safety net)
-    predecessor_fixed = 0
+    inherited = 0
     for i, (path, node) in enumerate(flat_refs):
-        if node.get("heading_chunk_id"):
+        if node.get("heading_chunk_id") or "/" not in path:
             continue
-        for j in range(i - 1, -1, -1):
-            pred_cid = flat_refs[j][1].get("heading_chunk_id")
-            if pred_cid:
-                node["heading_chunk_id"] = pred_cid
-                total_applied     += 1
-                total_nulled      -= 1
-                predecessor_fixed += 1
-                print(f"    PredFallback [{i}] {path!r} ← [{j}] chunk {pred_cid}")
+        parent_path = path.rsplit("/", 1)[0]
+        for fpath, fnode in flat_refs:
+            if fpath != parent_path:
+                continue
+            parent_cid = fnode.get("heading_chunk_id")
+            if not parent_cid:
                 break
-    if predecessor_fixed:
-        print(f"  Phase 3 [PredFallback]: {predecessor_fixed} node(s) resolved via nearest predecessor")
+            parent_pos = id_to_ade_pos.get(parent_cid)
+            if parent_pos is None:
+                break
+            neighbor_pos: int | None = None
+            for j in range(i - 1, max(i - 15, -1), -1):
+                nb_cid = flat_refs[j][1].get("heading_chunk_id")
+                if nb_cid and nb_cid in id_to_ade_pos:
+                    neighbor_pos = id_to_ade_pos[nb_cid]
+                    break
+            if neighbor_pos is not None and abs(parent_pos - neighbor_pos) > PHASE3_CHAPTER_BUFFER * 4:
+                break
+            node["heading_chunk_id"] = parent_cid
+            total_applied += 1
+            total_nulled  -= 1
+            inherited     += 1
+            print(f"    Inherit [{i}] {path!r} ← parent chunk {parent_cid}")
+            break
+    if inherited:
+        print(f"  Phase 3 [Inherit]: {inherited} node(s) resolved via parent chunk")
 
     return total_applied, total_nulled
+
+
+def _phase3_cascade_inherit(flat_refs: list[tuple]) -> int:
+    path_to_node: dict[str, dict] = {path: node for path, node in flat_refs}
+    total_resolved = 0
+    if not flat_refs:
+        return 0
+    max_slash = max(p.count("/") for p, _ in flat_refs)
+    for slash_count in range(PHASE3_DEEP_INHERIT_CUTOFF, max_slash + 1):
+        resolved = 0
+        for path, node in flat_refs:
+            if node.get("heading_chunk_id"):
+                continue
+            if path.count("/") != slash_count:
+                continue
+            parent_path = path.rsplit("/", 1)[0]
+            parent_node = path_to_node.get(parent_path)
+            if parent_node and parent_node.get("heading_chunk_id"):
+                node["heading_chunk_id"] = parent_node["heading_chunk_id"]
+                resolved += 1
+        if resolved:
+            print(f"  Phase 3 [CascadeInherit] depth {slash_count + 1}: {resolved} node(s) resolved")
+            total_resolved += resolved
+    return total_resolved
+
 
 
 def _phase3_run_batched(
@@ -1151,7 +1599,6 @@ def _phase3_run_batched(
     ade_summary: list[dict],
     valid_ids: set[str],
 ) -> tuple[int, int]:
-    """Full batched pipeline: Landmark → Mini-Landmark → Bounded → Orphan → Fallbacks."""
     n_toc         = len(flat_refs)
     n_ade         = len(ade_summary)
     id_to_ade_pos = {ch["id"]: j for j, ch in enumerate(ade_summary)}
@@ -1161,7 +1608,6 @@ def _phase3_run_batched(
     total_applied = sum(1 for _, node in flat_refs if node.get("heading_chunk_id"))
     total_nulled  = 0
 
-    # ── Chapter boundary ranges ───────────────────────────────────────────────
     chapter_boundaries = sorted([
         i for i, (path, _) in enumerate(flat_refs) if "/" not in path
     ]) or [0]
@@ -1173,7 +1619,6 @@ def _phase3_run_batched(
 
     total_chapters = len(chapter_ranges)
 
-    # ── Mini-Landmark: retry missed top-level chapters ─────────────────────────
     missed_chapters = [
         (ci, chap_s, chap_e)
         for ci, (chap_s, chap_e) in enumerate(chapter_ranges)
@@ -1212,15 +1657,13 @@ def _phase3_run_batched(
             except Exception as e:
                 print(f"  Mini-Landmark failed [{chap_s}]: {e}")
 
-    # ── Section Landmark pass (large chapters only, window > PHASE3_MAX_EXPAND_WINDOW) ──
     section_lm = _phase3_get_section_landmarks(
         client, flat_refs, ade_summary, valid_ids, landmarks, chapter_ranges, n_ade
     )
     landmarks.update(section_lm)
     total_applied += len(section_lm)
 
-    # ── Bounded window pass per chapter ──────────────────────────────────────
-    initial_landmarks  = dict(landmarks)
+    initial_landmarks = dict(landmarks)
     chapter_windows = {
         ci: _get_bounded_window(chap_s, chap_e, initial_landmarks, n_ade)
         for ci, (chap_s, chap_e) in enumerate(chapter_ranges)
@@ -1229,14 +1672,17 @@ def _phase3_run_batched(
 
     for ci, (chap_s, chap_e) in enumerate(chapter_ranges):
         chap_label = flat_refs[chap_s][0][:50] if chap_s < n_toc else "?"
-        pending    = [i for i in range(chap_s, chap_e) if not flat_refs[i][1].get("heading_chunk_id")]
+        pending    = [i for i in range(chap_s, chap_e)
+                      if not flat_refs[i][1].get("heading_chunk_id")
+                      and flat_refs[i][0].count("/") < PHASE3_DEEP_INHERIT_CUTOFF]
         if not pending:
             continue
 
         win_s, win_e = chapter_windows[ci]
         print(f"    Ch {ci+1}/{total_chapters} [{chap_label}]: {len(pending)} nodes, ADE[{win_s}:{win_e}]")
 
-        subgroups = [pending[k : k + PHASE3_SUBGROUP_SIZE] for k in range(0, len(pending), PHASE3_SUBGROUP_SIZE)]
+        effective_sg = PHASE3_SUBGROUP_SIZE if len(pending) <= 50 else min(PHASE3_SUBGROUP_SIZE * 2, 16)
+        subgroups = [pending[k : k + effective_sg] for k in range(0, len(pending), effective_sg)]
         n_sg      = len(subgroups)
 
         for sg_idx, subgroup in enumerate(subgroups):
@@ -1247,10 +1693,8 @@ def _phase3_run_batched(
             sg_win_s, sg_win_e = _get_bounded_window(
                 batch_nodes[0], batch_nodes[-1] + 1, landmarks, n_ade
             )
-            # Clamp to chapter boundaries to avoid crossing into adjacent chapters
             sg_win_s = max(win_s, sg_win_s)
             sg_win_e = min(win_e, sg_win_e)
-            # Safety cap: if still oversized (no nearby section anchor), limit window
             if sg_win_e - sg_win_s > PHASE3_MAX_EXPAND_WINDOW:
                 sg_win_e = sg_win_s + PHASE3_MAX_EXPAND_WINDOW
             cur_window = ade_summary[sg_win_s:sg_win_e]
@@ -1275,7 +1719,6 @@ def _phase3_run_batched(
                     expanded = _phase3_expand_if_edge(mapped_positions, sg_win_s, sg_win_e, n_ade)
                     if expanded:
                         exp_win_s, exp_win_e = expanded
-                        # Clamp to chapter boundaries to avoid contaminating adjacent chapters
                         exp_win_s = max(win_s, exp_win_s)
                         exp_win_e = min(win_e, exp_win_e)
                         exp_window  = ade_summary[exp_win_s:exp_win_e]
@@ -1306,8 +1749,13 @@ def _phase3_run_batched(
             except Exception as e:
                 print(f"    Sub {sg_idx+1} ch {ci+1} failed: {e}")
 
-    # ── Orphan pass ───────────────────────────────────────────────────────────
-    orphans = [i for i in range(n_toc) if not flat_refs[i][1].get("heading_chunk_id")]
+    cleared_ord = _phase3_global_order_check(flat_refs, id_to_ade_pos, initial_landmarks)
+    if cleared_ord:
+        total_applied -= cleared_ord
+
+    orphans = [i for i in range(n_toc)
+               if not flat_refs[i][1].get("heading_chunk_id")
+               and flat_refs[i][0].count("/") < PHASE3_DEEP_INHERIT_CUTOFF]
     if orphans:
         print(f"  Phase 3 [Orphan]: {len(orphans)} nodes still null")
         for k in range(0, len(orphans), PHASE3_SUBGROUP_SIZE):
@@ -1332,17 +1780,26 @@ def _phase3_run_batched(
             except Exception as e:
                 print(f"    Orphan batch failed: {e}")
 
-    # ── Deterministic fallbacks ───────────────────────────────────────────────
+    cleared_ord2 = _phase3_global_order_check(flat_refs, id_to_ade_pos, initial_landmarks)
+    if cleared_ord2:
+        total_applied -= cleared_ord2
+
+    cascade_count = _phase3_cascade_inherit(flat_refs)
+    if cascade_count:
+        total_applied += cascade_count
+
+    actual_null_before_fb = sum(1 for _, nd in flat_refs if not nd.get("heading_chunk_id"))
     total_applied, total_nulled = _phase3_deterministic_fallbacks(
-        flat_refs, ade_summary, total_applied, total_nulled
+        flat_refs, ade_summary, total_applied, actual_null_before_fb
     )
 
     return total_applied, total_nulled
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PHASE FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
+
+
+
+
 
 def phase1(client: OpenAI, text: str, filename: str) -> tuple[dict, bool, int | None]:
     scan, toc_start, toc_end = get_scan_for_phase1(text, TOC_SCAN_PAGES)
@@ -1376,6 +1833,16 @@ def phase2(
         print(f"  Phase 2: không có MỤC LỤC → đọc toàn bộ {len(pages)} trang")
 
     n_pages  = len(pages)
+
+    _phase1_chapters   = metadata.get("chapters", [])
+    _phase1_depth      = get_toc_depth(_phase1_chapters) if _phase1_chapters else 0
+    phase1_lock_depth  = _phase1_depth if body_start_page is not None else 0
+    if phase1_lock_depth:
+        print(
+            f"  Phase 2: lock_depth={phase1_lock_depth} "
+            f"(Phase 1 đã tìm {_phase1_depth} cấp từ MỤC LỤC — Phase 2 chỉ thêm cấp sâu hơn)"
+        )
+
     meta_str = json.dumps(
         {k: metadata.get(k) for k in _METADATA_KEYS if k != "chapters"},
         ensure_ascii=False, indent=2,
@@ -1404,8 +1871,18 @@ def phase2(
                 )
             else:
                 user = _user_header() + f"TOÀN BỘ VĂN BẢN ({n_pages} trang):\n\n{clean}"
-            result   = call_ai(client, _PROMPT_PHASE2_SINGLE, user)
-            chapters = result.get("chapters", metadata.get("chapters", []))
+            result              = call_ai(client, _PROMPT_PHASE2_SINGLE, user)
+            result_chapters_raw = _normalize_nodes(result.get("chapters", []), depth=1)
+            if shallow_chapters:
+                title_map       = _llm_build_title_map(
+                    client,
+                    [n.get("title", "") for n in shallow_chapters if isinstance(n, dict) and n.get("title", "")],
+                    [n.get("title", "") for n in result_chapters_raw if isinstance(n, dict) and n.get("title", "")],
+                )
+                result_chapters = _apply_title_map(result_chapters_raw, title_map, depth=1)
+                chapters        = _merge_chapters(list(shallow_chapters), result_chapters, lock_depth=phase1_lock_depth)
+            else:
+                chapters = result_chapters_raw or list(metadata.get("chapters", []))
         else:
             n_chunks    = (n_pages + PHASE2_CHUNK_PAGES - 1) // PHASE2_CHUNK_PAGES
             print(
@@ -1430,14 +1907,56 @@ def phase2(
                     + f" (trang {start+1}–{end}, tổng {n_pages} trang):\n\n{clean}"
                 )
                 try:
-                    result      = call_ai(client, _PROMPT_PHASE2_ITERATIVE, user)
-                    accumulated = _merge_chapters(accumulated, result.get("chapters", []))
-                except Exception as chunk_err:
-                    print(
-                        f"    Chunk {i+1}/{n_chunks} failed: {chunk_err} "
-                        f"— bỏ qua chunk này, giữ TOC tích lũy hiện tại"
+                    result              = call_ai(client, _PROMPT_PHASE2_ITERATIVE, user)
+                    result_chapters_raw = _normalize_nodes(result.get("chapters", []), depth=1)
+                    title_map           = _llm_build_title_map(
+                        client,
+                        [n.get("title", "") for n in accumulated if isinstance(n, dict) and n.get("title", "")],
+                        [n.get("title", "") for n in result_chapters_raw if isinstance(n, dict) and n.get("title", "")],
                     )
+                    result_chapters     = _apply_title_map(result_chapters_raw, title_map, depth=1)
+                    accumulated         = _merge_chapters(accumulated, result_chapters, lock_depth=phase1_lock_depth)
+                except Exception as chunk_err:
+                    chunk_pages = pages[start:end]
+                    n_cp        = len(chunk_pages)
+                    if n_cp > 2:
+                        mid = n_cp // 2
+                        print(
+                            f"    Chunk {i+1}/{n_chunks} failed ({str(chunk_err)[:80]}) "
+                            f"→ retry as 2 halves ({mid}+{n_cp-mid} pages)"
+                        )
+                        for h, (hs, he) in enumerate([(0, mid), (mid, n_cp)]):
+                            h_clean = clean_text_for_phase2(PAGE_BREAK.join(chunk_pages[hs:he]))
+                            h_pg_s  = start + hs + 1
+                            h_pg_e  = start + he
+                            h_lbl   = f"sub-chunk {h+1}/2 của chunk {i+1}"
+                            h_user  = (
+                                _user_header()
+                                + f"CÂY TOC ĐÃ TÍCH LŨY ({toc_label} — GIỮ NGUYÊN title, chỉ thêm mục con):\n"
+                                + json.dumps({"chapters": accumulated}, ensure_ascii=False, indent=2)
+                                + f"\n\nĐOẠN VĂN BẢN MỚI — {h_lbl}"
+                                + f" (trang {h_pg_s}–{h_pg_e}, tổng {n_pages} trang):\n\n{h_clean}"
+                            )
+                            try:
+                                h_result = call_ai(client, _PROMPT_PHASE2_ITERATIVE, h_user)
+                                h_raw    = _normalize_nodes(h_result.get("chapters", []), depth=1)
+                                h_map    = _llm_build_title_map(
+                                    client,
+                                    [n.get("title", "") for n in accumulated if isinstance(n, dict) and n.get("title", "")],
+                                    [n.get("title", "") for n in h_raw       if isinstance(n, dict) and n.get("title", "")],
+                                )
+                                h_chaps  = _apply_title_map(h_raw, h_map, depth=1)
+                                accumulated = _merge_chapters(accumulated, h_chaps, lock_depth=phase1_lock_depth)
+                                print(f"      Half {h+1}/2 OK — {len(h_raw)} chapters")
+                            except Exception as sub_err:
+                                print(f"      Half {h+1}/2 failed: {sub_err} — skipped")
+                    else:
+                        print(
+                            f"    Chunk {i+1}/{n_chunks} failed: {chunk_err} "
+                            f"— chunk quá nhỏ để chia, bỏ qua"
+                        )
             chapters = accumulated
+            chapters = _deduplicate_chapters(chapters)
             print(f"  Phase 2 iterative done: {len(chapters)} chapters")
 
         return {**metadata, "chapters": chapters}
@@ -1468,17 +1987,15 @@ def phase3(
     print(f"  Phase 3: {n_toc} TOC nodes, {n_ade} ADE chunks")
 
     applied, nulled = _phase3_run_batched(client, flat_refs, ade_summary, valid_ids)
-    print(f"  Phase 3: {applied}/{n_toc} matched, {nulled} null")
+
+    actual_null = sum(1 for _, nd in flat_refs if not nd.get("heading_chunk_id"))
+    print(f"  Phase 3: {applied}/{n_toc} matched, {nulled} null (LLM), {actual_null} unresolved after fallbacks")
 
     still_null = sum(1 for _, nd in flat_refs if not nd.get("heading_chunk_id"))
     if still_null:
-        print(f"  Phase 3: {still_null}/{n_toc} nodes remain null after all passes")
+        print(f"  Phase 3: {still_null}/{n_toc} nodes unresolved after all passes")
     return toc
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PIPELINE ORCHESTRATION
-# ══════════════════════════════════════════════════════════════════════════════
 
 def process_file(
     md_path: Path,
@@ -1610,37 +2127,33 @@ def run(args) -> None:
         process_file(md_path, client, output_dir, ade_dir=ade_dir)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# CLI
-# ══════════════════════════════════════════════════════════════════════════════
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Trích xuất cây TOC từ file Markdown OCR (Landing AI format)."
     )
-    parser.add_argument("--input-dir",           default=str(INPUT_DIR),
+    parser.add_argument("--input-dir",            default=str(INPUT_DIR),
                         help=f"Thư mục chứa file .md (default: {INPUT_DIR})")
-    parser.add_argument("--output-dir",          default=str(OUTPUT_DIR),
+    parser.add_argument("--output-dir",           default=str(OUTPUT_DIR),
                         help=f"Thư mục xuất file JSON (default: {OUTPUT_DIR})")
-    parser.add_argument("--ade-dir",             default=str(ADE_CHUNKS_DIR),
+    parser.add_argument("--ade-dir",              default=str(ADE_CHUNKS_DIR),
                         help=f"Thư mục chứa *_ade_chunks.json (default: {ADE_CHUNKS_DIR})")
-    parser.add_argument("--files",               nargs="*",
+    parser.add_argument("--files",                nargs="*",
                         help="Danh sách file cụ thể cần xử lý")
-    parser.add_argument("--pages",               type=int, default=TOC_SCAN_PAGES,
+    parser.add_argument("--pages",                type=int, default=TOC_SCAN_PAGES,
                         help=f"Số trang đầu quét Phase 1 (default: {TOC_SCAN_PAGES})")
-    parser.add_argument("--min-depth-short",     type=int, default=MIN_SECTION_DEPTH_SHORT,
+    parser.add_argument("--min-depth-short",      type=int, default=MIN_SECTION_DEPTH_SHORT,
                         help=f"Độ sâu TOC tối thiểu, tài liệu ngắn (default: {MIN_SECTION_DEPTH_SHORT})")
-    parser.add_argument("--min-depth-long",      type=int, default=MIN_SECTION_DEPTH_LONG,
+    parser.add_argument("--min-depth-long",       type=int, default=MIN_SECTION_DEPTH_LONG,
                         help=f"Độ sâu TOC tối thiểu, tài liệu dài (default: {MIN_SECTION_DEPTH_LONG})")
-    parser.add_argument("--depth-page-threshold",type=int, default=PAGE_THRESHOLD_FOR_DEPTH,
+    parser.add_argument("--depth-page-threshold", type=int, default=PAGE_THRESHOLD_FOR_DEPTH,
                         help=f"Ngưỡng số trang để chọn min-depth (default: {PAGE_THRESHOLD_FOR_DEPTH})")
-    parser.add_argument("--model",               default=MODEL,
+    parser.add_argument("--model",                default=MODEL,
                         help=f"Model OpenAI (default: {MODEL})")
-    parser.add_argument("--chunk-pages",         type=int, default=PHASE2_CHUNK_PAGES,
+    parser.add_argument("--chunk-pages",          type=int, default=PHASE2_CHUNK_PAGES,
                         help=f"Số trang mỗi chunk iterative Phase 2 (default: {PHASE2_CHUNK_PAGES})")
-    parser.add_argument("--p3-batch-toc",        type=int, default=PHASE3_BATCH_TOC_SIZE,
+    parser.add_argument("--p3-batch-toc",         type=int, default=PHASE3_BATCH_TOC_SIZE,
                         help=f"Số TOC nodes mỗi batch Phase 3 (default: {PHASE3_BATCH_TOC_SIZE})")
-    parser.add_argument("--p3-ade-window",       type=int, default=PHASE3_ADE_WINDOW_SIZE,
+    parser.add_argument("--p3-ade-window",        type=int, default=PHASE3_ADE_WINDOW_SIZE,
                         help=f"Kích thước cửa sổ ADE Phase 3 (default: {PHASE3_ADE_WINDOW_SIZE})")
     args = parser.parse_args()
     run(args)

@@ -380,7 +380,7 @@ export default function AdminUsersPage() {
                 <th>Cấp cha</th>
                 <th>Trạng thái</th>
                 <th>Ngày tạo</th>
-                <th>Thao tác</th>
+                {/* <th>Thao tác</th> */}
               </tr>
             </thead>
             <tbody>
@@ -415,7 +415,7 @@ export default function AdminUsersPage() {
                   <td className="text-sm text-muted">
                     {new Date(u.created_at).toLocaleDateString('vi-VN')}
                   </td>
-                  <td>
+                  {/* <td>
                     <button
                       type="button"
                       className="btn btn-danger btn-sm"
@@ -428,7 +428,7 @@ export default function AdminUsersPage() {
                         : <><Trash2 size={14} /> Xóa</>
                       }
                     </button>
-                  </td>
+                  </td> */}
                 </tr>
               ))}
             </tbody>
