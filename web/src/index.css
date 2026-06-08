@@ -544,6 +544,15 @@ a:hover {
   padding-right: 9px;
 }
 
+.guideline-table .specialty-badge {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cell-clamp {
   display: -webkit-box;
   overflow: hidden;

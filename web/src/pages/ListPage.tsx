@@ -261,7 +261,13 @@ export default function ListPage() {
                       {(item.access_scope === 'global' || item.owner?.role === 'admin') && <span className="badge badge-default">Tài liệu chung</span>}
                       {item.access_scope === 'inherited' && <span className="badge badge-default">Kế thừa</span>}
                     </td>
-                    <td className="col-specialty">{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
+                    <td className="col-specialty">
+                      {item.chuyen_khoa ? (
+                        <span className="badge badge-default specialty-badge" title={item.chuyen_khoa}>
+                          {item.chuyen_khoa}
+                        </span>
+                      ) : '-'}
+                    </td>
                     <td className="col-version">
                       {item.active_version ? (
                         <div>
