@@ -226,41 +226,58 @@ export default function ListPage() {
           ) : data?.items.length === 0 ? (
             <div className="empty-state">Không tìm thấy tài liệu nào.</div>
           ) : (
-            <table className="data-table">
+            <table className="data-table guideline-table">
               <thead>
                 <tr>
-                  <th>Tên văn bản</th>
-                  <th>Tên bệnh</th>
-                  <th>Đơn vị ban hành</th>
-                  <th>Chủ sở hữu</th>
-                  <th>Chuyên khoa</th>
-                  <th>Phiên bản hiện hành</th>
-                  <th className="text-center">Thao tác</th>
+                  <th className="col-title">Tên văn bản</th>
+                  <th className="col-disease">Tên bệnh</th>
+                  <th className="col-publisher">Đơn vị ban hành</th>
+                  <th className="col-owner">Chủ sở hữu</th>
+                  <th className="col-specialty">Chuyên khoa</th>
+                  <th className="col-version">Phiên bản hiện hành</th>
+                  <th className="col-actions text-center">Thao tác</th>
                 </tr>
               </thead>
               <tbody>
                 {data?.items.map(item => (
                   <tr key={item.guideline_id}>
-                    <td className="font-medium">{item.title}</td>
-                    <td>{item.ten_benh || '-'}</td>
-                    <td>{item.publisher || '-'}</td>
-                    <td>
-                      <div>{item.owner?.full_name || item.owner?.email || '-'}</div>
+                    <td className="font-medium col-title">
+                      <span className="cell-clamp cell-clamp-3" title={item.title}>{item.title}</span>
+                    </td>
+                    <td className="col-disease">
+                      <span className="cell-clamp cell-clamp-2" title={item.ten_benh || undefined}>
+                        {item.ten_benh || '-'}
+                      </span>
+                    </td>
+                    <td className="col-publisher">
+                      <span className="cell-clamp cell-clamp-3" title={item.publisher || undefined}>
+                        {item.publisher || '-'}
+                      </span>
+                    </td>
+                    <td className="col-owner">
+                      <div className="cell-clamp cell-clamp-2" title={item.owner?.full_name || item.owner?.email || undefined}>
+                        {item.owner?.full_name || item.owner?.email || '-'}
+                      </div>
                       {(item.access_scope === 'global' || item.owner?.role === 'admin') && <span className="badge badge-default">Tài liệu chung</span>}
                       {item.access_scope === 'inherited' && <span className="badge badge-default">Kế thừa</span>}
                     </td>
-                    <td>{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
-                    <td>
+                    <td className="col-specialty">{item.chuyen_khoa ? <span className="badge badge-default">{item.chuyen_khoa}</span> : '-'}</td>
+                    <td className="col-version">
                       {item.active_version ? (
                         <div>
-                          <div>{item.active_version.version_label || `v${item.active_version.version_id}`}</div>
+                          <div
+                            className="cell-clamp cell-clamp-2"
+                            title={item.active_version.version_label || `v${item.active_version.version_id}`}
+                          >
+                            {item.active_version.version_label || `v${item.active_version.version_id}`}
+                          </div>
                           <div className="text-sm text-muted">{item.active_version.release_date}</div>
                         </div>
                       ) : (
                         <span className="text-muted">Chưa có</span>
                       )}
                     </td>
-                    <td>
+                    <td className="col-actions">
                       <div className="actions-cell">
                         {item.active_version ? (
                           <Link
@@ -290,7 +307,7 @@ export default function ListPage() {
                             className="btn btn-secondary btn-sm"
                             title="Tạo phiên bản mới"
                           >
-                            <Plus size={14} /> Tạo phiên bản mới
+                            <Plus size={14} /> Bản mới
                           </Link>
                         )}
                         {item.can_edit && (

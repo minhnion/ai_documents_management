@@ -493,6 +493,72 @@ a:hover {
   justify-content: flex-end;
 }
 
+.guideline-table {
+  table-layout: fixed;
+}
+
+.guideline-table .col-title {
+  width: 16%;
+}
+
+.guideline-table .col-disease {
+  width: 13%;
+}
+
+.guideline-table .col-publisher {
+  width: 14%;
+}
+
+.guideline-table .col-owner {
+  width: 10%;
+}
+
+.guideline-table .col-specialty {
+  width: 9%;
+}
+
+.guideline-table .col-version {
+  width: 15%;
+}
+
+.guideline-table .col-actions {
+  width: 23%;
+}
+
+.guideline-table th,
+.guideline-table td {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.guideline-table .actions-cell {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 6px;
+}
+
+.guideline-table .actions-cell .btn {
+  flex: 0 0 auto;
+  padding-left: 9px;
+  padding-right: 9px;
+}
+
+.cell-clamp {
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+}
+
+.cell-clamp-2 {
+  -webkit-line-clamp: 2;
+}
+
+.cell-clamp-3 {
+  -webkit-line-clamp: 3;
+}
+
 /* ── Pagination ─────────────────────────────────────────────────── */
 .pagination {
   display: flex;
