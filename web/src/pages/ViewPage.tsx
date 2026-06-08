@@ -998,6 +998,11 @@ export default function ViewPage() {
   }
 
   const documentId = workspace?.documents[0]?.document_id ?? null
+  const selectedVersionLabel = useMemo(() => {
+    const selectedVersion = versions.find(v => String(v.version_id) === String(targetVersionId))
+    if (!selectedVersion) return ''
+    return `${selectedVersion.version_label || `v${selectedVersion.version_id}`} ${selectedVersion.status === 'active' ? '(Hiện hành)' : ''}`.trim()
+  }, [targetVersionId, versions])
 
   if (loading) return <div className="loading-center"><span className="loading-spinner" /></div>
   if (!workspace) return <div className="empty-state">Không tìm thấy dữ liệu.</div>
@@ -1027,11 +1032,12 @@ export default function ViewPage() {
           </div>
         </div>
         <div className="version-bar">
-          <span className="text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Phiên bản:</span>
+          <span className="version-bar-label text-sm font-medium" style={{ color: 'var(--text-secondary)' }}>Phiên bản:</span>
           <select
+            className="version-select"
             value={targetVersionId}
+            title={selectedVersionLabel}
             onChange={e => setTargetVersionId(e.target.value)}
-            style={{ flex: 1 }}
           >
             {versions.map(v => (
               <option key={v.version_id} value={v.version_id}>

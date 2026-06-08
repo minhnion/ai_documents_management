@@ -1788,9 +1788,14 @@ a:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 12px 20px;
   background: var(--bg-surface);
   border-bottom: 1px solid var(--border);
+}
+
+.version-bar-label {
+  flex: 0 0 auto;
 }
 
 .version-bar select {
@@ -1803,6 +1808,15 @@ a:hover {
   font-family: inherit;
   outline: none;
   cursor: pointer;
+}
+
+.version-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Form Page ──────────────────────────────────────────────────── */
