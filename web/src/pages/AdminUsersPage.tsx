@@ -27,6 +27,11 @@ function accountName(user: UserResponse | null | undefined) {
   return user.full_name || user.email
 }
 
+function followsGlobalDocuments(user: UserResponse | null | undefined) {
+  if (!user) return false
+  return user.inherits_global_documents !== false
+}
+
 function getApiErrorMessage(error: unknown, fallback: string) {
   const response = (error as { response?: { data?: { detail?: unknown } } }).response
   return typeof response?.data?.detail === 'string' ? response.data.detail : fallback
@@ -50,6 +55,7 @@ export default function AdminUsersPage() {
     role: 'health_department',
     parent_id: null,
     is_active: true,
+    inherits_global_documents: true,
   })
   const [parentChoice, setParentChoice] = useState('')
   const [doctorDepartmentChoice, setDoctorDepartmentChoice] = useState('')
@@ -74,6 +80,22 @@ export default function AdminUsersPage() {
       : hospitals,
     [doctorDepartmentChoice, form.role, hospitals],
   )
+  const selectedParentForCreate = useMemo(() => {
+    if (currentUser?.role !== 'admin') return currentUser
+    if (form.role === 'hospital') {
+      return departments.find(item => String(item.user_id) === parentChoice) ?? null
+    }
+    if (form.role === 'doctor') {
+      return hospitals.find(item => String(item.user_id) === parentChoice) ?? null
+    }
+    return null
+  }, [currentUser, departments, form.role, hospitals, parentChoice])
+  const effectiveInheritsGlobalDocuments = useMemo(() => {
+    if (form.role === 'admin') return true
+    if (form.role === 'health_department') return form.inherits_global_documents
+    return followsGlobalDocuments(selectedParentForCreate)
+  }, [form.inherits_global_documents, form.role, selectedParentForCreate])
+  const canChooseGlobalDocuments = currentUser?.role === 'admin' && form.role === 'health_department'
 
   const parentSelectionError = useMemo(() => {
     if (currentUser?.role !== 'admin') return ''
@@ -105,6 +127,11 @@ export default function AdminUsersPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const refreshUsers = async () => {
+    const res = await api.get<UserListResponse>('/auth/users')
+    setUsers(res.data.items)
   }
 
   useEffect(() => {
@@ -142,6 +169,7 @@ export default function AdminUsersPage() {
       password: form.password,
       role: form.role,
       is_active: form.is_active,
+      inherits_global_documents: effectiveInheritsGlobalDocuments,
     }
 
     if (currentUser?.role === 'admin' && ['hospital', 'doctor'].includes(form.role) && parentChoice) {
@@ -171,6 +199,7 @@ export default function AdminUsersPage() {
         role: availableRoles[0] ?? 'health_department',
         parent_id: null,
         is_active: true,
+        inherits_global_documents: true,
       })
     } catch (err: unknown) {
       setCreateError(getApiErrorMessage(err, 'Không thể tạo tài khoản.'))
@@ -187,9 +216,14 @@ export default function AdminUsersPage() {
         role: patch.role ?? targetUser.role,
         parent_id: patch.parent_id,
         is_active: patch.is_active,
+        inherits_global_documents: patch.inherits_global_documents,
       }
       const res = await api.patch<UserResponse>(`/auth/users/${targetUser.user_id}/role`, payload)
-      setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? res.data : u))
+      if (patch.inherits_global_documents !== undefined) {
+        await refreshUsers()
+      } else {
+        setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? res.data : u))
+      }
     } catch (err: unknown) {
       setRoleError(getApiErrorMessage(err, 'Không thể cập nhật tài khoản.'))
     } finally {
@@ -234,6 +268,19 @@ export default function AdminUsersPage() {
   }
 
   const canInlineUpdate = currentUser?.role === 'admin'
+  const canEditGlobalDocuments = (targetUser: UserResponse) => (
+    currentUser?.role === 'admin'
+    && targetUser.role === 'health_department'
+    && updatingUserId !== targetUser.user_id
+  )
+  const getGlobalDocumentsTitle = (targetUser: UserResponse) => {
+    if (targetUser.role === 'admin') return 'Tài khoản admin luôn là tài liệu chung'
+    if (targetUser.role !== 'health_department') return 'Tài khoản này kế thừa lựa chọn từ cấp cha'
+    if (currentUser?.role !== 'admin') return 'Chỉ admin được chỉnh sửa'
+    return followsGlobalDocuments(targetUser)
+      ? 'Bỏ theo tài liệu chung của Bộ Y tế'
+      : 'Theo tài liệu chung của Bộ Y tế'
+  }
 
   return (
     <div className="list-page flex-col">
@@ -347,6 +394,29 @@ export default function AdminUsersPage() {
                 </div>
               )}
 
+              {form.role !== 'admin' && (
+                <div className="form-group" style={{ gridColumn: '1 / -1' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: canChooseGlobalDocuments ? 'pointer' : 'not-allowed' }}>
+                    <input
+                      type="checkbox"
+                      checked={effectiveInheritsGlobalDocuments}
+                      disabled={!canChooseGlobalDocuments}
+                      onChange={e => setForm(f => ({ ...f, inherits_global_documents: e.target.checked }))}
+                    />
+                    Theo tài liệu chung của Bộ Y tế
+                  </label>
+                  {form.role === 'health_department' ? (
+                    <div className="form-hint">
+                      Nếu bỏ chọn, tài khoản sở y tế sẽ quản lý độc lập và không có cấp cha admin.
+                    </div>
+                  ) : (
+                    <div className="form-hint">
+                      Cấp này kế thừa lựa chọn tài liệu chung từ tài khoản cha.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
                   <input type="checkbox" checked={form.is_active}
@@ -378,6 +448,7 @@ export default function AdminUsersPage() {
                 <th>Tên hiển thị</th>
                 <th>Vai trò</th>
                 <th>Cấp cha</th>
+                <th>Tài liệu chung</th>
                 <th>Trạng thái</th>
                 <th>Ngày tạo</th>
                 {/* <th>Thao tác</th> */}
@@ -395,6 +466,34 @@ export default function AdminUsersPage() {
                     <span className="badge badge-default">{roleLabel(u.role)}</span>
                   </td>
                   <td>{u.parent ? accountName(u.parent as UserResponse) : <span className="text-muted">-</span>}</td>
+                  <td>
+                    <label
+                      title={getGlobalDocumentsTitle(u)}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 8,
+                        cursor: canEditGlobalDocuments(u) ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      {u.role === 'health_department' && (
+                        <input
+                          type="checkbox"
+                          checked={followsGlobalDocuments(u)}
+                          disabled={!canEditGlobalDocuments(u)}
+                          onChange={e => handleUserAccessChange(u, {
+                            role: u.role,
+                            parent_id: u.parent_id,
+                            inherits_global_documents: e.target.checked,
+                          })}
+                        />
+                      )}
+                      <span className={`badge ${followsGlobalDocuments(u) ? 'badge-active' : 'badge-inactive'}`}>
+                        {followsGlobalDocuments(u) ? 'Theo' : 'Độc lập'}
+                      </span>
+                    </label>
+                  </td>
                   <td>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <input

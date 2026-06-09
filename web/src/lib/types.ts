@@ -6,6 +6,7 @@ export interface UserSummaryResponse {
   role: string
   parent_id: number | null
   is_active: boolean
+  inherits_global_documents: boolean
 }
 
 export interface UserResponse extends UserSummaryResponse {
@@ -43,12 +44,14 @@ export interface CreateUserRequest {
   role: string
   parent_id?: number | null
   is_active: boolean
+  inherits_global_documents: boolean
 }
 
 export interface UpdateUserRoleRequest {
   role: string
   parent_id?: number | null
   is_active?: boolean | null
+  inherits_global_documents?: boolean | null
 }
 
 export interface DeleteUserResponse {

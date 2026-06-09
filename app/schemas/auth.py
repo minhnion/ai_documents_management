@@ -17,6 +17,7 @@ class UserSummaryResponse(BaseModel):
     role: str
     parent_id: int | None = None
     is_active: bool
+    inherits_global_documents: bool = True
 
 
 class UserResponse(UserSummaryResponse):
@@ -45,12 +46,14 @@ class CreateUserRequest(BaseModel):
     role: str = "health_department"
     parent_id: int | None = Field(default=None, gt=0)
     is_active: bool = True
+    inherits_global_documents: bool = True
 
 
 class UpdateUserRoleRequest(BaseModel):
     role: str
     parent_id: int | None = Field(default=None, gt=0)
     is_active: bool | None = None
+    inherits_global_documents: bool | None = None
 
 
 class DeleteUserResponse(BaseModel):

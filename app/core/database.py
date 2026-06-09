@@ -114,6 +114,15 @@ async def migrate_user_hierarchy_schema() -> None:
         await conn.execute(
             text(
                 """
+                ALTER TABLE users
+                ADD COLUMN IF NOT EXISTS inherits_global_documents BOOLEAN
+                NOT NULL DEFAULT TRUE
+                """
+            )
+        )
+        await conn.execute(
+            text(
+                """
                 ALTER TABLE guidelines
                 ADD COLUMN IF NOT EXISTS owner_user_id BIGINT
                 """
@@ -349,6 +358,7 @@ async def migrate_user_hierarchy_schema() -> None:
                 SET parent_id = (SELECT user_id FROM root_admin)
                 WHERE role = 'health_department'
                   AND parent_id IS NULL
+                  AND inherits_global_documents IS TRUE
                   AND EXISTS (SELECT 1 FROM root_admin)
                 """
             )

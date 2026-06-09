@@ -134,6 +134,7 @@ class AuthService:
                 password_hash=get_password_hash(password),
                 role=self.ROLE_ADMIN,
                 parent_id=None,
+                inherits_global_documents=True,
                 is_active=True,
             )
             self.db.add(user)
@@ -141,9 +142,14 @@ class AuthService:
             await self.assign_orphan_health_departments_to_admin(int(user.user_id))
             return await self.get_user_by_id(user.user_id)
 
-        if user.role != self.ROLE_ADMIN or user.parent_id is not None:
+        if (
+            user.role != self.ROLE_ADMIN
+            or user.parent_id is not None
+            or not user.inherits_global_documents
+        ):
             user.role = self.ROLE_ADMIN
             user.parent_id = None
+            user.inherits_global_documents = True
             await self.db.flush()
         await self.assign_orphan_health_departments_to_admin(int(user.user_id))
         return user
@@ -153,6 +159,7 @@ class AuthService:
             update(User)
             .where(User.role == self.ROLE_HEALTH_DEPARTMENT)
             .where(User.parent_id.is_(None))
+            .where(User.inherits_global_documents.is_(True))
             .where(User.user_id != admin_user_id)
             .values(parent_id=admin_user_id)
         )
@@ -169,6 +176,7 @@ class AuthService:
         full_name: str | None = None,
         parent_id: int | None = None,
         is_active: bool = True,
+        inherits_global_documents: bool = True,
     ) -> User:
         normalized_email = self.normalize_email(email)
         if await self.get_user_by_email(normalized_email):
@@ -182,6 +190,13 @@ class AuthService:
             current_user=current_user,
             role=normalized_role,
             parent_id=parent_id,
+            inherits_global_documents=bool(inherits_global_documents),
+        )
+        resolved_inherits_global_documents = await self._resolve_inherits_global_documents(
+            current_user=current_user,
+            role=normalized_role,
+            parent_id=resolved_parent_id,
+            requested_value=bool(inherits_global_documents),
         )
         normalized_full_name = self._normalize_display_name(full_name, role=normalized_role)
 
@@ -191,6 +206,7 @@ class AuthService:
             full_name=normalized_full_name,
             role=normalized_role,
             parent_id=resolved_parent_id,
+            inherits_global_documents=resolved_inherits_global_documents,
             created_by_user_id=int(current_user.user_id),
             is_active=is_active,
         )
@@ -209,6 +225,7 @@ class AuthService:
         role: str,
         parent_id: int | None = None,
         is_active: bool | None = None,
+        inherits_global_documents: bool | None = None,
     ) -> User:
         user = await self.get_user_by_id(user_id)
         if user is None:
@@ -220,15 +237,31 @@ class AuthService:
         self._ensure_can_manage_user(current_user=current_user, target_user=user)
         self._ensure_can_create_role(current_user=current_user, role=normalized_role)
 
+        requested_inherits_global_documents = (
+            bool(user.inherits_global_documents)
+            if inherits_global_documents is None
+            else bool(inherits_global_documents)
+        )
         user.role = normalized_role
         user.parent_id = await self._resolve_parent_id_for_role(
             current_user=current_user,
             role=normalized_role,
             parent_id=parent_id,
+            inherits_global_documents=requested_inherits_global_documents,
+        )
+        user.inherits_global_documents = await self._resolve_inherits_global_documents(
+            current_user=current_user,
+            role=normalized_role,
+            parent_id=user.parent_id,
+            requested_value=requested_inherits_global_documents,
         )
         if is_active is not None:
             user.is_active = bool(is_active)
         await self.db.flush()
+        await self._set_global_documents_for_descendants(
+            root_user_id=int(user.user_id),
+            inherits_global_documents=bool(user.inherits_global_documents),
+        )
         updated_user = await self.get_user_by_id(user_id)
         if updated_user is None:
             raise UnprocessableEntityException("Cannot load updated user.")
@@ -304,13 +337,14 @@ class AuthService:
         current_user: User,
         role: str,
         parent_id: int | None,
+        inherits_global_documents: bool,
     ) -> int | None:
         if role == self.ROLE_ADMIN:
             return None
         if role == self.ROLE_HEALTH_DEPARTMENT:
             if current_user.role != self.ROLE_ADMIN:
                 raise BadRequestException("Health department accounts must be created by an admin.")
-            return int(current_user.user_id)
+            return int(current_user.user_id) if inherits_global_documents else None
 
         expected_parent_role = self.PARENT_ROLE_BY_ROLE[role]
         if current_user.role != self.ROLE_ADMIN:
@@ -329,6 +363,44 @@ class AuthService:
             return int(parent.user_id)
 
         raise BadRequestException(f"Parent account is required for role '{role}'.")
+
+    async def _resolve_inherits_global_documents(
+        self,
+        *,
+        current_user: User,
+        role: str,
+        parent_id: int | None,
+        requested_value: bool,
+    ) -> bool:
+        if role == self.ROLE_ADMIN:
+            return True
+        if role == self.ROLE_HEALTH_DEPARTMENT:
+            return bool(requested_value)
+
+        parent = (
+            current_user
+            if parent_id is not None and int(parent_id) == int(current_user.user_id)
+            else await self.get_user_by_id(parent_id or 0)
+        )
+        if parent is None:
+            raise NotFoundException("User", parent_id or 0)
+        return bool(parent.inherits_global_documents)
+
+    async def _set_global_documents_for_descendants(
+        self,
+        root_user_id: int,
+        inherits_global_documents: bool,
+    ) -> None:
+        users = list((await self.db.execute(select(User))).scalars().all())
+        descendant_ids = self._collect_descendant_ids(users, root_user_id)
+        if not descendant_ids:
+            return
+        await self.db.execute(
+            update(User)
+            .where(User.user_id.in_(descendant_ids))
+            .values(inherits_global_documents=inherits_global_documents)
+        )
+        await self.db.flush()
 
     def _normalize_display_name(self, full_name: str | None, *, role: str) -> str | None:
         value = full_name.strip() if full_name else ""

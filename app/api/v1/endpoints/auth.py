@@ -106,6 +106,7 @@ async def create_user(
         full_name=payload.full_name,
         parent_id=payload.parent_id,
         is_active=payload.is_active,
+        inherits_global_documents=payload.inherits_global_documents,
     )
     return UserResponse.model_validate(user)
 
@@ -127,6 +128,7 @@ async def update_user_role(
         role=payload.role,
         parent_id=payload.parent_id,
         is_active=payload.is_active,
+        inherits_global_documents=payload.inherits_global_documents,
     )
     return UserResponse.model_validate(user)
 
