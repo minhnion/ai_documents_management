@@ -28,7 +28,7 @@ export default function LoginPage() {
   return (
     <div className="login-page">
       <div className="card login-card">
-        <h1 className="login-title">MediaDB</h1>
+        <h1 className="login-title">MediDB</h1>
         <p className="login-subtitle">Đăng nhập để quản lý văn bản</p>
 
         {error && <div className="alert alert-error">{error}</div>}
