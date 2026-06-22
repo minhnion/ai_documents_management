@@ -27,6 +27,19 @@ export interface LoginResponse {
   user: UserResponse
 }
 
+export interface ChangePasswordRequest {
+  current_password: string
+  new_password: string
+}
+
+export interface ResetUserPasswordRequest {
+  new_password: string
+}
+
+export interface PasswordActionResponse {
+  message: string
+}
+
 export interface AvailableRoleResponse {
   name: string
   description: string

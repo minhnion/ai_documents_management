@@ -203,6 +203,13 @@ a:hover {
   text-align: center;
 }
 
+.table-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* ── Navigation ─────────────────────────────────────────────────── */
 .navbar {
   height: var(--nav-h);
@@ -2035,6 +2042,10 @@ a:hover {
 
 .metadata-modal {
   max-width: 760px;
+}
+
+.password-modal {
+  max-width: 460px;
 }
 
 .metadata-modal-body {

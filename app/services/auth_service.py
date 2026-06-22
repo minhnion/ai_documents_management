@@ -116,6 +116,43 @@ class AuthService:
             return None
         return user
 
+    async def change_password(
+        self,
+        *,
+        current_user: User,
+        current_password: str,
+        new_password: str,
+    ) -> None:
+        if not verify_password(current_password, current_user.password_hash):
+            raise BadRequestException("Current password is incorrect.")
+        if verify_password(new_password, current_user.password_hash):
+            raise BadRequestException("New password must be different from current password.")
+
+        current_user.password_hash = get_password_hash(new_password)
+        await self.db.flush()
+
+    async def reset_user_password(
+        self,
+        *,
+        current_user: User,
+        user_id: int,
+        new_password: str,
+    ) -> User:
+        target_user = await self.get_user_by_id(user_id)
+        if target_user is None:
+            raise NotFoundException("User", user_id)
+        if int(target_user.user_id) == int(current_user.user_id):
+            raise BadRequestException("Use change password to update your own password.")
+
+        self._ensure_can_manage_user(current_user=current_user, target_user=target_user)
+        target_user.password_hash = get_password_hash(new_password)
+        await self.db.flush()
+
+        updated_user = await self.get_user_by_id(user_id)
+        if updated_user is None:
+            raise UnprocessableEntityException("Cannot load updated user.")
+        return updated_user
+
     async def ensure_default_admin(
         self,
         email: str,

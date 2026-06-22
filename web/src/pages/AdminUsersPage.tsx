@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Trash2, UserPlus } from 'lucide-react'
+import { KeyRound, UserPlus, X } from 'lucide-react'
 import { api } from '../lib/api'
 import { useAuth } from '../store/auth'
 import type {
@@ -8,6 +8,7 @@ import type {
   DeleteUserResponse,
   AvailableRoleResponse,
   CreateUserRequest,
+  ResetUserPasswordRequest,
   UpdateUserRoleRequest,
 } from '../lib/types'
 
@@ -62,8 +63,14 @@ export default function AdminUsersPage() {
 
   const [updatingUserId, setUpdatingUserId] = useState<number | null>(null)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
+  const [resettingUserId, setResettingUserId] = useState<number | null>(null)
+  const [resetTargetUser, setResetTargetUser] = useState<UserResponse | null>(null)
+  const [resetPassword, setResetPassword] = useState('')
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('')
   const [roleError, setRoleError] = useState('')
   const [deleteError, setDeleteError] = useState('')
+  const [resetError, setResetError] = useState('')
+  const [resetSuccess, setResetSuccess] = useState('')
 
   const departments = useMemo(
     () => users.filter(u => u.role === 'health_department' && u.is_active),
@@ -231,6 +238,57 @@ export default function AdminUsersPage() {
     }
   }
 
+  const canManagePassword = (targetUser: UserResponse) => {
+    if (!currentUser) return false
+    if (targetUser.user_id === currentUser.user_id) return false
+    if (currentUser.role === 'admin') return true
+    return targetUser.parent_id === currentUser.user_id
+  }
+
+  const openResetPasswordModal = (targetUser: UserResponse) => {
+    if (!canManagePassword(targetUser)) return
+    setResetTargetUser(targetUser)
+    setResetPassword('')
+    setResetConfirmPassword('')
+    setResetError('')
+    setResetSuccess('')
+  }
+
+  const closeResetPasswordModal = () => {
+    if (resettingUserId !== null) return
+    setResetTargetUser(null)
+    setResetPassword('')
+    setResetConfirmPassword('')
+    setResetError('')
+  }
+
+  const handleResetPassword = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!resetTargetUser) return
+
+    setResetError('')
+    setResetSuccess('')
+    if (resetPassword !== resetConfirmPassword) {
+      setResetError('Mật khẩu mới và xác nhận mật khẩu không khớp.')
+      return
+    }
+
+    setResettingUserId(resetTargetUser.user_id)
+    try {
+      const payload: ResetUserPasswordRequest = { new_password: resetPassword }
+      const res = await api.patch<UserResponse>(`/auth/users/${resetTargetUser.user_id}/password`, payload)
+      setUsers(prev => prev.map(u => u.user_id === resetTargetUser.user_id ? res.data : u))
+      setResetSuccess(`Đã đặt lại mật khẩu cho ${accountName(resetTargetUser)}.`)
+      setResetTargetUser(null)
+      setResetPassword('')
+      setResetConfirmPassword('')
+    } catch (err: unknown) {
+      setResetError(getApiErrorMessage(err, 'Không thể đặt lại mật khẩu.'))
+    } finally {
+      setResettingUserId(null)
+    }
+  }
+
   const canDeleteUser = (targetUser: UserResponse) => {
     if (!currentUser) return false
     if (targetUser.user_id === currentUser.user_id) return false
@@ -244,6 +302,12 @@ export default function AdminUsersPage() {
     if (targetUser.role === 'admin') return 'Không xóa tài khoản admin tại màn hình này'
     if (!canDeleteUser(targetUser)) return 'Bạn chỉ có thể xóa tài khoản con trực tiếp'
     return 'Xóa cứng tài khoản này'
+  }
+
+  const getResetPasswordTitle = (targetUser: UserResponse) => {
+    if (targetUser.user_id === currentUser?.user_id) return 'Dùng màn hình đổi mật khẩu để cập nhật tài khoản hiện tại'
+    if (!canManagePassword(targetUser)) return 'Bạn chỉ có thể đặt lại mật khẩu tài khoản con trực tiếp'
+    return 'Đặt lại mật khẩu tài khoản này'
   }
 
   const handleDeleteUser = async (targetUser: UserResponse) => {
@@ -297,6 +361,7 @@ export default function AdminUsersPage() {
       </div>
 
       {error && <div className="alert alert-error">{error}</div>}
+      {resetSuccess && <div className="alert alert-success">{resetSuccess}</div>}
 
       {showCreateForm && (
         <div className="card" style={{ marginBottom: 24 }}>
@@ -451,12 +516,12 @@ export default function AdminUsersPage() {
                 <th>Tài liệu chung</th>
                 <th>Trạng thái</th>
                 <th>Ngày tạo</th>
-                {/* <th>Thao tác</th> */}
+                <th>Thao tác</th>
               </tr>
             </thead>
             <tbody>
               {users.length === 0 && (
-                <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Không có tài khoản nào.</td></tr>
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>Không có tài khoản nào.</td></tr>
               )}
               {users.map(u => (
                 <tr key={u.user_id}>
@@ -514,26 +579,85 @@ export default function AdminUsersPage() {
                   <td className="text-sm text-muted">
                     {new Date(u.created_at).toLocaleDateString('vi-VN')}
                   </td>
-                  {/* <td>
-                    <button
-                      type="button"
-                      className="btn btn-danger btn-sm"
-                      disabled={!canDeleteUser(u) || deletingUserId === u.user_id}
-                      title={getDeleteUserTitle(u)}
-                      onClick={() => handleDeleteUser(u)}
-                    >
-                      {deletingUserId === u.user_id
-                        ? <span className="loading-spinner" style={{ width: 14, height: 14 }} />
-                        : <><Trash2 size={14} /> Xóa</>
-                      }
-                    </button>
-                  </td> */}
+                  <td>
+                    <div className="table-actions">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        disabled={!canManagePassword(u) || resettingUserId === u.user_id}
+                        title={getResetPasswordTitle(u)}
+                        onClick={() => openResetPasswordModal(u)}
+                      >
+                        {resettingUserId === u.user_id
+                          ? <span className="loading-spinner" style={{ width: 14, height: 14 }} />
+                          : <><KeyRound size={14} /> Mật khẩu</>}
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
       </div>
+
+      {resetTargetUser && (
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="reset-password-title">
+          <div className="modal-container password-modal">
+            <div className="modal-header">
+              <KeyRound size={18} />
+              <div className="flex-1">
+                <h2 id="reset-password-title" className="modal-title">Đặt lại mật khẩu</h2>
+                <p className="modal-subtitle">{accountName(resetTargetUser)} - {resetTargetUser.email}</p>
+              </div>
+              <button type="button" className="modal-close-btn" onClick={closeResetPasswordModal} title="Đóng">
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleResetPassword}>
+              <div className="modal-body flex-col gap-4">
+                {resetError && <div className="alert alert-error">{resetError}</div>}
+                <div className="form-group">
+                  <label className="form-label" htmlFor="reset-password">Mật khẩu mới</label>
+                  <input
+                    id="reset-password"
+                    type="password"
+                    className="form-input"
+                    minLength={8}
+                    maxLength={512}
+                    value={resetPassword}
+                    onChange={e => setResetPassword(e.target.value)}
+                    required
+                    autoFocus
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="form-label" htmlFor="reset-password-confirm">Xác nhận mật khẩu mới</label>
+                  <input
+                    id="reset-password-confirm"
+                    type="password"
+                    className="form-input"
+                    minLength={8}
+                    maxLength={512}
+                    value={resetConfirmPassword}
+                    onChange={e => setResetConfirmPassword(e.target.value)}
+                    required
+                  />
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={closeResetPasswordModal}>Hủy</button>
+                <button type="submit" className="btn btn-primary" disabled={resettingUserId !== null}>
+                  {resettingUserId !== null
+                    ? <span className="loading-spinner" style={{ width: 14, height: 14 }} />
+                    : <><KeyRound size={15} /> Đặt lại mật khẩu</>}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { BookOpen, LogOut, Users } from 'lucide-react'
+import { BookOpen, KeyRound, LogOut, Users } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../store/auth'
 
@@ -28,6 +28,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             {user?.parent && (
               <span className="badge badge-default text-sm">Thuộc: {user.parent.full_name ?? user.parent.email}</span>
             )}
+            <Link to="/account/password" className="btn btn-ghost btn-sm" title="Đổi mật khẩu">
+              <KeyRound size={14} />
+            </Link>
             <button className="btn btn-ghost btn-sm" onClick={logout} title="Đăng xuất">
               <LogOut size={14} />
             </button>

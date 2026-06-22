@@ -7,10 +7,13 @@ from app.core.config import settings
 from app.core.security import create_access_token
 from app.schemas.auth import (
     AvailableRoleResponse,
+    ChangePasswordRequest,
     CreateUserRequest,
     DeleteUserResponse,
     LoginRequest,
     LoginResponse,
+    PasswordActionResponse,
+    ResetUserPasswordRequest,
     UpdateUserRoleRequest,
     UserListResponse,
     UserResponse,
@@ -65,6 +68,24 @@ async def get_me(current_user: ActiveUser) -> UserResponse:
     return UserResponse.model_validate(current_user)
 
 
+@router.patch(
+    "/password",
+    response_model=PasswordActionResponse,
+    summary="Change Current User Password",
+)
+async def change_password(
+    payload: ChangePasswordRequest,
+    auth_service: AuthServiceDep,
+    current_user: ActiveUser,
+) -> PasswordActionResponse:
+    await auth_service.change_password(
+        current_user=current_user,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+    return PasswordActionResponse(message="Password changed successfully.")
+
+
 @router.get(
     "/roles",
     response_model=list[AvailableRoleResponse],
@@ -107,6 +128,25 @@ async def create_user(
         parent_id=payload.parent_id,
         is_active=payload.is_active,
         inherits_global_documents=payload.inherits_global_documents,
+    )
+    return UserResponse.model_validate(user)
+
+
+@router.patch(
+    "/users/{user_id}/password",
+    response_model=UserResponse,
+    summary="Reset User Password",
+)
+async def reset_user_password(
+    user_id: int,
+    payload: ResetUserPasswordRequest,
+    auth_service: AuthServiceDep,
+    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+) -> UserResponse:
+    user = await auth_service.reset_user_password(
+        current_user=current_user,
+        user_id=user_id,
+        new_password=payload.new_password,
     )
     return UserResponse.model_validate(user)
 

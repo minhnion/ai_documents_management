@@ -39,6 +39,19 @@ class LoginResponse(BaseModel):
     user: UserResponse
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=8, max_length=512)
+    new_password: str = Field(min_length=8, max_length=512)
+
+
+class ResetUserPasswordRequest(BaseModel):
+    new_password: str = Field(min_length=8, max_length=512)
+
+
+class PasswordActionResponse(BaseModel):
+    message: str
+
+
 class CreateUserRequest(BaseModel):
     email: EmailStr
     full_name: str | None = Field(default=None, max_length=255)
