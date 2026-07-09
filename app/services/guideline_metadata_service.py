@@ -5,8 +5,16 @@ from typing import Any
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import BadRequestException, NotFoundException
+from app.core.roles import ROLE_HEALTH_STATION
+from app.core.specialties import (
+    HEALTH_STATION_SPECIALTY,
+    is_health_station_specialty,
+    normalize_specialty_name,
+)
+from app.models.user import User
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
 
@@ -23,11 +31,13 @@ class GuidelineMetadataService:
         self,
         guideline_id: int,
         patch: dict[str, Any],
+        current_user: User | None = None,
     ) -> Guideline:
         if not patch:
             raise BadRequestException("At least one guideline metadata field is required.")
 
         guideline = await self._get_guideline_or_raise(guideline_id, for_update=True)
+        owner_role = getattr(guideline.owner, "role", None)
 
         if "title" in patch:
             guideline.title = self._normalize_required_text(
@@ -39,7 +49,15 @@ class GuidelineMetadataService:
         if "publisher" in patch:
             guideline.publisher = self._normalize_optional_text(patch["publisher"])
         if "chuyen_khoa" in patch:
-            guideline.chuyen_khoa = self._normalize_optional_text(patch["chuyen_khoa"])
+            guideline.chuyen_khoa = normalize_specialty_name(patch["chuyen_khoa"])
+
+        is_health_station_document = owner_role == ROLE_HEALTH_STATION or (
+            current_user is not None and current_user.role == ROLE_HEALTH_STATION
+        )
+        if is_health_station_document and not is_health_station_specialty(guideline.chuyen_khoa):
+            raise BadRequestException(
+                f"Health station documents must use specialty '{HEALTH_STATION_SPECIALTY}'."
+            )
 
         await self.db.flush()
         return guideline
@@ -116,7 +134,7 @@ class GuidelineMetadataService:
         *,
         for_update: bool = False,
     ) -> Guideline:
-        stmt = select(Guideline).where(Guideline.guideline_id == guideline_id)
+        stmt = select(Guideline).options(selectinload(Guideline.owner)).where(Guideline.guideline_id == guideline_id)
         if for_update:
             stmt = stmt.with_for_update()
         guideline = (await self.db.execute(stmt)).scalar_one_or_none()

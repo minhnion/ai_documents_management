@@ -144,15 +144,22 @@ class GuidelineQueryService:
         current_user: User,
         owner_user_id: int | None = None,
     ) -> list[object]:
+        access_service = TenantAccessService(self.db)
         if current_user.role == "admin":
             return [Guideline.owner_user_id == owner_user_id] if owner_user_id else []
 
-        visible_owner_ids = await TenantAccessService(self.db).get_visible_owner_user_ids(current_user)
+        filters: list[object] = []
+        visible_owner_ids = await access_service.get_visible_owner_user_ids(current_user)
         if owner_user_id is not None:
             if int(owner_user_id) not in visible_owner_ids:
-                return [Guideline.owner_user_id == -1]
-            return [Guideline.owner_user_id == owner_user_id]
-        return [Guideline.owner_user_id.in_(visible_owner_ids)]
+                filters.append(Guideline.owner_user_id == -1)
+            else:
+                filters.append(Guideline.owner_user_id == owner_user_id)
+        else:
+            filters.append(Guideline.owner_user_id.in_(visible_owner_ids))
+        if await access_service.is_health_station_scope(current_user):
+            filters.append(access_service.health_station_specialty_filter())
+        return filters
 
     def _append_normalized_contains_filter(
         self,

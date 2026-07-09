@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import FileResponse
 
 from app.api.deps import ActiveUser, DBSession, require_roles
+from app.core.roles import DOCUMENT_MANAGER_ROLES
 from app.schemas.guideline import (
     BulkSectionContentUpdateRequest,
     BulkSectionContentUpdateResponse,
@@ -33,7 +34,7 @@ from app.services.version_asset_service import VersionAssetService
 
 router = APIRouter(prefix='/versions', tags=['Versions'])
 
-MANAGE_ROLES = ('health_department', 'hospital', 'admin')
+MANAGE_ROLES = DOCUMENT_MANAGER_ROLES
 
 
 def _version_access_flags(

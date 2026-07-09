@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Save, X } from 'lucide-react'
 import { api } from '../lib/api'
+import { HEALTH_STATION_SPECIALTY, ROLE_HEALTH_STATION } from '../lib/roles'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import SelectOrCustomInputField from './SelectOrCustomInputField'
 import useGuidelineFilterOptions from '../hooks/useGuidelineFilterOptions'
+import { useAuth } from '../store/auth'
 import type { GuidelineListItem, UpdateGuidelineMetadataResponse } from '../lib/types'
 
 interface Props {
@@ -13,11 +15,13 @@ interface Props {
 }
 
 export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: Props) {
+  const { user } = useAuth()
   const filterOptions = useGuidelineFilterOptions()
   const [title, setTitle] = useState(guideline.title)
   const [tenBenh, setTenBenh] = useState(guideline.ten_benh ?? '')
   const [publisher, setPublisher] = useState(guideline.publisher ?? '')
   const [chuyenKhoa, setChuyenKhoa] = useState(guideline.chuyen_khoa ?? '')
+  const mustUseHealthStationSpecialty = user?.role === ROLE_HEALTH_STATION || guideline.owner?.role === ROLE_HEALTH_STATION
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -38,7 +42,7 @@ export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: 
       title,
       ten_benh: tenBenh,
       publisher,
-      chuyen_khoa: chuyenKhoa,
+      chuyen_khoa: mustUseHealthStationSpecialty ? HEALTH_STATION_SPECIALTY : chuyenKhoa,
     }
 
     try {
@@ -47,8 +51,9 @@ export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: 
         payload,
       )
       onSaved(response.data)
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Không thể cập nhật metadata guideline.')
+    } catch (err: unknown) {
+      const response = (err as { response?: { data?: { detail?: unknown } } }).response
+      setError(typeof response?.data?.detail === 'string' ? response.data.detail : 'Không thể cập nhật metadata guideline.')
     } finally {
       setSubmitting(false)
     }
@@ -106,11 +111,11 @@ export default function GuidelineMetadataModal({ guideline, onClose, onSaved }: 
               <label className="form-label">Chuyên khoa</label>
               <select
                 className="form-select"
-                value={chuyenKhoa}
+                value={mustUseHealthStationSpecialty ? HEALTH_STATION_SPECIALTY : chuyenKhoa}
                 onChange={event => setChuyenKhoa(event.target.value)}
-                disabled={submitting}
+                disabled={submitting || mustUseHealthStationSpecialty}
               >
-                <option value="">-- Chọn chuyên khoa --</option>
+                {!mustUseHealthStationSpecialty && <option value="">-- Chọn chuyên khoa --</option>}
                 {SPECIALTY_OPTIONS.map(option => (
                   <option key={option} value={option}>
                     {option}

@@ -16,6 +16,12 @@ from app.core.exceptions import (
     NotFoundException,
     UnprocessableEntityException,
 )
+from app.core.roles import DOCUMENT_MANAGER_ROLES, ROLE_DOCTOR, ROLE_HEALTH_STATION
+from app.core.specialties import (
+    HEALTH_STATION_SPECIALTY,
+    is_health_station_specialty,
+    normalize_specialty_name,
+)
 from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
@@ -52,7 +58,7 @@ class GuidelineCommandService:
         self._validate_create_payload(title=title, upload_file=upload_file)
         self._validate_version_dates(effective_from=effective_from, effective_to=effective_to)
         target_status = self._normalize_status(status)
-        resolved_owner_user_id = await self._resolve_target_owner_user_id(
+        resolved_owner_user_id, resolved_owner_role = await self._resolve_target_owner(
             current_user=current_user,
             owner_user_id=owner_user_id,
         )
@@ -61,7 +67,10 @@ class GuidelineCommandService:
             title=title.strip(),
             ten_benh=ten_benh.strip() if ten_benh else None,
             publisher=publisher.strip() if publisher else None,
-            chuyen_khoa=chuyen_khoa.strip() if chuyen_khoa else None,
+            chuyen_khoa=self._normalize_create_specialty(
+                owner_role=resolved_owner_role,
+                chuyen_khoa=chuyen_khoa,
+            ),
             owner_user_id=resolved_owner_user_id,
             created_by_user_id=int(current_user.user_id),
         )
@@ -247,12 +256,25 @@ class GuidelineCommandService:
     def _is_active_status(self, status: str) -> bool:
         return status in self.ACTIVE_STATUSES
 
+    def _normalize_create_specialty(
+        self,
+        *,
+        owner_role: str,
+        chuyen_khoa: str | None,
+    ) -> str | None:
+        normalized = normalize_specialty_name(chuyen_khoa)
+        if owner_role == ROLE_HEALTH_STATION and not is_health_station_specialty(normalized):
+            raise BadRequestException(
+                f"Health station accounts can only upload documents with specialty '{HEALTH_STATION_SPECIALTY}'."
+            )
+        return normalized
+
     async def _get_guideline_for_update(
         self,
         guideline_id: int,
         current_user: User,
     ) -> Guideline:
-        if current_user.role == "doctor":
+        if current_user.role == ROLE_DOCTOR:
             raise NotFoundException("Guideline", guideline_id)
 
         stmt = (
@@ -269,16 +291,16 @@ class GuidelineCommandService:
             raise NotFoundException("Guideline", guideline_id)
         return guideline
 
-    async def _resolve_target_owner_user_id(
+    async def _resolve_target_owner(
         self,
         *,
         current_user: User,
         owner_user_id: int | None,
-    ) -> int:
-        if current_user.role == "doctor":
+    ) -> tuple[int, str]:
+        if current_user.role == ROLE_DOCTOR:
             raise BadRequestException("Doctor accounts are read-only for guideline documents.")
         if current_user.role != "admin":
-            return int(current_user.user_id)
+            return int(current_user.user_id), current_user.role
         if owner_user_id is None:
             raise BadRequestException("Owner account is required when admin uploads a guideline.")
         owner = (
@@ -291,7 +313,9 @@ class GuidelineCommandService:
         ).scalar_one_or_none()
         if owner is None:
             raise BadRequestException("Owner account must be active.")
-        return int(owner.user_id)
+        if owner.role not in DOCUMENT_MANAGER_ROLES:
+            raise BadRequestException("Owner account must be able to manage guideline documents.")
+        return int(owner.user_id), str(owner.role)
 
     async def _resolve_version_label(
         self,

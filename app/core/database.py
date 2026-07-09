@@ -184,6 +184,8 @@ async def migrate_user_hierarchy_schema() -> None:
                 SET role = CASE
                     WHEN lower(coalesce(role, '')) = 'admin' THEN 'admin'
                     WHEN lower(coalesce(role, '')) = 'hospital' THEN 'hospital'
+                    WHEN lower(coalesce(role, '')) = 'health_station' THEN 'health_station'
+                    WHEN lower(coalesce(role, '')) = 'central_hospital' THEN 'central_hospital'
                     WHEN lower(coalesce(role, '')) = 'doctor' THEN 'doctor'
                     WHEN lower(coalesce(role, '')) = 'health_department' THEN 'health_department'
                     ELSE 'health_department'
@@ -198,7 +200,7 @@ async def migrate_user_hierarchy_schema() -> None:
                 """
                 ALTER TABLE users
                 ADD CONSTRAINT ck_users_role
-                CHECK (role IN ('admin', 'health_department', 'hospital', 'doctor'))
+                CHECK (role IN ('admin', 'health_department', 'central_hospital', 'hospital', 'health_station', 'doctor'))
                 """
             )
         )

@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, Search, Eye, Edit2, Trash2, Layers } from 'lucide-react'
 import { api } from '../lib/api'
+import { roleLabel, isDocumentManagerRole } from '../lib/roles'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import type {
   GuidelineListItem,
@@ -85,8 +86,9 @@ export default function ListPage() {
       } else {
         await fetchGuidelines()
       }
-    } catch (err: any) {
-      alert(err.response?.data?.detail || 'Không thể xóa văn bản.')
+    } catch (err: unknown) {
+      const response = (err as { response?: { data?: { detail?: unknown } } }).response
+      alert(typeof response?.data?.detail === 'string' ? response.data.detail : 'Không thể xóa văn bản.')
     } finally {
       setDeletingId(null)
     }
@@ -112,7 +114,7 @@ export default function ListPage() {
     await fetchGuidelines()
   }
 
-  const canCreate = ['admin', 'health_department', 'hospital'].includes(user?.role ?? '')
+  const canCreate = isDocumentManagerRole(user?.role)
 
   return (
     <div className="list-page h-full flex-col">
@@ -145,7 +147,7 @@ export default function ListPage() {
                 <option value="">Tất cả tài khoản sở hữu</option>
                 {owners.map(owner => (
                   <option key={owner.user_id} value={owner.user_id}>
-                    {owner.role === 'admin' ? 'Tài liệu chung' : (owner.full_name || owner.email)} - {owner.role === 'admin' ? (owner.full_name || owner.email) : owner.role}
+                    {owner.role === 'admin' ? 'Tài liệu chung' : (owner.full_name || owner.email)} - {owner.role === 'admin' ? (owner.full_name || owner.email) : roleLabel(owner.role)}
                   </option>
                 ))}
               </select>

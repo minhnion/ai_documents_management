@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { KeyRound, UserPlus, X } from 'lucide-react'
 import { api } from '../lib/api'
+import {
+  ROLE_ADMIN,
+  ROLE_CENTRAL_HOSPITAL,
+  ROLE_DOCTOR,
+  ROLE_HEALTH_DEPARTMENT,
+  ROLE_HEALTH_STATION,
+  ROLE_HOSPITAL,
+  isTopLevelUnitRole,
+  roleLabel,
+} from '../lib/roles'
 import { useAuth } from '../store/auth'
 import type {
   UserResponse,
@@ -11,17 +21,6 @@ import type {
   ResetUserPasswordRequest,
   UpdateUserRoleRequest,
 } from '../lib/types'
-
-const ROLE_LABELS: Record<string, string> = {
-  admin: 'Admin',
-  health_department: 'Sở y tế',
-  hospital: 'Bệnh viện',
-  doctor: 'Bác sĩ',
-}
-
-function roleLabel(role: string) {
-  return ROLE_LABELS[role] ?? role
-}
 
 function accountName(user: UserResponse | null | undefined) {
   if (!user) return '-'
@@ -59,7 +58,6 @@ export default function AdminUsersPage() {
     inherits_global_documents: true,
   })
   const [parentChoice, setParentChoice] = useState('')
-  const [doctorDepartmentChoice, setDoctorDepartmentChoice] = useState('')
 
   const [updatingUserId, setUpdatingUserId] = useState<number | null>(null)
   const [deletingUserId, setDeletingUserId] = useState<number | null>(null)
@@ -73,49 +71,40 @@ export default function AdminUsersPage() {
   const [resetSuccess, setResetSuccess] = useState('')
 
   const departments = useMemo(
-    () => users.filter(u => u.role === 'health_department' && u.is_active),
+    () => users.filter(u => u.role === ROLE_HEALTH_DEPARTMENT && u.is_active),
     [users],
   )
-  const hospitals = useMemo(
-    () => users.filter(u => u.role === 'hospital' && u.is_active),
+  const doctorParents = useMemo(
+    () => users.filter(u => [ROLE_CENTRAL_HOSPITAL, ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(u.role) && u.is_active),
     [users],
-  )
-
-  const filteredHospitals = useMemo(
-    () => form.role === 'doctor' && doctorDepartmentChoice
-      ? hospitals.filter(h => h.parent_id === Number(doctorDepartmentChoice))
-      : hospitals,
-    [doctorDepartmentChoice, form.role, hospitals],
   )
   const selectedParentForCreate = useMemo(() => {
-    if (currentUser?.role !== 'admin') return currentUser
-    if (form.role === 'hospital') {
+    if (currentUser?.role !== ROLE_ADMIN) return currentUser
+    if ([ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(form.role)) {
       return departments.find(item => String(item.user_id) === parentChoice) ?? null
     }
-    if (form.role === 'doctor') {
-      return hospitals.find(item => String(item.user_id) === parentChoice) ?? null
+    if (form.role === ROLE_DOCTOR) {
+      return doctorParents.find(item => String(item.user_id) === parentChoice) ?? null
     }
     return null
-  }, [currentUser, departments, form.role, hospitals, parentChoice])
+  }, [currentUser, departments, doctorParents, form.role, parentChoice])
   const effectiveInheritsGlobalDocuments = useMemo(() => {
-    if (form.role === 'admin') return true
-    if (form.role === 'health_department') return form.inherits_global_documents
+    if (form.role === ROLE_ADMIN) return true
+    if (isTopLevelUnitRole(form.role)) return form.inherits_global_documents
     return followsGlobalDocuments(selectedParentForCreate)
   }, [form.inherits_global_documents, form.role, selectedParentForCreate])
-  const canChooseGlobalDocuments = currentUser?.role === 'admin' && form.role === 'health_department'
+  const canChooseGlobalDocuments = currentUser?.role === ROLE_ADMIN && isTopLevelUnitRole(form.role)
 
   const parentSelectionError = useMemo(() => {
-    if (currentUser?.role !== 'admin') return ''
-    if (form.role === 'hospital' && !parentChoice) {
-      return 'Cần có ít nhất một tài khoản sở y tế hoạt động để tạo bệnh viện.'
+    if (currentUser?.role !== ROLE_ADMIN) return ''
+    if ([ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(form.role) && !parentChoice) {
+      return 'Cần có ít nhất một tài khoản sở y tế hoạt động để tạo đơn vị này.'
     }
-    if (form.role === 'doctor' && !parentChoice) {
-      return doctorDepartmentChoice
-        ? 'Cần có ít nhất một bệnh viện hoạt động thuộc sở y tế đã chọn để tạo bác sĩ.'
-        : 'Cần có sở y tế và bệnh viện hoạt động trước khi tạo bác sĩ.'
+    if (form.role === ROLE_DOCTOR && !parentChoice) {
+      return 'Cần có ít nhất một bệnh viện, trạm y tế hoặc bệnh viện trung ương hoạt động để tạo bác sĩ.'
     }
     return ''
-  }, [currentUser?.role, doctorDepartmentChoice, form.role, parentChoice])
+  }, [currentUser?.role, form.role, parentChoice])
 
   const loadData = async () => {
     setLoading(true)
@@ -146,26 +135,22 @@ export default function AdminUsersPage() {
   }, [])
 
   useEffect(() => {
-    if (form.role === 'hospital' && currentUser?.role === 'admin') {
-      setParentChoice(departments[0]?.user_id ? String(departments[0].user_id) : '')
-      setDoctorDepartmentChoice('')
-    } else if (form.role === 'doctor' && currentUser?.role === 'admin') {
-      setDoctorDepartmentChoice(departments[0]?.user_id ? String(departments[0].user_id) : '')
-    } else {
+    if (currentUser?.role !== ROLE_ADMIN) {
       setParentChoice('')
-      setDoctorDepartmentChoice('')
+      return
     }
-  }, [form.role, currentUser?.role, departments])
-
-  useEffect(() => {
-    if (form.role !== 'doctor' || currentUser?.role !== 'admin') return
+    const parentOptions = form.role === ROLE_DOCTOR
+      ? doctorParents
+      : [ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(form.role)
+        ? departments
+        : []
     setParentChoice(prev => {
-      if (filteredHospitals.some(hospital => String(hospital.user_id) === prev)) {
+      if (parentOptions.some(item => String(item.user_id) === prev)) {
         return prev
       }
-      return filteredHospitals[0]?.user_id ? String(filteredHospitals[0].user_id) : ''
+      return parentOptions[0]?.user_id ? String(parentOptions[0].user_id) : ''
     })
-  }, [form.role, currentUser?.role, filteredHospitals])
+  }, [form.role, currentUser?.role, departments, doctorParents])
 
   const availableRoles = roles.map(r => r.name)
 
@@ -179,7 +164,7 @@ export default function AdminUsersPage() {
       inherits_global_documents: effectiveInheritsGlobalDocuments,
     }
 
-    if (currentUser?.role === 'admin' && ['hospital', 'doctor'].includes(form.role) && parentChoice) {
+    if (currentUser?.role === ROLE_ADMIN && [ROLE_HOSPITAL, ROLE_HEALTH_STATION, ROLE_DOCTOR].includes(form.role) && parentChoice) {
       payload.parent_id = Number(parentChoice)
     }
 
@@ -241,7 +226,7 @@ export default function AdminUsersPage() {
   const canManagePassword = (targetUser: UserResponse) => {
     if (!currentUser) return false
     if (targetUser.user_id === currentUser.user_id) return false
-    if (currentUser.role === 'admin') return true
+    if (currentUser.role === ROLE_ADMIN) return true
     return targetUser.parent_id === currentUser.user_id
   }
 
@@ -293,7 +278,7 @@ export default function AdminUsersPage() {
     if (!currentUser) return false
     if (targetUser.user_id === currentUser.user_id) return false
     if (targetUser.role === 'admin') return false
-    if (currentUser.role === 'admin') return true
+    if (currentUser.role === ROLE_ADMIN) return true
     return targetUser.parent_id === currentUser.user_id
   }
 
@@ -331,16 +316,16 @@ export default function AdminUsersPage() {
     }
   }
 
-  const canInlineUpdate = currentUser?.role === 'admin'
+  const canInlineUpdate = currentUser?.role === ROLE_ADMIN
   const canEditGlobalDocuments = (targetUser: UserResponse) => (
-    currentUser?.role === 'admin'
-    && targetUser.role === 'health_department'
+    currentUser?.role === ROLE_ADMIN
+    && isTopLevelUnitRole(targetUser.role)
     && updatingUserId !== targetUser.user_id
   )
   const getGlobalDocumentsTitle = (targetUser: UserResponse) => {
-    if (targetUser.role === 'admin') return 'Tài khoản admin luôn là tài liệu chung'
-    if (targetUser.role !== 'health_department') return 'Tài khoản này kế thừa lựa chọn từ cấp cha'
-    if (currentUser?.role !== 'admin') return 'Chỉ admin được chỉnh sửa'
+    if (targetUser.role === ROLE_ADMIN) return 'Tài khoản admin luôn là tài liệu chung'
+    if (!isTopLevelUnitRole(targetUser.role)) return 'Tài khoản này kế thừa lựa chọn từ cấp cha'
+    if (currentUser?.role !== ROLE_ADMIN) return 'Chỉ admin được chỉnh sửa'
     return followsGlobalDocuments(targetUser)
       ? 'Bỏ theo tài liệu chung của Bộ Y tế'
       : 'Theo tài liệu chung của Bộ Y tế'
@@ -395,7 +380,7 @@ export default function AdminUsersPage() {
                 </select>
               </div>
 
-              {currentUser?.role === 'admin' && form.role === 'hospital' && (
+              {currentUser?.role === ROLE_ADMIN && [ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(form.role) && (
                 <div className="form-group">
                   <label className="form-label">Sở y tế cha *</label>
                   <select
@@ -412,35 +397,20 @@ export default function AdminUsersPage() {
                 </div>
               )}
 
-              {currentUser?.role === 'admin' && form.role === 'doctor' && (
+              {currentUser?.role === ROLE_ADMIN && form.role === ROLE_DOCTOR && (
                 <div className="form-group">
-                  <label className="form-label">Sở y tế</label>
-                  <select
-                    className="form-select"
-                    value={doctorDepartmentChoice}
-                    disabled={departments.length === 0}
-                    onChange={e => setDoctorDepartmentChoice(e.target.value)}
-                  >
-                    {departments.length === 0 && <option value="">Chưa có sở y tế</option>}
-                    {departments.map(item => (
-                      <option key={item.user_id} value={item.user_id}>{accountName(item)}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-
-              {currentUser?.role === 'admin' && form.role === 'doctor' && (
-                <div className="form-group">
-                  <label className="form-label">Bệnh viện cha *</label>
+                  <label className="form-label">Đơn vị cha *</label>
                   <select
                     className="form-select"
                     value={parentChoice}
-                    disabled={filteredHospitals.length === 0}
+                    disabled={doctorParents.length === 0}
                     onChange={e => setParentChoice(e.target.value)}
                   >
-                    {filteredHospitals.length === 0 && <option value="">Chưa có bệnh viện</option>}
-                    {filteredHospitals.map(item => (
-                      <option key={item.user_id} value={item.user_id}>{accountName(item)}</option>
+                    {doctorParents.length === 0 && <option value="">Chưa có đơn vị nhận bác sĩ</option>}
+                    {doctorParents.map(item => (
+                      <option key={item.user_id} value={item.user_id}>
+                        {accountName(item)} - {roleLabel(item.role)}
+                      </option>
                     ))}
                   </select>
                 </div>
@@ -452,14 +422,14 @@ export default function AdminUsersPage() {
                 </div>
               )}
 
-              {currentUser?.role !== 'admin' && (
+              {currentUser?.role !== ROLE_ADMIN && (
                 <div className="form-group">
                   <label className="form-label">Cấp cha</label>
                   <input className="form-input" value={accountName(currentUser as UserResponse)} disabled />
                 </div>
               )}
 
-              {form.role !== 'admin' && (
+              {form.role !== ROLE_ADMIN && (
                 <div className="form-group" style={{ gridColumn: '1 / -1' }}>
                   <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: canChooseGlobalDocuments ? 'pointer' : 'not-allowed' }}>
                     <input
@@ -470,9 +440,9 @@ export default function AdminUsersPage() {
                     />
                     Theo tài liệu chung của Bộ Y tế
                   </label>
-                  {form.role === 'health_department' ? (
+                  {isTopLevelUnitRole(form.role) ? (
                     <div className="form-hint">
-                      Nếu bỏ chọn, tài khoản sở y tế sẽ quản lý độc lập và không có cấp cha admin.
+                      Nếu bỏ chọn, tài khoản cấp này sẽ quản lý độc lập và không có cấp cha admin.
                     </div>
                   ) : (
                     <div className="form-hint">
@@ -542,7 +512,7 @@ export default function AdminUsersPage() {
                         cursor: canEditGlobalDocuments(u) ? 'pointer' : 'not-allowed',
                       }}
                     >
-                      {u.role === 'health_department' && (
+                      {isTopLevelUnitRole(u.role) && (
                         <input
                           type="checkbox"
                           checked={followsGlobalDocuments(u)}
