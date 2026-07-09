@@ -36,6 +36,14 @@ class AuthService:
     ROLE_HEALTH_STATION = ROLE_HEALTH_STATION
     ROLE_DOCTOR = ROLE_DOCTOR
 
+    ROLE_LABELS: dict[str, str] = {
+        ROLE_ADMIN: "Admin",
+        ROLE_HEALTH_DEPARTMENT: "Sở y tế",
+        ROLE_CENTRAL_HOSPITAL: "Bệnh viện Trung ương",
+        ROLE_HOSPITAL: "Bệnh viện",
+        ROLE_HEALTH_STATION: "Trạm y tế",
+        ROLE_DOCTOR: "Bác sĩ",
+    }
     ROLE_DESCRIPTIONS: dict[str, str] = {
         ROLE_ADMIN: "Full access to all accounts and documents.",
         ROLE_HEALTH_DEPARTMENT: "Cap so y te: manage own documents and create hospital/health station accounts.",
@@ -58,7 +66,11 @@ class AuthService:
         else:
             role_names = cls.CHILD_ROLES_BY_CREATOR.get(current_user.role, ())
         return [
-            {"name": role_name, "description": cls.ROLE_DESCRIPTIONS[role_name]}
+            {
+                "name": role_name,
+                "label": cls.ROLE_LABELS[role_name],
+                "description": cls.ROLE_DESCRIPTIONS[role_name],
+            }
             for role_name in role_names
         ]
 

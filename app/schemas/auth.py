@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 class AvailableRoleResponse(BaseModel):
     name: str
+    label: str
     description: str
 
 

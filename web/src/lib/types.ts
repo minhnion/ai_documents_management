@@ -42,6 +42,7 @@ export interface PasswordActionResponse {
 
 export interface AvailableRoleResponse {
   name: string
+  label?: string
   description: string
 }
 

@@ -375,7 +375,7 @@ export default function AdminUsersPage() {
                 <select className="form-select" value={form.role}
                   onChange={e => setForm(f => ({ ...f, role: e.target.value }))}>
                   {roles.map(r => (
-                    <option key={r.name} value={r.name}>{roleLabel(r.name)}</option>
+                    <option key={r.name} value={r.name}>{r.label ?? roleLabel(r.name)}</option>
                   ))}
                 </select>
               </div>
