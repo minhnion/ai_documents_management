@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import ActiveUser, AuthServiceDep, require_roles
+from app.core.roles import ACCOUNT_MANAGER_ROLES
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.schemas.auth import (
@@ -93,7 +94,7 @@ async def change_password(
 )
 async def list_roles(
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> list[AvailableRoleResponse]:
     return [
         AvailableRoleResponse(**item)
@@ -104,7 +105,7 @@ async def list_roles(
 @router.get("/users", response_model=UserListResponse, summary="List Users")
 async def list_users(
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> UserListResponse:
     users = await auth_service.list_users(current_user)
     return UserListResponse(
@@ -117,7 +118,7 @@ async def list_users(
 async def create_user(
     payload: CreateUserRequest,
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> UserResponse:
     user = await auth_service.create_user(
         current_user=current_user,
@@ -141,7 +142,7 @@ async def reset_user_password(
     user_id: int,
     payload: ResetUserPasswordRequest,
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> UserResponse:
     user = await auth_service.reset_user_password(
         current_user=current_user,
@@ -160,7 +161,7 @@ async def update_user_role(
     user_id: int,
     payload: UpdateUserRoleRequest,
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> UserResponse:
     user = await auth_service.update_user_role(
         current_user=current_user,
@@ -181,7 +182,7 @@ async def update_user_role(
 async def delete_user(
     user_id: int,
     auth_service: AuthServiceDep,
-    current_user: Annotated[object, Depends(require_roles("admin", "health_department", "hospital"))],
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
 ) -> DeleteUserResponse:
     result = await auth_service.delete_user(
         current_user=current_user,

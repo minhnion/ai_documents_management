@@ -4,6 +4,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
 from app.api.deps import ActiveUser, DBSession, require_roles
+from app.core.roles import DOCUMENT_MANAGER_ROLES
 from app.schemas.guideline import (
     CreateGuidelineResponse,
     CreateGuidelineVersionResponse,
@@ -105,7 +106,7 @@ async def list_guidelines(
 @router.post("", response_model=CreateGuidelineResponse, status_code=202, summary="Create Guideline")
 async def create_guideline(
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "admin"))],
+    current_user: Annotated[object, Depends(require_roles(*DOCUMENT_MANAGER_ROLES))],
     title: Annotated[str, Form(min_length=1, max_length=1000)],
     file: Annotated[UploadFile, File()],
     ten_benh: Annotated[str | None, Form(max_length=500)] = None,
@@ -157,7 +158,7 @@ async def update_guideline_metadata(
     guideline_id: int,
     payload: UpdateGuidelineMetadataRequest,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "admin"))],
+    current_user: Annotated[object, Depends(require_roles(*DOCUMENT_MANAGER_ROLES))],
 ) -> UpdateGuidelineMetadataResponse:
     await TenantAccessService(db).ensure_guideline_access(
         guideline_id=guideline_id,
@@ -168,6 +169,7 @@ async def update_guideline_metadata(
     guideline = await service.update_guideline_metadata(
         guideline_id=guideline_id,
         patch=payload.model_dump(exclude_unset=True),
+        current_user=current_user,
     )
     return UpdateGuidelineMetadataResponse.model_validate(guideline)
 
@@ -180,7 +182,7 @@ async def update_guideline_metadata(
 async def delete_guideline(
     guideline_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "admin"))],
+    current_user: Annotated[object, Depends(require_roles(*DOCUMENT_MANAGER_ROLES))],
 ) -> DeleteGuidelineResponse:
     await TenantAccessService(db).ensure_guideline_access(
         guideline_id=guideline_id,
@@ -201,7 +203,7 @@ async def delete_guideline(
 async def create_guideline_version(
     guideline_id: int,
     db: DBSession,
-    current_user: Annotated[object, Depends(require_roles("health_department", "hospital", "admin"))],
+    current_user: Annotated[object, Depends(require_roles(*DOCUMENT_MANAGER_ROLES))],
     file: Annotated[UploadFile, File()],
     version_label: Annotated[str | None, Form(max_length=50)] = None,
     release_date: Annotated[date | None, Form()] = None,

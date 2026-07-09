@@ -10,6 +10,18 @@ from app.core.exceptions import (
     NotFoundException,
     UnprocessableEntityException,
 )
+from app.core.roles import (
+    ALL_ROLES,
+    CHILD_ROLES_BY_CREATOR,
+    PARENT_ROLES_BY_ROLE,
+    ROLE_ADMIN,
+    ROLE_CENTRAL_HOSPITAL,
+    ROLE_DOCTOR,
+    ROLE_HEALTH_DEPARTMENT,
+    ROLE_HEALTH_STATION,
+    ROLE_HOSPITAL,
+    TOP_LEVEL_UNIT_ROLES,
+)
 from app.core.security import get_password_hash, verify_password
 from app.models.guideline import Guideline
 from app.models.user import User
@@ -17,31 +29,24 @@ from app.services.guideline_delete_service import GuidelineDeleteService
 
 
 class AuthService:
-    ROLE_ADMIN = "admin"
-    ROLE_HEALTH_DEPARTMENT = "health_department"
-    ROLE_HOSPITAL = "hospital"
-    ROLE_DOCTOR = "doctor"
+    ROLE_ADMIN = ROLE_ADMIN
+    ROLE_HEALTH_DEPARTMENT = ROLE_HEALTH_DEPARTMENT
+    ROLE_CENTRAL_HOSPITAL = ROLE_CENTRAL_HOSPITAL
+    ROLE_HOSPITAL = ROLE_HOSPITAL
+    ROLE_HEALTH_STATION = ROLE_HEALTH_STATION
+    ROLE_DOCTOR = ROLE_DOCTOR
 
     ROLE_DESCRIPTIONS: dict[str, str] = {
         ROLE_ADMIN: "Full access to all accounts and documents.",
-        ROLE_HEALTH_DEPARTMENT: "Cap so y te: manage own documents and create hospital accounts.",
+        ROLE_HEALTH_DEPARTMENT: "Cap so y te: manage own documents and create hospital/health station accounts.",
+        ROLE_CENTRAL_HOSPITAL: "Cap benh vien trung uong: manage own documents and create doctor accounts.",
         ROLE_HOSPITAL: "Cap benh vien: inherit parent documents, manage own documents, and create doctor accounts.",
-        ROLE_DOCTOR: "Cap bac si: inherit hospital/department documents with read-only access.",
+        ROLE_HEALTH_STATION: "Cap tram y te: manage station-specialty documents and create doctor accounts.",
+        ROLE_DOCTOR: "Cap bac si: inherit parent documents with read-only access.",
     }
-    ROLE_ORDER: tuple[str, ...] = (
-        ROLE_ADMIN,
-        ROLE_HEALTH_DEPARTMENT,
-        ROLE_HOSPITAL,
-        ROLE_DOCTOR,
-    )
-    CHILD_ROLE_BY_CREATOR: dict[str, str] = {
-        ROLE_HEALTH_DEPARTMENT: ROLE_HOSPITAL,
-        ROLE_HOSPITAL: ROLE_DOCTOR,
-    }
-    PARENT_ROLE_BY_ROLE: dict[str, str] = {
-        ROLE_HOSPITAL: ROLE_HEALTH_DEPARTMENT,
-        ROLE_DOCTOR: ROLE_HOSPITAL,
-    }
+    ROLE_ORDER: tuple[str, ...] = ALL_ROLES
+    CHILD_ROLES_BY_CREATOR = CHILD_ROLES_BY_CREATOR
+    PARENT_ROLES_BY_ROLE = PARENT_ROLES_BY_ROLE
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
@@ -51,8 +56,7 @@ class AuthService:
         if current_user is None or current_user.role == cls.ROLE_ADMIN:
             role_names = cls.ROLE_ORDER
         else:
-            child_role = cls.CHILD_ROLE_BY_CREATOR.get(current_user.role)
-            role_names = (child_role,) if child_role else ()
+            role_names = cls.CHILD_ROLES_BY_CREATOR.get(current_user.role, ())
         return [
             {"name": role_name, "description": cls.ROLE_DESCRIPTIONS[role_name]}
             for role_name in role_names
@@ -73,7 +77,7 @@ class AuthService:
         normalized = legacy_role_map.get(normalized, normalized)
         if normalized not in cls.ROLE_DESCRIPTIONS:
             raise BadRequestException(
-                "Unknown role. Allowed values: admin, health_department, hospital, doctor."
+                f"Unknown role. Allowed values: {', '.join(cls.ROLE_ORDER)}."
             )
         return normalized
 
@@ -358,8 +362,8 @@ class AuthService:
     def _ensure_can_create_role(self, *, current_user: User, role: str) -> None:
         if current_user.role == self.ROLE_ADMIN:
             return
-        allowed_role = self.CHILD_ROLE_BY_CREATOR.get(current_user.role)
-        if role != allowed_role:
+        allowed_roles = self.CHILD_ROLES_BY_CREATOR.get(current_user.role, ())
+        if role not in allowed_roles:
             raise BadRequestException("Current account cannot create or assign this role.")
 
     def _ensure_can_manage_user(self, *, current_user: User, target_user: User) -> None:
@@ -378,12 +382,12 @@ class AuthService:
     ) -> int | None:
         if role == self.ROLE_ADMIN:
             return None
-        if role == self.ROLE_HEALTH_DEPARTMENT:
+        if role in TOP_LEVEL_UNIT_ROLES:
             if current_user.role != self.ROLE_ADMIN:
-                raise BadRequestException("Health department accounts must be created by an admin.")
+                raise BadRequestException("Top-level unit accounts must be created by an admin.")
             return int(current_user.user_id) if inherits_global_documents else None
 
-        expected_parent_role = self.PARENT_ROLE_BY_ROLE[role]
+        expected_parent_roles = self.PARENT_ROLES_BY_ROLE[role]
         if current_user.role != self.ROLE_ADMIN:
             if parent_id is not None and int(parent_id) != int(current_user.user_id):
                 raise BadRequestException("Child account must be created under the current account.")
@@ -393,9 +397,9 @@ class AuthService:
             parent = await self.get_user_by_id(parent_id)
             if parent is None or not parent.is_active:
                 raise NotFoundException("User", parent_id)
-            if parent.role != expected_parent_role:
+            if parent.role not in expected_parent_roles:
                 raise BadRequestException(
-                    f"Parent for role '{role}' must have role '{expected_parent_role}'."
+                    f"Parent for role '{role}' must have one of: {', '.join(expected_parent_roles)}."
                 )
             return int(parent.user_id)
 
@@ -411,7 +415,7 @@ class AuthService:
     ) -> bool:
         if role == self.ROLE_ADMIN:
             return True
-        if role == self.ROLE_HEALTH_DEPARTMENT:
+        if role in TOP_LEVEL_UNIT_ROLES:
             return bool(requested_value)
 
         parent = (

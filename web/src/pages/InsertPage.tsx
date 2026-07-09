@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { ChevronLeft, Save } from 'lucide-react'
 import { api } from '../lib/api'
+import { HEALTH_STATION_SPECIALTY, ROLE_DOCTOR, ROLE_HEALTH_STATION, ROLE_ADMIN, roleLabel } from '../lib/roles'
 import { SPECIALTY_OPTIONS } from '../lib/specialties'
 import SelectOrCustomInputField from '../components/SelectOrCustomInputField'
 import useGuidelineFilterOptions from '../hooks/useGuidelineFilterOptions'
@@ -27,15 +28,27 @@ export default function InsertPage() {
   const [error, setError] = useState('')
 
   useEffect(() => {
-    if (user?.role !== 'admin') return
+    if (user?.role !== ROLE_ADMIN) return
     setOwnerChoice(user.user_id ? String(user.user_id) : '')
     api.get<UserListResponse>('/auth/users')
       .then(res => {
-        const availableOwners = res.data.items.filter(item => item.role !== 'admin' && item.is_active)
+        const availableOwners = res.data.items.filter(item => item.role !== ROLE_ADMIN && item.role !== ROLE_DOCTOR && item.is_active)
         setOwners(availableOwners)
       })
       .catch(() => setError('Không thể tải danh sách tài khoản sở hữu.'))
   }, [user?.role, user?.user_id])
+
+  const selectedOwner = user?.role === ROLE_ADMIN
+    ? owners.find(owner => String(owner.user_id) === ownerChoice)
+    : user
+  const isHealthStationOwner = selectedOwner?.role === ROLE_HEALTH_STATION
+  const effectiveChuyenKhoa = isHealthStationOwner ? HEALTH_STATION_SPECIALTY : chuyenKhoa
+
+  useEffect(() => {
+    if (isHealthStationOwner) {
+      setChuyenKhoa(HEALTH_STATION_SPECIALTY)
+    }
+  }, [isHealthStationOwner])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -53,10 +66,10 @@ export default function InsertPage() {
       formData.append('file', file)
       if (tenBenh) formData.append('ten_benh', tenBenh)
       if (publisher) formData.append('publisher', publisher)
-      if (chuyenKhoa) formData.append('chuyen_khoa', chuyenKhoa)
+      if (effectiveChuyenKhoa) formData.append('chuyen_khoa', effectiveChuyenKhoa)
       if (versionLabel) formData.append('version_label', versionLabel)
       if (releaseDate) formData.append('release_date', releaseDate)
-      if (user?.role === 'admin') {
+      if (user?.role === ROLE_ADMIN) {
         if (!ownerChoice) {
           setError('Vui lòng chọn tài khoản sở hữu tài liệu.')
           setLoading(false)
@@ -70,8 +83,9 @@ export default function InsertPage() {
       })
 
       navigate(`/guidelines/${res.data.guideline_id}/versions/${res.data.version_id}`)
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Có lỗi xảy ra khi tạo văn bản.')
+    } catch (err: unknown) {
+      const response = (err as { response?: { data?: { detail?: unknown } } }).response
+      setError(typeof response?.data?.detail === 'string' ? response.data.detail : 'Có lỗi xảy ra khi tạo văn bản.')
     } finally {
       setLoading(false)
     }
@@ -98,7 +112,7 @@ export default function InsertPage() {
           <div className="form-section">
             <h2 className="form-section-title">Thông tin chung (Metadata)</h2>
             <div className="form-grid">
-              {user?.role === 'admin' && (
+              {user?.role === ROLE_ADMIN && (
                 <div className="form-group">
                   <label className="form-label">Tài khoản sở hữu *</label>
                   <select
@@ -111,7 +125,7 @@ export default function InsertPage() {
                     )}
                     {owners.map(owner => (
                       <option key={owner.user_id} value={owner.user_id}>
-                        {owner.full_name || owner.email} - {owner.role}
+                        {owner.full_name || owner.email} - {roleLabel(owner.role)}
                       </option>
                     ))}
                   </select>
@@ -146,8 +160,13 @@ export default function InsertPage() {
               />
               <div className="form-group">
                 <label className="form-label">Chuyên khoa</label>
-                <select className="form-select" value={chuyenKhoa} onChange={e => setChuyenKhoa(e.target.value)}>
-                  <option value="">-- Chọn chuyên khoa --</option>
+                <select
+                  className="form-select"
+                  value={isHealthStationOwner ? HEALTH_STATION_SPECIALTY : chuyenKhoa}
+                  onChange={e => setChuyenKhoa(e.target.value)}
+                  disabled={isHealthStationOwner}
+                >
+                  {!isHealthStationOwner && <option value="">-- Chọn chuyên khoa --</option>}
                   {SPECIALTY_OPTIONS.map(option => (
                     <option key={option} value={option}>
                       {option}

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './store/auth'
 import Layout from './components/Layout'
+import { isAccountManagerRole, isDocumentManagerRole } from './lib/roles'
 
 import LoginPage from './pages/LoginPage'
 import ListPage from './pages/ListPage'
@@ -20,7 +21,7 @@ function AccountManagerRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (!user) return null
-  if (!['admin', 'health_department', 'hospital'].includes(user.role)) return <Navigate to="/guidelines" replace />
+  if (!isAccountManagerRole(user.role)) return <Navigate to="/guidelines" replace />
   return <Layout>{children}</Layout>
 }
 
@@ -28,7 +29,7 @@ function DocumentManagerRoute({ children }: { children: React.ReactNode }) {
   const { user, isAuthenticated } = useAuth()
   if (!isAuthenticated) return <Navigate to="/login" replace />
   if (!user) return null
-  if (!['admin', 'health_department', 'hospital'].includes(user.role)) return <Navigate to="/guidelines" replace />
+  if (!isDocumentManagerRole(user.role)) return <Navigate to="/guidelines" replace />
   return <Layout>{children}</Layout>
 }
 
