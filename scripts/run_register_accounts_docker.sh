@@ -12,6 +12,10 @@ if [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 if [ -z "$NETWORK" ]; then
+  NETWORK="$(docker inspect guideline-backend --format "{{range \$name, \$_ := .NetworkSettings.Networks}}{{println \$name}}{{end}}" 2>/dev/null | head -n 1 || true)"
+fi
+
+if [ -z "$NETWORK" ]; then
   NETWORK="$(docker inspect guideline-db --format '{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}' 2>/dev/null | head -n 1 || true)"
 fi
 
