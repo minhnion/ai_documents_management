@@ -5,8 +5,8 @@ IMAGE="${IMAGE:-python:3.11-slim}"
 PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 NETWORK="${DOCKER_NETWORK:-}"
 DB_HOST_VALUE="${DB_HOST:-db}"
-ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 DB_PORT_VALUE="${DB_PORT:-5432}"
+ENV_FILE="${ENV_FILE:-$PROJECT_DIR/.env}"
 SCRIPT_ARGS=("$@")
 
 if [[ -z "$NETWORK" ]]; then
@@ -58,22 +58,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from zipfile import ZipFile
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.core.exceptions import AppException
-from app.core.roles import ROLE_ADMIN, ROLE_HEALTH_DEPARTMENT, ROLE_HEALTH_STATION
+from app.core.roles import ROLE_HEALTH_DEPARTMENT, ROLE_HEALTH_STATION
 from app.models.user import User
 from app.services.auth_service import AuthService
 
 
 XLSX_PATH = Path("/app/scripts/Danh_sach_168_tram_y_te_dang_ky_MediBot_email_theo_ten.xlsx")
 PARENT_EMAIL = "soytetphcm@gmail.com"
-PARENT_FULL_NAME = "Sở y tế thành phố Hồ Chí Minh"
-DEFAULT_PASSWORD = "ChangeMe123!"
 SOURCE_EMAIL_DOMAIN = "example.com"
-TARGET_EMAIL_DOMAIN = "gmail.com"
+IMPORTED_EMAIL_DOMAIN = "gmail.com"
 SOURCE_EMAIL_PREFIX = "soyte"
 TARGET_EMAIL_PREFIX = "tramyte"
 
@@ -84,10 +82,11 @@ EMAIL_HEADER_KEYS = {"email", "mail", "e mail", "e-mail"}
 
 
 @dataclass(frozen=True)
-class HealthStationAccount:
+class EmailCorrection:
     row_number: int
     full_name: str
-    email: str
+    old_email: str
+    new_email: str
 
 
 def normalize_header(value: str) -> str:
@@ -98,12 +97,8 @@ def normalize_header(value: str) -> str:
 
 def normalize_email(value: str) -> str:
     email = value.strip().lower().replace("mailto:", "")
-    return re.sub(r"\s+", "", email).strip(";,.")
+    return re.sub(r"\s+", "", email).strip(";,. ")
 
-
-
-def strip_env_quotes(value: str) -> str:
-    return value.strip().strip(chr(34)).strip(chr(39))
 
 def spreadsheet_column_index(cell_ref: str) -> int:
     index = 0
@@ -187,183 +182,173 @@ def find_account_columns(rows: list[tuple[int, dict[int, str]]]) -> tuple[int, i
     raise ValueError("Cannot find the 'Họ và tên' and 'Email' columns in the workbook.")
 
 
-def convert_email_domain(email: str, *, row_number: int) -> str:
-    normalized = normalize_email(email)
+def build_correction(source_email: str, *, row_number: int, full_name: str) -> EmailCorrection:
+    normalized = normalize_email(source_email)
     local_part, separator, domain = normalized.rpartition("@")
-    if not separator or not local_part or domain != SOURCE_EMAIL_DOMAIN:
+    if not separator or domain != SOURCE_EMAIL_DOMAIN:
         raise ValueError(
-            f"Row {row_number}: expected an email ending with @{SOURCE_EMAIL_DOMAIN}, got {email!r}."
+            f"Row {row_number}: expected an email ending with @{SOURCE_EMAIL_DOMAIN}, got {source_email!r}."
         )
     if not local_part.startswith(SOURCE_EMAIL_PREFIX):
         raise ValueError(
-            f"Row {row_number}: expected an email local part starting with "
-            f"{SOURCE_EMAIL_PREFIX!r}, got {email!r}."
+            f"Row {row_number}: expected email prefix {SOURCE_EMAIL_PREFIX!r}, got {source_email!r}."
         )
 
-    converted = f"{TARGET_EMAIL_PREFIX}{local_part[len(SOURCE_EMAIL_PREFIX):]}@{TARGET_EMAIL_DOMAIN}"
-    if not EMAIL_RE.match(converted):
-        raise ValueError(f"Row {row_number}: invalid email {converted!r}.")
-    return converted
+    old_email = f"{local_part}@{IMPORTED_EMAIL_DOMAIN}"
+    new_email = f"{TARGET_EMAIL_PREFIX}{local_part[len(SOURCE_EMAIL_PREFIX):]}@{IMPORTED_EMAIL_DOMAIN}"
+    if not EMAIL_RE.match(old_email) or not EMAIL_RE.match(new_email):
+        raise ValueError(f"Row {row_number}: invalid converted email.")
+    return EmailCorrection(row_number, full_name, old_email, new_email)
 
 
-def load_accounts(xlsx_path: Path) -> list[HealthStationAccount]:
+def load_corrections(xlsx_path: Path) -> list[EmailCorrection]:
     rows = load_worksheet_rows(xlsx_path)
     header_row, name_column, email_column = find_account_columns(rows)
+    corrections: list[EmailCorrection] = []
+    seen_old_emails: set[str] = set()
+    seen_new_emails: set[str] = set()
 
-    accounts: list[HealthStationAccount] = []
-    seen_emails: set[str] = set()
     for row_number, values in rows:
         if row_number <= header_row:
             continue
-
         source_email = values.get(email_column, "")
         if not source_email.strip():
             continue
-
         full_name = values.get(name_column, "").strip()
         if not full_name:
             raise ValueError(f"Row {row_number}: health station name is required.")
 
-        email = convert_email_domain(source_email, row_number=row_number)
-        if email in seen_emails:
-            raise ValueError(f"Row {row_number}: duplicate email after conversion: {email}.")
-        if email == PARENT_EMAIL:
-            raise ValueError(f"Row {row_number}: station email cannot equal the parent department email.")
+        correction = build_correction(
+            source_email,
+            row_number=row_number,
+            full_name=full_name,
+        )
+        if correction.old_email in seen_old_emails:
+            raise ValueError(f"Row {row_number}: duplicate source email {correction.old_email}.")
+        if correction.new_email in seen_new_emails:
+            raise ValueError(f"Row {row_number}: duplicate target email {correction.new_email}.")
 
-        accounts.append(HealthStationAccount(row_number, full_name, email))
-        seen_emails.add(email)
+        corrections.append(correction)
+        seen_old_emails.add(correction.old_email)
+        seen_new_emails.add(correction.new_email)
 
-    if not accounts:
-        raise ValueError("No health station accounts were found in the workbook.")
-    return accounts
-
-
-def ensure_active_role(user: User | None, *, email: str, role: str) -> User:
-    if user is None:
-        raise RuntimeError(f"Account not found: {email}")
-    if user.role != role:
-        raise RuntimeError(f"Account {email} must have role '{role}', current role is '{user.role}'.")
-    if not user.is_active:
-        raise RuntimeError(f"Account {email} is inactive.")
-    return user
+    if not corrections:
+        raise ValueError("No health station emails were found in the workbook.")
+    return corrections
 
 
-async def register_health_stations(args: argparse.Namespace) -> int:
-    accounts = load_accounts(args.xlsx)
-    parent_email = AuthService.normalize_email(PARENT_EMAIL)
-    created_accounts: list[HealthStationAccount] = []
-    skipped_accounts: list[HealthStationAccount] = []
+def ensure_active_parent(parent: User | None) -> User:
+    if parent is None:
+        raise RuntimeError(f"Parent health department account not found: {PARENT_EMAIL}")
+    if parent.role != ROLE_HEALTH_DEPARTMENT:
+        raise RuntimeError(
+            f"Parent account {PARENT_EMAIL} must have role '{ROLE_HEALTH_DEPARTMENT}', "
+            f"current role is '{parent.role}'."
+        )
+    if not parent.is_active:
+        raise RuntimeError(f"Parent account is inactive: {PARENT_EMAIL}")
+    return parent
+
+
+async def fix_health_station_emails(args: argparse.Namespace) -> int:
+    corrections = load_corrections(args.xlsx)
 
     async with AsyncSessionLocal() as session:
         auth_service = AuthService(session)
-        parent = await auth_service.get_user_by_email(parent_email)
-        parent_will_be_created = parent is None
+        parent = ensure_active_parent(
+            await auth_service.get_user_by_email(PARENT_EMAIL)
+        )
+        parent_id = int(parent.user_id)
 
-        if parent is not None:
-            parent = ensure_active_role(
-                parent,
-                email=parent_email,
-                role=ROLE_HEALTH_DEPARTMENT,
-            )
-        else:
-            admin_email = AuthService.normalize_email(strip_env_quotes(args.admin_email))
-            admin = ensure_active_role(
-                await auth_service.get_user_by_email(admin_email),
-                email=admin_email,
-                role=ROLE_ADMIN,
-            )
-            if not args.dry_run:
-                parent = await auth_service.create_user(
-                    current_user=admin,
-                    email=parent_email,
-                    password=DEFAULT_PASSWORD,
-                    role=ROLE_HEALTH_DEPARTMENT,
-                    full_name=PARENT_FULL_NAME,
-                    is_active=True,
-                    inherits_global_documents=True,
-                )
+        old_emails = [correction.old_email for correction in corrections]
+        new_emails = [correction.new_email for correction in corrections]
+        result = await session.execute(
+            select(User).where(User.email.in_(old_emails + new_emails))
+        )
+        users_by_email = {user.email: user for user in result.scalars().all()}
 
+        to_update: list[tuple[EmailCorrection, User]] = []
+        already_fixed: list[EmailCorrection] = []
         conflicts: list[str] = []
-        for account in accounts:
-            existing_user = await auth_service.get_user_by_email(account.email)
-            if existing_user is None:
-                created_accounts.append(account)
+
+        for correction in corrections:
+            old_user = users_by_email.get(correction.old_email)
+            new_user = users_by_email.get(correction.new_email)
+
+            if old_user is not None and new_user is not None:
+                conflicts.append(
+                    f"row {correction.row_number}: both {correction.old_email} and "
+                    f"{correction.new_email} already exist."
+                )
                 continue
 
-            is_existing_station = existing_user.role == ROLE_HEALTH_STATION
-            has_expected_parent = parent is not None and existing_user.parent_id == parent.user_id
-            if is_existing_station and has_expected_parent:
-                skipped_accounts.append(account)
+            if new_user is not None:
+                if (
+                    new_user.role == ROLE_HEALTH_STATION
+                    and int(new_user.parent_id or 0) == parent_id
+                    and new_user.is_active
+                ):
+                    already_fixed.append(correction)
+                else:
+                    conflicts.append(
+                        f"row {correction.row_number}: target {correction.new_email} "
+                        f"belongs to an unexpected account (role={new_user.role}, "
+                        f"user_id={new_user.user_id})."
+                    )
                 continue
 
-            conflicts.append(
-                f"row {account.row_number}: {account.email} already exists "
-                f"as role '{existing_user.role}' (user_id={existing_user.user_id})."
-            )
+            if old_user is None:
+                conflicts.append(
+                    f"row {correction.row_number}: source account {correction.old_email} not found."
+                )
+                continue
+
+            if old_user.role != ROLE_HEALTH_STATION or int(old_user.parent_id or 0) != parent_id:
+                conflicts.append(
+                    f"row {correction.row_number}: source {correction.old_email} is not a "
+                    f"health station under {PARENT_EMAIL} (role={old_user.role}, "
+                    f"parent_id={old_user.parent_id})."
+                )
+                continue
+
+            to_update.append((correction, old_user))
 
         if conflicts:
             raise RuntimeError("\n".join(conflicts))
 
-        print(f"Loaded {len(accounts)} health station account(s) from {args.xlsx}")
-        if parent_will_be_created:
-            print(f"{'Would create' if args.dry_run else 'Created'} parent: {PARENT_FULL_NAME} <{parent_email}>")
-        else:
-            print(f"Parent already exists: {PARENT_FULL_NAME} <{parent_email}>")
+        print(f"Loaded {len(corrections)} health station email correction(s) from {args.xlsx}")
+        action = "Would update" if args.dry_run else "Updated"
+        print(f"{action}: {len(to_update)}")
+        print(f"Already corrected: {len(already_fixed)}")
 
         if args.dry_run:
             await session.rollback()
         else:
-            if parent is None:
-                raise RuntimeError("Parent department was not created.")
-            for account in created_accounts:
-                await auth_service.create_user(
-                    current_user=parent,
-                    email=account.email,
-                    password=DEFAULT_PASSWORD,
-                    role=ROLE_HEALTH_STATION,
-                    full_name=account.full_name,
-                    parent_id=int(parent.user_id),
-                    is_active=True,
-                    inherits_global_documents=bool(parent.inherits_global_documents),
-                )
+            for correction, user in to_update:
+                user.email = correction.new_email
             await session.commit()
 
-    action = "Would create" if args.dry_run else "Created"
-    print(f"{action} health stations: {len(created_accounts)}")
-    for account in created_accounts:
-        print(f"  row {account.row_number}: {account.full_name} <{account.email}>")
-    print(f"Skipped existing health stations: {len(skipped_accounts)}")
-    for account in skipped_accounts:
-        print(f"  row {account.row_number}: {account.full_name} <{account.email}>")
+    for correction, _ in to_update:
+        print(f"  row {correction.row_number}: {correction.old_email} -> {correction.new_email}")
     return 0
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Create the Ho Chi Minh City Health Department and its health station accounts."
+        description="Correct health station emails from soyte to tramyte in the database."
     )
-    parser.add_argument(
-        "--xlsx",
-        type=Path,
-        default=XLSX_PATH,
-        help="Path inside the Docker container to the source workbook.",
-    )
-    parser.add_argument(
-        "--admin-email",
-        default=settings.DEFAULT_ADMIN_EMAIL,
-        help="Active admin email used only when the parent department needs to be created.",
-    )
+    parser.add_argument("--xlsx", type=Path, default=XLSX_PATH)
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Validate the workbook and show planned changes without writing to the database.",
+        help="Validate and preview changes without updating the database.",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     try:
-        return asyncio.run(register_health_stations(parse_args()))
+        return asyncio.run(fix_health_station_emails(parse_args()))
     except (AppException, OSError, RuntimeError, SQLAlchemyError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
