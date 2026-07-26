@@ -568,10 +568,12 @@ a:hover {
 }
 
 .cell-clamp-2 {
+  line-clamp: 2;
   -webkit-line-clamp: 2;
 }
 
 .cell-clamp-3 {
+  line-clamp: 3;
   -webkit-line-clamp: 3;
 }
 
