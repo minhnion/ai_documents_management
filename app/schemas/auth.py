@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -80,3 +80,27 @@ class DeleteUserResponse(BaseModel):
 class UserListResponse(BaseModel):
     items: list[UserResponse]
     total: int
+    page: int | None = None
+    page_size: int | None = None
+
+
+class UserRoleStat(BaseModel):
+    role: str
+    label: str
+    count: int
+
+
+class UserTimeseriesPoint(BaseModel):
+    period: str
+    count: int
+
+
+class UserStatsResponse(BaseModel):
+    total: int
+    active: int
+    inactive: int
+    by_role: list[UserRoleStat]
+    granularity: str
+    date_from: date | None = None
+    date_to: date | None = None
+    timeseries: list[UserTimeseriesPoint]

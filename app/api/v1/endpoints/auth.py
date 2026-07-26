@@ -1,6 +1,7 @@
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import ActiveUser, AuthServiceDep, require_roles
 from app.core.roles import ACCOUNT_MANAGER_ROLES
@@ -18,6 +19,7 @@ from app.schemas.auth import (
     UpdateUserRoleRequest,
     UserListResponse,
     UserResponse,
+    UserStatsResponse,
 )
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -106,12 +108,51 @@ async def list_roles(
 async def list_users(
     auth_service: AuthServiceDep,
     current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int | None, Query(ge=1, le=100)] = None,
+    role: Annotated[str | None, Query(max_length=50)] = None,
+    search: Annotated[str | None, Query(max_length=255)] = None,
+    is_active: Annotated[bool | None, Query()] = None,
+    created_by_user_id: Annotated[int | None, Query(ge=1)] = None,
+    parent_id: Annotated[int | None, Query(ge=1)] = None,
 ) -> UserListResponse:
-    users = await auth_service.list_users(current_user)
+    users, total = await auth_service.list_users_paginated(
+        current_user,
+        page=page,
+        page_size=page_size,
+        role=role,
+        search=search,
+        is_active=is_active,
+        created_by_user_id=created_by_user_id,
+        parent_id=parent_id,
+    )
     return UserListResponse(
         items=[UserResponse.model_validate(user) for user in users],
-        total=len(users),
+        total=total,
+        page=page,
+        page_size=page_size,
     )
+
+
+@router.get(
+    "/users/stats",
+    response_model=UserStatsResponse,
+    summary="User Statistics",
+)
+async def get_user_stats(
+    auth_service: AuthServiceDep,
+    current_user: Annotated[object, Depends(require_roles(*ACCOUNT_MANAGER_ROLES))],
+    granularity: Annotated[str, Query(pattern="^(day|month|year)$")] = "month",
+    date_from: Annotated[date | None, Query()] = None,
+    date_to: Annotated[date | None, Query()] = None,
+) -> UserStatsResponse:
+    stats = await auth_service.get_user_stats(
+        current_user,
+        granularity=granularity,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    return UserStatsResponse(**stats)
 
 
 @router.post("/users", response_model=UserResponse, summary="Create User")

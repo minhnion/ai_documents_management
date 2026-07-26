@@ -1,5 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
-import { KeyRound, UserPlus, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { ChevronLeft, ChevronRight, KeyRound, Search, UserCheck, UserPlus, Users, UserX, X } from 'lucide-react'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts'
 import { api } from '../lib/api'
 import {
   ROLE_ADMIN,
@@ -20,7 +31,12 @@ import type {
   CreateUserRequest,
   ResetUserPasswordRequest,
   UpdateUserRoleRequest,
+  StatsGranularity,
+  UserStatsResponse,
 } from '../lib/types'
+
+const PAGE_SIZE = 10
+const CHART_COLOR = '#0969da'
 
 function accountName(user: UserResponse | null | undefined) {
   if (!user) return '-'
@@ -41,6 +57,19 @@ export default function AdminUsersPage() {
   const { user: currentUser } = useAuth()
 
   const [users, setUsers] = useState<UserResponse[]>([])
+  const [parentUsers, setParentUsers] = useState<UserResponse[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [roleFilter, setRoleFilter] = useState('')
+  const [statusFilter, setStatusFilter] = useState('')
+  const [creatorFilter, setCreatorFilter] = useState('')
+  const [parentFilter, setParentFilter] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [search, setSearch] = useState('')
+  const [stats, setStats] = useState<UserStatsResponse | null>(null)
+  const [granularity, setGranularity] = useState<StatsGranularity>('month')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [roles, setRoles] = useState<AvailableRoleResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -71,12 +100,12 @@ export default function AdminUsersPage() {
   const [resetSuccess, setResetSuccess] = useState('')
 
   const departments = useMemo(
-    () => users.filter(u => u.role === ROLE_HEALTH_DEPARTMENT && u.is_active),
-    [users],
+    () => parentUsers.filter(u => u.role === ROLE_HEALTH_DEPARTMENT && u.is_active),
+    [parentUsers],
   )
   const doctorParents = useMemo(
-    () => users.filter(u => [ROLE_CENTRAL_HOSPITAL, ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(u.role) && u.is_active),
-    [users],
+    () => parentUsers.filter(u => [ROLE_CENTRAL_HOSPITAL, ROLE_HOSPITAL, ROLE_HEALTH_STATION].includes(u.role) && u.is_active),
+    [parentUsers],
   )
   const selectedParentForCreate = useMemo(() => {
     if (currentUser?.role !== ROLE_ADMIN) return currentUser
@@ -106,33 +135,77 @@ export default function AdminUsersPage() {
     return ''
   }, [currentUser?.role, form.role, parentChoice])
 
-  const loadData = async () => {
+  const fetchUsers = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [uRes, rRes] = await Promise.all([
-        api.get<UserListResponse>('/auth/users'),
-        api.get<AvailableRoleResponse[]>('/auth/roles'),
-      ])
-      setUsers(uRes.data.items)
-      setRoles(rRes.data)
-      const defaultRole = rRes.data[0]?.name ?? 'health_department'
-      setForm(prev => ({ ...prev, role: defaultRole }))
+      const params = new URLSearchParams({
+        page: String(page),
+        page_size: String(PAGE_SIZE),
+      })
+      if (roleFilter) params.set('role', roleFilter)
+      if (statusFilter) params.set('is_active', statusFilter)
+      if (creatorFilter) params.set('created_by_user_id', creatorFilter)
+      if (parentFilter) params.set('parent_id', parentFilter)
+      if (search.trim()) params.set('search', search.trim())
+      const res = await api.get<UserListResponse>(`/auth/users?${params.toString()}`)
+      setUsers(res.data.items)
+      setTotal(res.data.total)
     } catch {
       setError('Không thể tải dữ liệu tài khoản.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [creatorFilter, page, parentFilter, roleFilter, search, statusFilter])
 
-  const refreshUsers = async () => {
+  const fetchParentUsers = useCallback(async () => {
     const res = await api.get<UserListResponse>('/auth/users')
-    setUsers(res.data.items)
-  }
+    setParentUsers(res.data.items)
+  }, [])
+
+  const fetchStats = useCallback(async () => {
+    const params = new URLSearchParams({ granularity })
+    if (dateFrom) params.set('date_from', dateFrom)
+    if (dateTo) params.set('date_to', dateTo)
+    const res = await api.get<UserStatsResponse>(`/auth/users/stats?${params.toString()}`)
+    setStats(res.data)
+  }, [dateFrom, dateTo, granularity])
+
+  const loadData = useCallback(async () => {
+    try {
+      const res = await api.get<AvailableRoleResponse[]>('/auth/roles')
+      setRoles(res.data)
+      const defaultRole = res.data[0]?.name ?? 'health_department'
+      setForm(prev => ({ ...prev, role: defaultRole }))
+    } catch {
+      setError('Không thể tải dữ liệu tài khoản.')
+    }
+  }, [])
+
+  const refreshData = useCallback(async () => {
+    await Promise.all([fetchUsers(), fetchParentUsers(), fetchStats()])
+  }, [fetchParentUsers, fetchStats, fetchUsers])
 
   useEffect(() => {
     void loadData()
-  }, [])
+    void fetchParentUsers()
+  }, [fetchParentUsers, loadData])
+
+  useEffect(() => {
+    void fetchUsers()
+  }, [fetchUsers])
+
+  useEffect(() => {
+    void fetchStats()
+  }, [fetchStats])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setSearch(searchInput)
+      setPage(1)
+    }, 350)
+    return () => window.clearTimeout(timer)
+  }, [searchInput])
 
   useEffect(() => {
     if (currentUser?.role !== ROLE_ADMIN) {
@@ -181,8 +254,7 @@ export default function AdminUsersPage() {
 
     setCreating(true)
     try {
-      const res = await api.post<UserResponse>('/auth/users', buildCreatePayload())
-      setUsers(prev => [...prev, res.data])
+      await api.post<UserResponse>('/auth/users', buildCreatePayload())
       setShowCreateForm(false)
       setForm({
         email: '',
@@ -193,6 +265,8 @@ export default function AdminUsersPage() {
         is_active: true,
         inherits_global_documents: true,
       })
+      await refreshData()
+      setPage(1)
     } catch (err: unknown) {
       setCreateError(getApiErrorMessage(err, 'Không thể tạo tài khoản.'))
     } finally {
@@ -210,12 +284,8 @@ export default function AdminUsersPage() {
         is_active: patch.is_active,
         inherits_global_documents: patch.inherits_global_documents,
       }
-      const res = await api.patch<UserResponse>(`/auth/users/${targetUser.user_id}/role`, payload)
-      if (patch.inherits_global_documents !== undefined) {
-        await refreshUsers()
-      } else {
-        setUsers(prev => prev.map(u => u.user_id === targetUser.user_id ? res.data : u))
-      }
+      await api.patch<UserResponse>(`/auth/users/${targetUser.user_id}/role`, payload)
+      await refreshData()
     } catch (err: unknown) {
       setRoleError(getApiErrorMessage(err, 'Không thể cập nhật tài khoản.'))
     } finally {
@@ -306,9 +376,13 @@ export default function AdminUsersPage() {
     setDeletingUserId(targetUser.user_id)
     setDeleteError('')
     try {
-      const res = await api.delete<DeleteUserResponse>(`/auth/users/${targetUser.user_id}`)
-      const deletedIds = new Set(res.data.deleted_user_ids)
-      setUsers(prev => prev.filter(item => !deletedIds.has(item.user_id)))
+      await api.delete<DeleteUserResponse>(`/auth/users/${targetUser.user_id}`)
+      await Promise.all([fetchParentUsers(), fetchStats()])
+      if (page > 1 && users.length === 1) {
+        setPage(prev => prev - 1)
+      } else {
+        await fetchUsers()
+      }
     } catch (err: unknown) {
       setDeleteError(getApiErrorMessage(err, 'Không thể xóa tài khoản.'))
     } finally {
@@ -336,7 +410,6 @@ export default function AdminUsersPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">Quản lý tài khoản</h1>
-          <p className="page-subtitle">Tổng số: {users.length} tài khoản</p>
         </div>
         {availableRoles.length > 0 && (
           <button className="btn btn-primary" onClick={() => setShowCreateForm(v => !v)}>
@@ -348,16 +421,84 @@ export default function AdminUsersPage() {
       {error && <div className="alert alert-error">{error}</div>}
       {resetSuccess && <div className="alert alert-success">{resetSuccess}</div>}
 
+      <div className="stats-grid">
+        <div className="stat-card">
+          <div className="stat-card-icon"><Users size={20} /></div>
+          <div><span>Tổng tài khoản</span><strong>{stats?.total ?? 0}</strong></div>
+        </div>
+        <div className="stat-card stat-card-success">
+          <div className="stat-card-icon"><UserCheck size={20} /></div>
+          <div><span>Đang hoạt động</span><strong>{stats?.active ?? 0}</strong></div>
+        </div>
+        <div className="stat-card stat-card-danger">
+          <div className="stat-card-icon"><UserX size={20} /></div>
+          <div><span>Vô hiệu</span><strong>{stats?.inactive ?? 0}</strong></div>
+        </div>
+      </div>
+
+      <div className="account-charts-grid">
+        <section className="card account-chart-card">
+          <h2 className="form-section-title">Tài khoản theo vai trò</h2>
+          <div className="account-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={stats?.by_role ?? []} margin={{ top: 8, right: 8, bottom: 24, left: -12 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="label" angle={-20} textAnchor="end" interval={0} tick={{ fontSize: 11 }} />
+                <YAxis allowDecimals={false} />
+                <Tooltip />
+                <Bar dataKey="count" name="Số tài khoản" fill={CHART_COLOR} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+        <section className="card account-chart-card">
+          <div className="account-chart-header">
+            <h2 className="form-section-title">Tài khoản tạo mới</h2>
+            <div className="account-stats-filters">
+              <select className="form-select" value={granularity} onChange={e => setGranularity(e.target.value as StatsGranularity)}>
+                <option value="day">Theo ngày</option>
+                <option value="month">Theo tháng</option>
+                <option value="year">Theo năm</option>
+              </select>
+              <input type="date" className="form-input" value={dateFrom} onChange={e => setDateFrom(e.target.value)} aria-label="Từ ngày" />
+              <input type="date" className="form-input" value={dateTo} onChange={e => setDateTo(e.target.value)} aria-label="Đến ngày" />
+            </div>
+          </div>
+          <div className="account-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={stats?.timeseries ?? []} margin={{ top: 8, right: 8, bottom: 8, left: -12 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="period" tick={{ fontSize: 11 }} />
+                <YAxis allowDecimals={false} />
+                <Tooltip />
+                <Line type="monotone" dataKey="count" name="Số tài khoản" stroke={CHART_COLOR} strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </section>
+      </div>
+
       {showCreateForm && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <h2 className="form-section-title">Tạo tài khoản mới</h2>
-          {createError && <div className="alert alert-error">{createError}</div>}
-          <form onSubmit={handleCreateUser}>
-            <div className="form-grid">
+        <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="create-user-title">
+          <div className="modal-container create-user-modal">
+            <div className="modal-header">
+              <UserPlus size={18} />
+              <div className="flex-1">
+                <h2 id="create-user-title" className="modal-title">Tạo tài khoản mới</h2>
+                <p className="modal-subtitle">Thiết lập thông tin và quyền truy cập cho tài khoản mới</p>
+              </div>
+              <button type="button" className="modal-close-btn" onClick={() => setShowCreateForm(false)} disabled={creating} title="Đóng">
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleCreateUser}>
+              <div className="modal-body">
+                {createError && <div className="alert alert-error">{createError}</div>}
+                <div className="form-grid">
               <div className="form-group">
                 <label className="form-label">Email *</label>
                 <input type="email" className="form-input" required value={form.email}
-                  onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+                  onChange={e => setForm(f => ({ ...f, email: e.target.value }))} autoFocus />
               </div>
               <div className="form-group">
                 <label className="form-label">Tên hiển thị *</label>
@@ -459,18 +600,85 @@ export default function AdminUsersPage() {
                   Kích hoạt tài khoản ngay
                 </label>
               </div>
-            </div>
-            <div className="form-actions">
-              <button type="button" className="btn btn-secondary" onClick={() => setShowCreateForm(false)}>Hủy</button>
-              <button type="submit" className="btn btn-primary" disabled={creating || Boolean(parentSelectionError)}>
-                {creating ? <span className="loading-spinner" style={{ width: 14, height: 14 }} /> : 'Tạo tài khoản'}
-              </button>
-            </div>
-          </form>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateForm(false)} disabled={creating}>Hủy</button>
+                <button type="submit" className="btn btn-primary" disabled={creating || Boolean(parentSelectionError)}>
+                  {creating ? <span className="loading-spinner" style={{ width: 14, height: 14 }} /> : 'Tạo tài khoản'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 
-      <div className="table-wrapper">
+      <div className="card" style={{ padding: 20 }}>
+        <div className="filter-bar account-filter-bar">
+          <div className="form-group account-search-field">
+            <Search size={16} className="account-search-icon" />
+            <input
+              className="form-input"
+              value={searchInput}
+              onChange={e => setSearchInput(e.target.value)}
+              placeholder="Tìm theo email hoặc tên hiển thị"
+            />
+          </div>
+          <div className="form-group">
+            <select
+              className="form-select"
+              value={roleFilter}
+              onChange={e => {
+                setRoleFilter(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả vai trò</option>
+              {roles.map(role => <option key={role.name} value={role.name}>{role.label ?? roleLabel(role.name)}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <select
+              className="form-select"
+              value={statusFilter}
+              onChange={e => {
+                setStatusFilter(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả trạng thái</option>
+              <option value="true">Hoạt động</option>
+              <option value="false">Vô hiệu</option>
+            </select>
+          </div>
+          <div className="form-group">
+            <select
+              className="form-select"
+              value={creatorFilter}
+              onChange={e => {
+                setCreatorFilter(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả người tạo</option>
+              {parentUsers.map(user => <option key={user.user_id} value={user.user_id}>{accountName(user)}</option>)}
+            </select>
+          </div>
+          <div className="form-group">
+            <select
+              className="form-select"
+              value={parentFilter}
+              onChange={e => {
+                setParentFilter(e.target.value)
+                setPage(1)
+              }}
+            >
+              <option value="">Tất cả cấp trên</option>
+              {parentUsers.map(user => <option key={user.user_id} value={user.user_id}>{accountName(user)}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="table-wrapper">
         {roleError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{roleError}</div>}
         {deleteError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{deleteError}</div>}
         {loading ? (
@@ -568,6 +776,19 @@ export default function AdminUsersPage() {
               ))}
             </tbody>
           </table>
+        )}
+        </div>
+        {!loading && total > 0 && (
+          <div className="pagination">
+            <span>Trang {page} / {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
+            <span>({total} bản ghi)</span>
+            <button className="btn btn-secondary btn-sm" disabled={page <= 1} onClick={() => setPage(prev => Math.max(1, prev - 1))}>
+              <ChevronLeft size={14} /> Trang trước
+            </button>
+            <button className="btn btn-secondary btn-sm" disabled={page >= Math.max(1, Math.ceil(total / PAGE_SIZE))} onClick={() => setPage(prev => prev + 1)}>
+              Trang sau <ChevronRight size={14} />
+            </button>
+          </div>
         )}
       </div>
 
