@@ -568,10 +568,12 @@ a:hover {
 }
 
 .cell-clamp-2 {
+  line-clamp: 2;
   -webkit-line-clamp: 2;
 }
 
 .cell-clamp-3 {
+  line-clamp: 3;
   -webkit-line-clamp: 3;
 }
 
@@ -579,7 +581,7 @@ a:hover {
 .pagination {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: center;
   gap: 8px;
   margin-top: 16px;
   font-size: 14px;
@@ -601,6 +603,206 @@ a:hover {
 
 .filter-bar .form-select {
   max-width: 320px;
+}
+
+/* ── Stats (Admin Users) ───────────────────────────────────────── */
+.stats-section {
+  margin-bottom: 24px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-card-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-md);
+  background: var(--accent-light);
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.stat-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.stat-card-label {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.stat-card > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.stat-card > div:last-child span {
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.stat-card > div:last-child strong {
+  color: var(--text-primary);
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.stat-card-success .stat-card-icon {
+  background: rgba(26, 127, 55, 0.12);
+  color: var(--success);
+}
+
+.stat-card-danger .stat-card-icon {
+  background: rgba(207, 34, 46, 0.12);
+  color: var(--danger);
+}
+
+.account-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.account-chart-card {
+  min-width: 0;
+}
+
+.account-chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-stats-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-stats-filters .form-select,
+.account-stats-filters .form-input {
+  width: auto;
+  min-width: 120px;
+  height: 36px;
+  font-size: 13px;
+}
+
+.account-chart {
+  height: 260px;
+  margin-top: 12px;
+}
+
+.account-filter-bar {
+  justify-content: space-between;
+}
+
+.account-search-field {
+  position: relative;
+  flex: 1;
+  min-width: 220px;
+}
+
+.account-search-field .form-input {
+  width: 100%;
+  max-width: none;
+  padding-left: 36px;
+}
+
+.account-search-icon {
+  position: absolute;
+  z-index: 1;
+  top: 10px;
+  left: 12px;
+  color: var(--text-muted);
+}
+
+.stats-charts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.chart-card {
+  padding: 20px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.chart-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.chart-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chart-controls .form-select,
+.chart-controls .form-input {
+  width: auto;
+  min-width: 130px;
+  font-size: 13px;
+}
+
+.chart-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+@media (max-width: 960px) {
+  .stats-grid,
+  .account-charts-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-charts {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ── Page Header ────────────────────────────────────────────────── */
@@ -2046,6 +2248,20 @@ a:hover {
 
 .password-modal {
   max-width: 460px;
+}
+
+.create-user-modal {
+  max-width: 760px;
+}
+
+@media (max-width: 800px) {
+  .modal-overlay {
+    padding: 16px;
+  }
+
+  .create-user-modal .form-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .metadata-modal-body {

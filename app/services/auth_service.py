@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import select, update
+from datetime import date, timedelta
+
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -123,6 +125,173 @@ class AuthService:
         allowed_ids = self._collect_descendant_ids(users, int(current_user.user_id))
         allowed_ids.add(int(current_user.user_id))
         return [user for user in users if int(user.user_id) in allowed_ids]
+
+    async def _get_visible_user_ids(self, current_user: User) -> set[int] | None:
+        if current_user.role == self.ROLE_ADMIN:
+            return None
+        users = list((await self.db.execute(select(User))).scalars().all())
+        visible_ids = self._collect_descendant_ids(users, int(current_user.user_id))
+        visible_ids.add(int(current_user.user_id))
+        return visible_ids
+
+    @staticmethod
+    def _build_visibility_filters(visible_ids: set[int] | None) -> list[object]:
+        if visible_ids is None:
+            return []
+        if not visible_ids:
+            return [User.user_id == -1]
+        return [User.user_id.in_(visible_ids)]
+
+    async def list_users_paginated(
+        self,
+        current_user: User,
+        *,
+        page: int = 1,
+        page_size: int | None = None,
+        role: str | None = None,
+        search: str | None = None,
+        is_active: bool | None = None,
+        created_by_user_id: int | None = None,
+        parent_id: int | None = None,
+    ) -> tuple[list[User], int]:
+        visible_ids = await self._get_visible_user_ids(current_user)
+        filters: list[object] = self._build_visibility_filters(visible_ids)
+
+        if role and role.strip():
+            normalized_role = role.strip().lower()
+            if normalized_role in self.ROLE_DESCRIPTIONS:
+                filters.append(User.role == normalized_role)
+            else:
+                filters.append(User.user_id == -1)
+
+        if is_active is not None:
+            filters.append(User.is_active.is_(bool(is_active)))
+
+        if created_by_user_id is not None:
+            filters.append(User.created_by_user_id == created_by_user_id)
+
+        if parent_id is not None:
+            filters.append(User.parent_id == parent_id)
+
+        if search and search.strip():
+            keyword = f"%{search.strip().lower()}%"
+            filters.append(
+                or_(
+                    func.lower(User.email).like(keyword),
+                    func.lower(func.coalesce(User.full_name, "")).like(keyword),
+                )
+            )
+
+        order_by = (
+            User.role.asc(),
+            User.parent_id.asc().nullsfirst(),
+            User.user_id.asc(),
+        )
+
+        total = int(
+            (
+                await self.db.execute(
+                    select(func.count()).select_from(User).where(*filters)
+                )
+            ).scalar_one()
+        )
+
+        stmt = (
+            select(User)
+            .options(selectinload(User.parent))
+            .where(*filters)
+            .order_by(*order_by)
+        )
+        if page_size is not None:
+            offset = (max(page, 1) - 1) * page_size
+            stmt = stmt.offset(offset).limit(page_size)
+
+        users = list((await self.db.execute(stmt)).scalars().all())
+        return users, total
+
+    async def get_user_stats(
+        self,
+        current_user: User,
+        *,
+        granularity: str = "month",
+        date_from: date | None = None,
+        date_to: date | None = None,
+    ) -> dict[str, object]:
+        normalized_granularity = (granularity or "month").strip().lower()
+        if normalized_granularity not in ("day", "month", "year"):
+            normalized_granularity = "month"
+        period_format = {
+            "day": "YYYY-MM-DD",
+            "month": "YYYY-MM",
+            "year": "YYYY",
+        }[normalized_granularity]
+
+        visible_ids = await self._get_visible_user_ids(current_user)
+        filters: list[object] = self._build_visibility_filters(visible_ids)
+        if date_from is not None:
+            filters.append(User.created_at >= date_from)
+        if date_to is not None:
+            filters.append(User.created_at < (date_to + timedelta(days=1)))
+
+        total = int(
+            (
+                await self.db.execute(
+                    select(func.count()).select_from(User).where(*filters)
+                )
+            ).scalar_one()
+        )
+        active = int(
+            (
+                await self.db.execute(
+                    select(func.count())
+                    .select_from(User)
+                    .where(*filters, User.is_active.is_(True))
+                )
+            ).scalar_one()
+        )
+        inactive = total - active
+
+        role_rows = (
+            await self.db.execute(
+                select(User.role, func.count().label("count"))
+                .where(*filters)
+                .group_by(User.role)
+            )
+        ).all()
+        role_counts = {row.role: int(row.count) for row in role_rows}
+        by_role = [
+            {
+                "role": role_name,
+                "label": self.ROLE_LABELS.get(role_name, role_name),
+                "count": role_counts[role_name],
+            }
+            for role_name in self.ROLE_ORDER
+            if role_name in role_counts
+        ]
+
+        period_expr = func.to_char(User.created_at, period_format)
+        ts_rows = (
+            await self.db.execute(
+                select(period_expr.label("period"), func.count().label("count"))
+                .where(*filters)
+                .group_by(period_expr)
+                .order_by(period_expr.asc())
+            )
+        ).all()
+        timeseries = [
+            {"period": row.period, "count": int(row.count)} for row in ts_rows
+        ]
+
+        return {
+            "total": total,
+            "active": active,
+            "inactive": inactive,
+            "by_role": by_role,
+            "granularity": normalized_granularity,
+            "date_from": date_from,
+            "date_to": date_to,
+            "timeseries": timeseries,
+        }
 
     async def authenticate_user(self, email: str, password: str) -> User | None:
         user = await self.get_user_by_email(email)

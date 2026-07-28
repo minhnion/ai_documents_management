@@ -49,6 +49,32 @@ export interface AvailableRoleResponse {
 export interface UserListResponse {
   items: UserResponse[]
   total: number
+  page?: number | null
+  page_size?: number | null
+}
+
+export type StatsGranularity = 'day' | 'month' | 'year'
+
+export interface UserRoleStat {
+  role: string
+  label: string
+  count: number
+}
+
+export interface UserTimeseriesPoint {
+  period: string
+  count: number
+}
+
+export interface UserStatsResponse {
+  total: number
+  active: number
+  inactive: number
+  by_role: UserRoleStat[]
+  granularity: StatsGranularity
+  date_from: string | null
+  date_to: string | null
+  timeseries: UserTimeseriesPoint[]
 }
 
 export interface CreateUserRequest {
