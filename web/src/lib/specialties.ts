@@ -1,4 +1,5 @@
 export const SPECIALTY_OPTIONS = [
+  'Đột quỵ',
   'Tim mạch',
   'Nội tiết - Ðái tháo đường',
   'Ung bướu',

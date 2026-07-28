@@ -651,7 +651,7 @@ export default function AdminUsersPage() {
               <option value="false">Vô hiệu</option>
             </select>
           </div>
-          <div className="form-group">
+          {/* <div className="form-group">
             <select
               className="form-select"
               value={creatorFilter}
@@ -663,8 +663,8 @@ export default function AdminUsersPage() {
               <option value="">Tất cả người tạo</option>
               {parentUsers.map(user => <option key={user.user_id} value={user.user_id}>{accountName(user)}</option>)}
             </select>
-          </div>
-          <div className="form-group">
+          </div> */}
+          {/* <div className="form-group">
             <select
               className="form-select"
               value={parentFilter}
@@ -676,7 +676,7 @@ export default function AdminUsersPage() {
               <option value="">Tất cả cấp trên</option>
               {parentUsers.map(user => <option key={user.user_id} value={user.user_id}>{accountName(user)}</option>)}
             </select>
-          </div>
+          </div> */}
         </div>
         <div className="table-wrapper">
         {roleError && <div className="alert alert-error" style={{ marginBottom: 8 }}>{roleError}</div>}
