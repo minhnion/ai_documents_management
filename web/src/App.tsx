@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './store/auth'
 import Layout from './components/Layout'
-import { isAccountManagerRole, isDocumentManagerRole } from './lib/roles'
+import { isAccountManagerRole, isAdminRole, isDocumentManagerRole } from './lib/roles'
 
 import LoginPage from './pages/LoginPage'
 import ListPage from './pages/ListPage'
@@ -9,6 +9,8 @@ import ViewPage from './pages/ViewPage'
 import InsertPage from './pages/InsertPage'
 import UpdatePage from './pages/UpdatePage'
 import AdminUsersPage from './pages/AdminUsersPage'
+import AdminCostManagementPage from './pages/AdminCostManagementPage'
+import AdminCostAnalyticsPage from './pages/AdminCostAnalyticsPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -33,6 +35,14 @@ function DocumentManagerRoute({ children }: { children: React.ReactNode }) {
   return <Layout>{children}</Layout>
 }
 
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { user, isAuthenticated } = useAuth()
+  if (!isAuthenticated) return <Navigate to="/login" replace />
+  if (!user) return null
+  if (!isAdminRole(user.role)) return <Navigate to="/guidelines" replace />
+  return <Layout>{children}</Layout>
+}
+
 // Global default export wrapped with providers
 export default function App() {
   return (
@@ -49,6 +59,8 @@ export default function App() {
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
 
           <Route path="/admin/users" element={<AccountManagerRoute><AdminUsersPage /></AccountManagerRoute>} />
+          <Route path="/admin/cost/pricing" element={<AdminRoute><AdminCostManagementPage /></AdminRoute>} />
+          <Route path="/admin/cost/analytics" element={<AdminRoute><AdminCostAnalyticsPage /></AdminRoute>} />
           <Route path="/account/password" element={<ProtectedRoute><ChangePasswordPage /></ProtectedRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />

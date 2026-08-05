@@ -1,6 +1,6 @@
-import { BookOpen, KeyRound, LogOut, Users } from 'lucide-react'
+import { BarChart3, BookOpen, DollarSign, KeyRound, LogOut, Users } from 'lucide-react'
 import { Link } from 'react-router-dom'
-import { roleLabel, isAccountManagerRole } from '../lib/roles'
+import { roleLabel, isAccountManagerRole, isAdminRole } from '../lib/roles'
 import { useAuth } from '../store/auth'
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -19,6 +19,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <Link to="/admin/users" className="btn btn-ghost btn-sm">
             <Users size={15} /> Tài khoản
           </Link>
+        )}
+        {user && isAdminRole(user.role) && (
+          <>
+            <Link to="/admin/cost/pricing" className="btn btn-ghost btn-sm">
+              <DollarSign size={15} /> Cost Management
+            </Link>
+            <Link to="/admin/cost/analytics" className="btn btn-ghost btn-sm">
+              <BarChart3 size={15} /> Cost Analytics
+            </Link>
+          </>
         )}
         {isAuthenticated && (
           <div className="navbar-user">

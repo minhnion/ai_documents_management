@@ -43,6 +43,10 @@ export function isAccountManagerRole(role: string | null | undefined) {
   return ACCOUNT_MANAGER_ROLES.includes(role as typeof ACCOUNT_MANAGER_ROLES[number])
 }
 
+export function isAdminRole(role: string | null | undefined) {
+  return role === ROLE_ADMIN
+}
+
 export function isTopLevelUnitRole(role: string | null | undefined) {
   return TOP_LEVEL_UNIT_ROLES.includes(role as typeof TOP_LEVEL_UNIT_ROLES[number])
 }
