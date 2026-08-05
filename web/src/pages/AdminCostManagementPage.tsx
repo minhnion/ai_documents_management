@@ -73,8 +73,8 @@ export default function AdminCostManagementPage() {
     <div className="page-container">
       <div className="page-header">
         <div>
-          <h1>Cost Management</h1>
-          <p className="text-muted">Cấu hình đơn giá theo loại model.</p>
+          <h1>Quản lý chi phí</h1>
+          <p className="text-muted">Cấu hình đơn giá theo từng loại mô hình.</p>
         </div>
       </div>
 
@@ -82,14 +82,14 @@ export default function AdminCostManagementPage() {
       {success && <div className="alert alert-success mb-4">{success}</div>}
 
       <form onSubmit={handleSubmit} className="cost-pricing-grid">
-        <section className="card">
+        <section className="card cost-card">
           <div className="cost-section-title">
             <DollarSign size={18} />
-            <h2>OCR Model Pricing</h2>
+            <h2>Đơn giá mô hình OCR</h2>
           </div>
           <div className="cost-form-grid">
             <label className="form-group">
-              <span className="form-label">Input Character Price (USD / character)</span>
+              <span className="form-label">Giá ký tự đầu vào (USD / ký tự)</span>
               <input
                 className="form-input"
                 type="number"
@@ -101,7 +101,7 @@ export default function AdminCostManagementPage() {
               />
             </label>
             <label className="form-group">
-              <span className="form-label">Output Character Price (USD / character)</span>
+              <span className="form-label">Giá ký tự đầu ra (USD / ký tự)</span>
               <input
                 className="form-input"
                 type="number"
@@ -113,7 +113,7 @@ export default function AdminCostManagementPage() {
               />
             </label>
             <label className="form-group">
-              <span className="form-label">Page Price (USD / page)</span>
+              <span className="form-label">Giá theo trang (USD / trang)</span>
               <input
                 className="form-input"
                 type="number"
@@ -127,14 +127,14 @@ export default function AdminCostManagementPage() {
           </div>
         </section>
 
-        <section className="card">
+        <section className="card cost-card">
           <div className="cost-section-title">
             <DollarSign size={18} />
-            <h2>VLM Model Pricing</h2>
+            <h2>Đơn giá mô hình VLM</h2>
           </div>
           <div className="cost-form-grid">
             <label className="form-group">
-              <span className="form-label">Input Token Price (USD / token)</span>
+              <span className="form-label">Giá token đầu vào (USD / token)</span>
               <input
                 className="form-input"
                 type="number"
@@ -146,7 +146,7 @@ export default function AdminCostManagementPage() {
               />
             </label>
             <label className="form-group">
-              <span className="form-label">Output Token Price (USD / token)</span>
+              <span className="form-label">Giá token đầu ra (USD / token)</span>
               <input
                 className="form-input"
                 type="number"

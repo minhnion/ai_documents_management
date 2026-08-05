@@ -24,7 +24,12 @@ function toDateInput(date: Date) {
 
 function currency(value: string | number) {
   const numberValue = typeof value === 'number' ? value : Number(value || 0)
-  return `$${numberValue.toFixed(6)}`
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  }).format(numberValue)
 }
 
 function displayName(item: { full_name: string | null; email: string }) {
@@ -110,31 +115,31 @@ export default function AdminCostAnalyticsPage() {
     <div className="page-container">
       <div className="page-header">
         <div>
-          <h1>Cost Analytics</h1>
-          <p className="text-muted">Theo dõi chi phí OCR Model và VLM Model theo thời gian.</p>
+          <h1>Thống kê chi phí</h1>
+          <p className="text-muted">Theo dõi chi phí mô hình OCR và mô hình VLM theo thời gian.</p>
         </div>
       </div>
 
       {error && <div className="alert alert-danger mb-4">{error}</div>}
 
-      <section className="card mb-4">
+      <section className="card cost-card mb-4">
         <div className="cost-filter-header">
           <Filter size={17} />
           <span className="font-semibold">Bộ lọc</span>
         </div>
         <div className="cost-filter-grid">
           <label className="form-group">
-            <span className="form-label">Time</span>
+            <span className="form-label">Thời gian</span>
             <select className="form-select" value={preset} onChange={event => setPreset(event.target.value as TimePreset)}>
-              <option value="today">Today</option>
-              <option value="last5">Last 5 Days</option>
-              <option value="last7">Last 7 Days</option>
-              <option value="month">This Month</option>
-              <option value="custom">Custom Range</option>
+              <option value="today">Hôm nay</option>
+              <option value="last5">5 ngày gần nhất</option>
+              <option value="last7">7 ngày gần nhất</option>
+              <option value="month">Tháng này</option>
+              <option value="custom">Khoảng tùy chọn</option>
             </select>
           </label>
           <label className="form-group">
-            <span className="form-label">From</span>
+            <span className="form-label">Từ ngày</span>
             <input className="form-input" type="date" value={dateFrom} onChange={event => {
               setPreset('custom')
               setDateFrom(event.target.value)
@@ -142,7 +147,7 @@ export default function AdminCostAnalyticsPage() {
             }} />
           </label>
           <label className="form-group">
-            <span className="form-label">To</span>
+            <span className="form-label">Đến ngày</span>
             <input className="form-input" type="date" value={dateTo} onChange={event => {
               setPreset('custom')
               setDateTo(event.target.value)
@@ -150,24 +155,24 @@ export default function AdminCostAnalyticsPage() {
             }} />
           </label>
           <label className="form-group">
-            <span className="form-label">Account</span>
+            <span className="form-label">Tài khoản</span>
             <select className="form-select" value={accountId} onChange={event => {
               setAccountId(event.target.value)
               setPage(1)
             }}>
-              <option value="">All Accounts</option>
+              <option value="">Tất cả tài khoản</option>
               {stats?.filters.accounts.map(account => (
                 <option key={account.user_id} value={account.user_id}>{displayName(account)}</option>
               ))}
             </select>
           </label>
           <label className="form-group">
-            <span className="form-label">Account Group</span>
+            <span className="form-label">Nhóm tài khoản</span>
             <select className="form-select" value={groupId} onChange={event => {
               setGroupId(event.target.value)
               setPage(1)
             }}>
-              <option value="">All Groups</option>
+              <option value="">Tất cả nhóm</option>
               {stats?.filters.groups.map(group => (
                 <option key={group.user_id} value={group.user_id}>{displayName(group)}</option>
               ))}
@@ -177,32 +182,32 @@ export default function AdminCostAnalyticsPage() {
       </section>
 
       <section className="stats-grid mb-4">
-        <div className="stat-card">
+        <div className="stat-card cost-stat-card">
           <div className="stat-card-icon"><BarChart3 size={18} /></div>
           <div>
             <div className="stat-card-value">{currency(stats?.summary.total_cost ?? 0)}</div>
-            <div className="stat-card-label">Total Cost</div>
+            <div className="stat-card-label">Tổng chi phí</div>
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card cost-stat-card">
           <div className="stat-card-icon"><BarChart3 size={18} /></div>
           <div>
             <div className="stat-card-value">{currency(stats?.summary.ocr_cost ?? 0)}</div>
-            <div className="stat-card-label">OCR Cost</div>
+            <div className="stat-card-label">Chi phí OCR</div>
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card cost-stat-card">
           <div className="stat-card-icon"><BarChart3 size={18} /></div>
           <div>
             <div className="stat-card-value">{currency(stats?.summary.vlm_cost ?? 0)}</div>
-            <div className="stat-card-label">VLM Cost</div>
+            <div className="stat-card-label">Chi phí VLM</div>
           </div>
         </div>
-        <div className="stat-card">
+        <div className="stat-card cost-stat-card">
           <div className="stat-card-icon"><BarChart3 size={18} /></div>
           <div>
             <div className="stat-card-value">{stats?.summary.documents_processed ?? 0}</div>
-            <div className="stat-card-label">Documents Processed</div>
+            <div className="stat-card-label">Tài liệu đã xử lý</div>
           </div>
         </div>
       </section>
@@ -210,7 +215,7 @@ export default function AdminCostAnalyticsPage() {
       <section className="cost-charts-grid mb-4">
         <div className="chart-card">
           <div className="chart-header">
-            <div className="chart-title">Cost Trend</div>
+            <div className="chart-title">Xu hướng chi phí</div>
           </div>
           <div className="account-chart">
             {chartData.length ? (
@@ -218,11 +223,11 @@ export default function AdminCostAnalyticsPage() {
                 <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="period" />
-                  <YAxis tickFormatter={value => `$${Number(value).toFixed(4)}`} />
+                  <YAxis tickFormatter={value => currency(Number(value))} />
                   <Tooltip formatter={(value) => currency(Number(value))} />
                   <Line type="monotone" dataKey="OCR" stroke="#0969da" strokeWidth={2} dot={false} />
                   <Line type="monotone" dataKey="VLM" stroke="#1a7f37" strokeWidth={2} dot={false} />
-                  <Line type="monotone" dataKey="Total" stroke="#9a6700" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="Total" name="Tổng" stroke="#9a6700" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             ) : <div className="chart-empty">{loading ? 'Đang tải...' : 'Chưa có dữ liệu.'}</div>}
@@ -230,7 +235,7 @@ export default function AdminCostAnalyticsPage() {
         </div>
         <div className="chart-card">
           <div className="chart-header">
-            <div className="chart-title">Cost Breakdown</div>
+            <div className="chart-title">Cơ cấu chi phí</div>
           </div>
           <div className="account-chart">
             {chartData.length ? (
@@ -238,7 +243,7 @@ export default function AdminCostAnalyticsPage() {
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="period" />
-                  <YAxis tickFormatter={value => `$${Number(value).toFixed(4)}`} />
+                  <YAxis tickFormatter={value => currency(Number(value))} />
                   <Tooltip formatter={(value) => currency(Number(value))} />
                   <Bar dataKey="OCR" fill="#0969da" />
                   <Bar dataKey="VLM" fill="#1a7f37" />
@@ -253,10 +258,10 @@ export default function AdminCostAnalyticsPage() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Date</th>
-              <th>Document</th>
-              <th>Account</th>
-              <th>Group</th>
+              <th>Thời gian</th>
+              <th>Tài liệu</th>
+              <th>Tài khoản</th>
+              <th>Nhóm</th>
               <th className="text-right">OCR</th>
               <th className="text-right">VLM</th>
               <th className="text-right">Total</th>
@@ -265,7 +270,7 @@ export default function AdminCostAnalyticsPage() {
           <tbody>
             {history?.items.map(item => (
               <tr key={item.cost_history_id}>
-                <td>{new Date(item.created_at).toLocaleString()}</td>
+                <td>{new Date(item.created_at).toLocaleString('vi-VN')}</td>
                 <td>#{item.document_id}</td>
                 <td>{item.account ? displayName(item.account) : '-'}</td>
                 <td>{item.group ? displayName(item.group) : '-'}</td>

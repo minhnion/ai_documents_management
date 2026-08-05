@@ -23,10 +23,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {user && isAdminRole(user.role) && (
           <>
             <Link to="/admin/cost/pricing" className="btn btn-ghost btn-sm">
-              <DollarSign size={15} /> Cost Management
+              <DollarSign size={15} /> Quản lý chi phí
             </Link>
             <Link to="/admin/cost/analytics" className="btn btn-ghost btn-sm">
-              <BarChart3 size={15} /> Cost Analytics
+              <BarChart3 size={15} /> Thống kê chi phí
             </Link>
           </>
         )}
