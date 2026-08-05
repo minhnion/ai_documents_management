@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import BadRequestException, UnprocessableEntityException
 from app.models.document import Document
+from app.services.cost_calculation_service import CostCalculationService, OcrUsage, VlmUsage
 from app.services.document_pipeline_selector_service import (
     DocumentPipelineSelection,
     DocumentPipelineSelectorService,
@@ -46,6 +47,7 @@ class DocumentIngestionPipelineService:
         self._extract_image_service = ExtractImageService()
         self._persistence_service = PipelinePersistenceService(db=db)
         self._pipeline_selector_service = DocumentPipelineSelectorService()
+        self._cost_service = CostCalculationService(db=db)
         self._spatial_pdf_service: SpatialPdfPipelineService | None = None
 
     async def process_document(
@@ -79,6 +81,8 @@ class DocumentIngestionPipelineService:
 
         effective_mode = selection.mode
         persist_stats: dict[str, int]
+        ocr_usage = OcrUsage()
+        vlm_usage = VlmUsage()
 
         if effective_mode == "spatial_pdf":
             self._validate_pipeline_settings("spatial_pdf")
@@ -124,11 +128,20 @@ class DocumentIngestionPipelineService:
         if effective_mode == "ocr_llm":
             self._validate_pipeline_settings("ocr_llm")
             ocr_result = await self._ocr_document(pdf_path)
+            ocr_usage = OcrUsage(
+                input_chars=0,
+                output_chars=len(ocr_result.raw_markdown or ""),
+                pages=int(ocr_result.page_count or 0),
+            )
             ocr_md_name = self._derive_ocr_md_name(document=document, pdf_path=pdf_path)
             toc = await self._build_toc(
                 ocr_result.raw_markdown,
                 source_file=ocr_md_name,
                 ade_chunks=ocr_result.ade_chunks,
+            )
+            vlm_usage = VlmUsage(
+                input_tokens=int(self._toc_service.last_vlm_usage.get("input_tokens", 0)),
+                output_tokens=int(self._toc_service.last_vlm_usage.get("output_tokens", 0)),
             )
             chunk_payload = self._chunk_with_fuzzy_matching(
                 ocr_result.raw_markdown,
@@ -163,6 +176,11 @@ class DocumentIngestionPipelineService:
                 page_count=ocr_result.page_count,
             )
         document.pipeline_mode_used = effective_mode
+        await self._cost_service.record_document_cost(
+            document=document,
+            ocr_usage=ocr_usage,
+            vlm_usage=vlm_usage,
+        )
         logger.info(
             "Pipeline done | guideline_id=%s version_id=%s mode=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,
