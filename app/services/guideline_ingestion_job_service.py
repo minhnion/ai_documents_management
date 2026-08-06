@@ -150,6 +150,8 @@ class GuidelineIngestionJobService:
                     guideline_id=int(version.guideline_id),
                     version_id=int(version.version_id),
                     document=document,
+                    source_job_id=int(job.job_id),
+                    actor_user_id=int(document.created_by_user_id) if document.created_by_user_id else None,
                 )
 
                 previous_active_versions_updated = 0

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import BadRequestException, NotFoundException, UnprocessableEntityException
 from app.models.chunk import Chunk
+from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
 from app.models.section import Section
@@ -20,6 +21,7 @@ from app.services.pipeline.chunk_prompts import (
     CHUNK_ABSTRACT_SYSTEM_PROMPT,
     build_chunk_abstract_user_prompt,
 )
+from app.services.cost_calculation_service import CostCalculationService, UsageEventInput
 
 _PAGE_BREAK_RE = re.compile(r"<!--\s*PAGE(?:_| )BREAK\s*-->", re.IGNORECASE)
 _STANDALONE_PAGE_NUMBER_RE = re.compile(r"(?m)^\s*\d+\s*$")
@@ -44,12 +46,19 @@ class PreparedChunk:
 
 
 class ChunkGenerationService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, *, source_job_id: int | None = None) -> None:
         self.db = db
+        self.source_job_id = source_job_id
+        self._usage_event_counter = 0
 
     async def rebuild_chunks_for_version(self, version_id: int) -> dict[str, int]:
         max_chars = self._validate_chunk_settings()
         owner_user_id = await self._load_version_owner_user_id(version_id)
+        document = (
+            await self.db.execute(
+                select(Document).where(Document.version_id == version_id).order_by(Document.document_id.asc()).limit(1)
+            )
+        ).scalar_one_or_none()
 
         await self.db.execute(delete(Chunk).where(Chunk.version_id == version_id))
         await self.db.flush()
@@ -67,6 +76,8 @@ class ChunkGenerationService:
             version_id=version_id,
             owner_user_id=owner_user_id,
             prepared_chunks=prepared_chunks,
+            document_id=int(document.document_id) if document else None,
+            actor_user_id=int(document.created_by_user_id) if document and document.created_by_user_id else None,
         )
         return {"chunk_count": len(chunk_rows)}
 
@@ -306,8 +317,16 @@ class ChunkGenerationService:
         version_id: int,
         owner_user_id: int | None,
         prepared_chunks: Sequence[PreparedChunk],
+        document_id: int | None,
+        actor_user_id: int | None,
     ) -> list[Chunk]:
-        abstracts = await self._build_chunk_abstracts(prepared_chunks)
+        abstracts = await self._build_chunk_abstracts(
+            prepared_chunks,
+            document_id=document_id,
+            version_id=version_id,
+            owner_user_id=owner_user_id,
+            actor_user_id=actor_user_id,
+        )
         chunk_rows: list[Chunk] = []
         for prepared, abstract in zip(prepared_chunks, abstracts):
             chunk = Chunk(
@@ -322,26 +341,60 @@ class ChunkGenerationService:
             chunk_rows.append(chunk)
         await self.db.flush()
 
-        embeddings = await self._build_embeddings(abstracts)
+        embeddings, embedding_usage = await self._build_embeddings(abstracts)
+        if embedding_usage is not None:
+            await self._record_usage(
+                model_type="embedding",
+                operation="chunk_embedding",
+                document_id=document_id,
+                version_id=version_id,
+                account_id=owner_user_id,
+                actor_user_id=actor_user_id,
+                request_count=1,
+                input_tokens=embedding_usage.get("input_tokens", 0),
+                usage_source="provider_reported" if embedding_usage.get("input_tokens", 0) else "estimated",
+                sequence=1,
+            )
         await self._persist_embeddings(chunk_rows, embeddings)
         return chunk_rows
 
     async def _build_chunk_abstracts(
         self,
         prepared_chunks: Sequence[PreparedChunk],
+        *,
+        document_id: int | None,
+        version_id: int | None,
+        owner_user_id: int | None,
+        actor_user_id: int | None,
     ) -> list[str]:
         abstracts: list[str] = []
         for prepared in prepared_chunks:
-            abstract = await asyncio.to_thread(
+            abstract, usage_events = await asyncio.to_thread(
                 self._summarize_chunk_text_sync,
                 prepared.text,
             )
+            for event_index, usage in enumerate(usage_events, start=1):
+                await self._record_usage(
+                    model_type="llm",
+                    operation="chunk_abstract",
+                    document_id=document_id,
+                    version_id=version_id,
+                    account_id=owner_user_id,
+                    actor_user_id=actor_user_id,
+                    request_count=1,
+                    input_tokens=usage.get("input_tokens", 0),
+                    cached_input_tokens=usage.get("cached_input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    usage_source="provider_reported" if usage.get("input_tokens", 0) or usage.get("output_tokens", 0) else "estimated",
+                    sequence=len(abstracts) + event_index,
+                )
             abstracts.append(abstract)
         return abstracts
 
-    def _summarize_chunk_text_sync(self, text_value: str) -> str:
+    def _summarize_chunk_text_sync(self, text_value: str) -> tuple[str, list[dict[str, int]]]:
         client = self._build_openai_client()
         user_prompt = build_chunk_abstract_user_prompt(text_value)
+        usage_events: list[dict[str, int]] = []
         try:
             response = client.responses.create(
                 model=settings.OPENAI_MODEL_NAME.strip(),
@@ -351,9 +404,10 @@ class ChunkGenerationService:
                 ],
                 max_output_tokens=800,
             )
+            usage_events.append(self._extract_usage(response))
             summary = (response.output_text or "").strip()
             if summary:
-                return summary
+                return summary, usage_events
         except Exception:
             pass
 
@@ -366,10 +420,11 @@ class ChunkGenerationService:
                 ],
                 max_tokens=800,
             )
+            usage_events.append(self._extract_usage(response))
             message = response.choices[0].message.content if response.choices else None
             summary = (message or "").strip()
             if summary:
-                return summary
+                return summary, usage_events
         except Exception as exc:
             raise UnprocessableEntityException(
                 f"Chunk abstract generation failed: {exc}"
@@ -377,12 +432,12 @@ class ChunkGenerationService:
 
         raise UnprocessableEntityException("Chunk abstract generation returned empty output.")
 
-    async def _build_embeddings(self, abstracts: Sequence[str]) -> list[list[float]]:
+    async def _build_embeddings(self, abstracts: Sequence[str]) -> tuple[list[list[float]], dict[str, int] | None]:
         if not abstracts:
-            return []
+            return [], None
         return await asyncio.to_thread(self._build_embeddings_sync, list(abstracts))
 
-    def _build_embeddings_sync(self, abstracts: list[str]) -> list[list[float]]:
+    def _build_embeddings_sync(self, abstracts: list[str]) -> tuple[list[list[float]], dict[str, int]]:
         client = self._build_openai_client()
         try:
             response = client.embeddings.create(
@@ -402,7 +457,77 @@ class ChunkGenerationService:
                     "Chunk embedding generation returned empty embedding."
                 )
             embeddings.append([float(value) for value in embedding])
-        return embeddings
+        return embeddings, self._extract_usage(response)
+
+    @staticmethod
+    def _extract_usage(response) -> dict[str, int]:
+        raw = getattr(response, "usage", None)
+        if raw is None and isinstance(response, dict):
+            raw = response.get("usage")
+        if raw is None:
+            return {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0}
+
+        def read(name: str, default=0):
+            if isinstance(raw, dict):
+                return raw.get(name, default)
+            return getattr(raw, name, default)
+
+        input_tokens = read("input_tokens", read("prompt_tokens", 0))
+        output_tokens = read("output_tokens", read("completion_tokens", 0))
+        details = read("input_tokens_details", read("prompt_tokens_details", None))
+        if isinstance(details, dict):
+            cached = details.get("cached_tokens", 0)
+        else:
+            cached = getattr(details, "cached_tokens", 0) if details is not None else 0
+        return {
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "cached_input_tokens": max(0, int(cached or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
+        }
+
+    async def _record_usage(
+        self,
+        *,
+        model_type: str,
+        operation: str,
+        document_id: int | None,
+        version_id: int | None,
+        account_id: int | None,
+        actor_user_id: int | None,
+        request_count: int,
+        input_tokens: int = 0,
+        cached_input_tokens: int = 0,
+        output_tokens: int = 0,
+        usage_source: str = "estimated",
+        sequence: int = 1,
+    ) -> None:
+        self._usage_event_counter += 1
+        event_sequence = self._usage_event_counter
+        key = f"chunk_rebuild:{self.source_job_id or document_id or version_id}:{operation}:{event_sequence}"
+        try:
+            await CostCalculationService.record_usage_isolated(
+                UsageEventInput(
+                    idempotency_key=key,
+                    model_type=model_type,
+                    operation=operation,
+                    document_id=document_id,
+                    version_id=version_id,
+                    job_type="chunk_rebuild",
+                    source_job_id=str(self.source_job_id or version_id or document_id),
+                    actor_user_id=actor_user_id,
+                    account_id=account_id,
+                    request_count=request_count,
+                    input_tokens=input_tokens,
+                    cached_input_tokens=cached_input_tokens,
+                    output_tokens=output_tokens,
+                    usage_source=usage_source,
+                    request_sequence=event_sequence,
+                )
+            )
+        except Exception:
+            # Keep generation usable while making the accounting failure visible.
+            import logging
+            logging.getLogger(__name__).exception("Unable to persist chunk cost event | key=%s", key)
 
     async def _persist_embeddings(
         self,

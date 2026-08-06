@@ -101,6 +101,96 @@ export interface DeleteUserResponse {
   deleted_guideline_count: number
 }
 
+// Cost Management
+export type CostModelType = 'ocr' | 'llm' | 'embedding'
+
+export interface CostRate {
+  unit: string
+  label: string
+  unit_divisor: number
+  price_usd: string
+}
+
+export interface CostModelPricing {
+  model_type: CostModelType
+  display_name: string
+  billing_mode: string
+  rates: CostRate[]
+}
+
+export interface CostPricingResponse {
+  models: CostModelPricing[]
+}
+
+export interface CostPricingUpdateRequest {
+  models: CostModelPricing[]
+}
+
+export interface CostStatisticsPoint {
+  period: string
+  ocr_cost: string
+  llm_cost: string
+  embedding_cost: string
+  total_cost: string
+}
+
+export interface CostStatisticsSummary {
+  total_cost: string
+  ocr_cost: string
+  llm_cost: string
+  embedding_cost: string
+  documents_processed: number
+  usage_events: number
+  ocr_pages: number
+  llm_input_tokens: number
+  llm_cached_input_tokens: number
+  llm_output_tokens: number
+  embedding_input_tokens: number
+}
+
+export interface CostFilterOptionsResponse {
+  accounts: UserSummaryResponse[]
+  groups: UserSummaryResponse[]
+}
+
+export interface CostStatisticsResponse {
+  date_from: string | null
+  date_to: string | null
+  summary: CostStatisticsSummary
+  timeseries: CostStatisticsPoint[]
+  filters: CostFilterOptionsResponse
+}
+
+export interface CostUsageEventItem {
+  event_id: number
+  document_id: number | null
+  version_id: number | null
+  occurred_at: string
+  model_type: CostModelType
+  operation: string
+  status: string
+  usage_source: string
+  pricing_status: string
+  page_count: number
+  request_count: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  output_chars: number
+  cost_usd: string
+  account_id: number | null
+  group_id: number | null
+  account: UserSummaryResponse | null
+  group: UserSummaryResponse | null
+}
+
+export interface CostHistoryResponse {
+  items: CostUsageEventItem[]
+  total: number
+  page: number
+  page_size: number
+}
+
 // Guidelines
 export interface GuidelineVersionSummary {
   version_id: number

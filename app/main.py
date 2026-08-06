@@ -22,6 +22,7 @@ from app.core.database import (
     migrate_sections_enriched_schema,
     migrate_sections_quality_schema,
     migrate_auth_schema_to_single_role,
+    migrate_cost_management_schema,
 )
 
 FRONTEND_DIST = Path(__file__).parent.parent / "web" / "dist"
@@ -72,6 +73,7 @@ async def lifespan(app: FastAPI):
         await migrate_chunks_text_abstract_schema()
         await migrate_documents_pipeline_mode_schema()
         await migrate_documents_original_filename_schema()
+        await migrate_cost_management_schema()
         logger.info("Database schema ready.")
 
     async with AsyncSessionLocal() as session:

@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -34,10 +34,26 @@ DELAY_SECONDS = 10    # Delay (giây) giữa các API call để tránh rate-lim
 
 
 @dataclass(slots=True)
+class OcrRequestUsage:
+    page_count: int
+    request_count: int = 1
+    output_chars: int = 0
+    usage_source: str = "estimated"
+    status: str = "succeeded"
+
+
+class OcrProcessingError(RuntimeError):
+    def __init__(self, message: str, usage_events: list[OcrRequestUsage] | None = None) -> None:
+        super().__init__(message)
+        self.usage_events = usage_events or []
+
+
+@dataclass(slots=True)
 class LandingAIOcrResult:
     raw_markdown: str
     ade_chunks: list[dict[str, Any]]
     page_count: int
+    usage_events: list[OcrRequestUsage] = field(default_factory=list)
 
 def _make_client():
     """Khởi tạo LandingAIADE client từ env. Raise nếu thiếu API key."""
@@ -172,9 +188,40 @@ def _merge_markdowns(parts: list[str]) -> str:
 # CORE: GỌI API + SERIALIZE
 # ==============================================================================
 
-def _parse_pdf(client, pdf_path: Path) -> tuple[str, list[dict]]:
+def _parse_pdf(client, pdf_path: Path, *, page_count: int) -> tuple[str, list[dict], OcrRequestUsage]:
     result = client.parse(document=pdf_path, model="dpt-2-latest")
-    return result.markdown, [_chunk_to_dict(c) for c in result.chunks]
+    markdown = result.markdown or ""
+    return markdown, [_chunk_to_dict(c) for c in result.chunks], OcrRequestUsage(
+        page_count=max(0, int(page_count)),
+        output_chars=len(markdown),
+        usage_source="provider_reported" if _has_provider_usage(result) else "estimated",
+    )
+
+
+def _has_provider_usage(result: Any) -> bool:
+    """Detect optional billing metadata without coupling to a provider SDK."""
+    for name in ("usage", "billing", "metadata"):
+        value = result.get(name) if isinstance(result, dict) else getattr(result, name, None)
+        if value:
+            return True
+    return False
+
+
+def billable_page_count(page_count: int, *, max_pages: int = MAX_PAGES, overlap_pages: int = OVERLAP_PAGES) -> int:
+    """Return pages sent to OCR, including intentional split overlap."""
+    total = max(0, int(page_count))
+    if total <= max_pages:
+        return total
+    overlap = max(0, min(int(overlap_pages), max_pages - 1))
+    start = 0
+    billable = 0
+    while start < total:
+        end = min(start + max_pages, total)
+        billable += end - start
+        if end == total:
+            break
+        start = end - overlap
+    return billable
 
 
 def _get_page_count(pdf_path: Path) -> int:
@@ -192,7 +239,14 @@ def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
 
     if n_pages <= MAX_PAGES:
         # ── Single parse ───────────────────────────────────────────────────────
-        markdown, ade_chunks = _parse_pdf(client, pdf_path)
+        try:
+            markdown, ade_chunks, request_usage = _parse_pdf(client, pdf_path, page_count=n_pages)
+        except Exception as exc:
+            raise OcrProcessingError(
+                str(exc),
+                [OcrRequestUsage(page_count=n_pages, usage_source="estimated", status="failed")],
+            ) from exc
+        usage_events = [request_usage]
 
     else:
         # ── Multi-chunk parse (split + merge) ──────────────────────────────────
@@ -208,6 +262,7 @@ def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
         tmp_dir    = Path(tempfile.mkdtemp(prefix="landingai_"))
         md_parts:   list[str]  = []
         ade_chunks: list[dict] = []
+        usage_events: list[OcrRequestUsage] = []
 
         try:
             start = 0
@@ -225,7 +280,22 @@ def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
                 logger.info(
                     "  [%d] trang %d–%d ...", part + 1, start + 1, end
                 )
-                part_md, part_chunks = _parse_pdf(client, part_path)
+                try:
+                    part_md, part_chunks, request_usage = _parse_pdf(
+                        client,
+                        part_path,
+                        page_count=end - start,
+                    )
+                except Exception as exc:
+                    usage_events.append(
+                        OcrRequestUsage(
+                            page_count=end - start,
+                            usage_source="estimated",
+                            status="failed",
+                        )
+                    )
+                    raise OcrProcessingError(str(exc), usage_events) from exc
+                usage_events.append(request_usage)
                 logger.info("  [%d] ok (%d chunks)", part + 1, len(part_chunks))
 
                 # ── Markdown: fix table IDs trước khi tích lũy ────────────────
@@ -273,6 +343,7 @@ def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
         raw_markdown=markdown,
         ade_chunks=ade_chunks,
         page_count=n_pages,
+        usage_events=usage_events,
     )
 
 
