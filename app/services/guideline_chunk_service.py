@@ -102,7 +102,10 @@ class GuidelineChunkService:
                 job = await service._get_job_or_raise(job_id)
                 version_id = int(job.version_id)
                 deleted_chunk_count = await service._count_chunks_for_version(version_id)
-                chunk_stats = await ChunkGenerationService(session).rebuild_chunks_for_version(version_id)
+                chunk_stats = await ChunkGenerationService(
+                    session,
+                    source_job_id=int(job.job_id),
+                ).rebuild_chunks_for_version(version_id)
                 created_chunk_count = int(chunk_stats.get('chunk_count', 0))
                 await service._mark_job_succeeded(
                     job_id=job_id,

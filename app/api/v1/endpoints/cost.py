@@ -38,13 +38,7 @@ async def update_pricing(
     cost_service: CostServiceDep,
     current_user: AdminUser,
 ) -> CostPricingResponse:
-    pricing = await cost_service.update_pricing(
-        ocr_input_char_price=payload.ocr.input_char_price,
-        ocr_output_char_price=payload.ocr.output_char_price,
-        ocr_page_price=payload.ocr.page_price,
-        vlm_input_token_price=payload.vlm.input_token_price,
-        vlm_output_token_price=payload.vlm.output_token_price,
-    )
+    pricing = await cost_service.update_pricing(models=[model.model_dump() for model in payload.models])
     return CostPricingResponse(**pricing)
 
 
@@ -56,12 +50,16 @@ async def get_statistics(
     to: Annotated[date | None, Query()] = None,
     groupId: Annotated[int | None, Query(ge=1)] = None,
     accountId: Annotated[int | None, Query(ge=1)] = None,
+    modelType: Annotated[str | None, Query(pattern="^(ocr|llm|embedding)$")] = None,
+    operation: Annotated[str | None, Query(max_length=60)] = None,
 ) -> CostStatisticsResponse:
     stats = await cost_service.get_statistics(
         date_from=from_,
         date_to=to,
         group_id=groupId,
         account_id=accountId,
+        model_type=modelType,
+        operation=operation,
     )
     return CostStatisticsResponse(**stats)
 
@@ -76,6 +74,8 @@ async def list_history(
     to: Annotated[date | None, Query()] = None,
     groupId: Annotated[int | None, Query(ge=1)] = None,
     accountId: Annotated[int | None, Query(ge=1)] = None,
+    modelType: Annotated[str | None, Query(pattern="^(ocr|llm|embedding)$")] = None,
+    operation: Annotated[str | None, Query(max_length=60)] = None,
 ) -> CostHistoryResponse:
     items, total = await cost_service.list_history(
         page=page,
@@ -84,6 +84,8 @@ async def list_history(
         date_to=to,
         group_id=groupId,
         account_id=accountId,
+        model_type=modelType,
+        operation=operation,
     )
     return CostHistoryResponse(
         items=items,

@@ -10,7 +10,6 @@ import InsertPage from './pages/InsertPage'
 import UpdatePage from './pages/UpdatePage'
 import AdminUsersPage from './pages/AdminUsersPage'
 import AdminCostManagementPage from './pages/AdminCostManagementPage'
-import AdminCostAnalyticsPage from './pages/AdminCostAnalyticsPage'
 import ChangePasswordPage from './pages/ChangePasswordPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -59,8 +58,9 @@ export default function App() {
           <Route path="/guidelines/:guidelineId/versions/:versionId" element={<ProtectedRoute><ViewPage /></ProtectedRoute>} />
 
           <Route path="/admin/users" element={<AccountManagerRoute><AdminUsersPage /></AccountManagerRoute>} />
-          <Route path="/admin/cost/pricing" element={<AdminRoute><AdminCostManagementPage /></AdminRoute>} />
-          <Route path="/admin/cost/analytics" element={<AdminRoute><AdminCostAnalyticsPage /></AdminRoute>} />
+          <Route path="/admin/cost" element={<AdminRoute><AdminCostManagementPage /></AdminRoute>} />
+          <Route path="/admin/cost/pricing" element={<Navigate to="/admin/cost" replace />} />
+          <Route path="/admin/cost/analytics" element={<Navigate to="/admin/cost" replace />} />
           <Route path="/account/password" element={<ProtectedRoute><ChangePasswordPage /></ProtectedRoute>} />
 
           <Route path="*" element={<Navigate to="/guidelines" replace />} />

@@ -1,43 +1,57 @@
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.auth import UserSummaryResponse
 
 
-class OcrPricing(BaseModel):
-    input_char_price: Decimal = Field(ge=0)
-    output_char_price: Decimal = Field(ge=0)
-    page_price: Decimal = Field(ge=0)
+CostModelType = Literal["ocr", "llm", "embedding"]
 
 
-class VlmPricing(BaseModel):
-    input_token_price: Decimal = Field(ge=0)
-    output_token_price: Decimal = Field(ge=0)
+class CostRate(BaseModel):
+    unit: str
+    label: str
+    unit_divisor: int = Field(gt=0)
+    price_usd: Decimal = Field(ge=0, max_digits=20, decimal_places=12)
+
+
+class CostModelPricing(BaseModel):
+    model_type: CostModelType
+    display_name: str
+    billing_mode: str
+    rates: list[CostRate]
 
 
 class CostPricingResponse(BaseModel):
-    ocr: OcrPricing
-    vlm: VlmPricing
+    models: list[CostModelPricing]
 
 
-class CostPricingUpdateRequest(CostPricingResponse):
-    pass
+class CostPricingUpdateRequest(BaseModel):
+    models: list[CostModelPricing]
 
 
 class CostStatisticsPoint(BaseModel):
     period: str
     ocr_cost: Decimal
-    vlm_cost: Decimal
+    llm_cost: Decimal
+    embedding_cost: Decimal
     total_cost: Decimal
 
 
 class CostStatisticsSummary(BaseModel):
     total_cost: Decimal
     ocr_cost: Decimal
-    vlm_cost: Decimal
+    llm_cost: Decimal
+    embedding_cost: Decimal
     documents_processed: int
+    usage_events: int
+    ocr_pages: int
+    llm_input_tokens: int
+    llm_cached_input_tokens: int
+    llm_output_tokens: int
+    embedding_input_tokens: int
 
 
 class CostFilterOptionsResponse(BaseModel):
@@ -53,29 +67,33 @@ class CostStatisticsResponse(BaseModel):
     filters: CostFilterOptionsResponse
 
 
-class CostHistoryItem(BaseModel):
+class CostUsageEventItem(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    cost_history_id: int
-    document_id: int
-    user_id: int | None
+    event_id: int
+    document_id: int | None
+    version_id: int | None
+    occurred_at: datetime
+    model_type: CostModelType
+    operation: str
+    status: str
+    usage_source: str
+    pricing_status: str
+    page_count: int
+    request_count: int
+    input_tokens: int
+    cached_input_tokens: int
+    output_tokens: int
+    output_chars: int
+    cost_usd: Decimal
     account_id: int | None
     group_id: int | None
-    created_at: datetime
-    ocr_input_chars: int
-    ocr_output_chars: int
-    ocr_pages: int
-    ocr_cost: Decimal
-    vlm_input_tokens: int
-    vlm_output_tokens: int
-    vlm_cost: Decimal
-    total_cost: Decimal
     account: UserSummaryResponse | None = None
     group: UserSummaryResponse | None = None
 
 
 class CostHistoryResponse(BaseModel):
-    items: list[CostHistoryItem]
+    items: list[CostUsageEventItem]
     total: int
     page: int
     page_size: int

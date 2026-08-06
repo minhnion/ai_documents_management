@@ -1,7 +1,7 @@
 from app.models.base import Base
 from app.models.chunk import Chunk
 from app.models.chunk_rebuild_job import ChunkRebuildJob
-from app.models.cost import DocumentCostHistory, ModelPricing
+from app.models.cost import CostModelProfile, CostRateCard, CostTrackingSetting, CostUsageEvent, DocumentCostHistory, ModelPricing
 from app.models.document import Document
 from app.models.guideline import Guideline
 from app.models.guideline_version import GuidelineVersion
@@ -20,5 +20,9 @@ __all__ = [
     "ChunkRebuildJob",
     "ModelPricing",
     "DocumentCostHistory",
+    "CostModelProfile",
+    "CostRateCard",
+    "CostTrackingSetting",
+    "CostUsageEvent",
     "User",
 ]

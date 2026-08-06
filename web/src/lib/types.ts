@@ -102,34 +102,50 @@ export interface DeleteUserResponse {
 }
 
 // Cost Management
-export interface OcrPricing {
-  input_char_price: string
-  output_char_price: string
-  page_price: string
+export type CostModelType = 'ocr' | 'llm' | 'embedding'
+
+export interface CostRate {
+  unit: string
+  label: string
+  unit_divisor: number
+  price_usd: string
 }
 
-export interface VlmPricing {
-  input_token_price: string
-  output_token_price: string
+export interface CostModelPricing {
+  model_type: CostModelType
+  display_name: string
+  billing_mode: string
+  rates: CostRate[]
 }
 
 export interface CostPricingResponse {
-  ocr: OcrPricing
-  vlm: VlmPricing
+  models: CostModelPricing[]
+}
+
+export interface CostPricingUpdateRequest {
+  models: CostModelPricing[]
 }
 
 export interface CostStatisticsPoint {
   period: string
   ocr_cost: string
-  vlm_cost: string
+  llm_cost: string
+  embedding_cost: string
   total_cost: string
 }
 
 export interface CostStatisticsSummary {
   total_cost: string
   ocr_cost: string
-  vlm_cost: string
+  llm_cost: string
+  embedding_cost: string
   documents_processed: number
+  usage_events: number
+  ocr_pages: number
+  llm_input_tokens: number
+  llm_cached_input_tokens: number
+  llm_output_tokens: number
+  embedding_input_tokens: number
 }
 
 export interface CostFilterOptionsResponse {
@@ -145,27 +161,31 @@ export interface CostStatisticsResponse {
   filters: CostFilterOptionsResponse
 }
 
-export interface CostHistoryItem {
-  cost_history_id: number
-  document_id: number
-  user_id: number | null
+export interface CostUsageEventItem {
+  event_id: number
+  document_id: number | null
+  version_id: number | null
+  occurred_at: string
+  model_type: CostModelType
+  operation: string
+  status: string
+  usage_source: string
+  pricing_status: string
+  page_count: number
+  request_count: number
+  input_tokens: number
+  cached_input_tokens: number
+  output_tokens: number
+  output_chars: number
+  cost_usd: string
   account_id: number | null
   group_id: number | null
-  created_at: string
-  ocr_input_chars: number
-  ocr_output_chars: number
-  ocr_pages: number
-  ocr_cost: string
-  vlm_input_tokens: number
-  vlm_output_tokens: number
-  vlm_cost: string
-  total_cost: string
   account: UserSummaryResponse | null
   group: UserSummaryResponse | null
 }
 
 export interface CostHistoryResponse {
-  items: CostHistoryItem[]
+  items: CostUsageEventItem[]
   total: number
   page: number
   page_size: number

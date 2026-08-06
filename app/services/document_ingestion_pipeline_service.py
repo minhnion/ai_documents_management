@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import BadRequestException, UnprocessableEntityException
 from app.models.document import Document
-from app.services.cost_calculation_service import CostCalculationService, OcrUsage, VlmUsage
+from app.services.cost_calculation_service import CostCalculationService, UsageEventInput
 from app.services.document_pipeline_selector_service import (
     DocumentPipelineSelection,
     DocumentPipelineSelectorService,
@@ -23,6 +23,7 @@ from app.services.pipeline import (
     PipelinePersistenceService,
     TocBuilderService,
 )
+from app.services.pipeline.landingai_ocr_service import OcrProcessingError
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,6 @@ class DocumentIngestionPipelineService:
         self._extract_image_service = ExtractImageService()
         self._persistence_service = PipelinePersistenceService(db=db)
         self._pipeline_selector_service = DocumentPipelineSelectorService()
-        self._cost_service = CostCalculationService(db=db)
         self._spatial_pdf_service: SpatialPdfPipelineService | None = None
 
     async def process_document(
@@ -55,6 +55,9 @@ class DocumentIngestionPipelineService:
         guideline_id: int,
         version_id: int,
         document: Document,
+        *,
+        source_job_id: int | None = None,
+        actor_user_id: int | None = None,
     ) -> dict[str, object]:
         pdf_path = self._resolve_pdf_path(document)
         artifact_dir = self._build_artifact_dir(guideline_id=guideline_id, version_id=version_id)
@@ -81,9 +84,6 @@ class DocumentIngestionPipelineService:
 
         effective_mode = selection.mode
         persist_stats: dict[str, int]
-        ocr_usage = OcrUsage()
-        vlm_usage = VlmUsage()
-
         if effective_mode == "spatial_pdf":
             self._validate_pipeline_settings("spatial_pdf")
             try:
@@ -127,22 +127,53 @@ class DocumentIngestionPipelineService:
 
         if effective_mode == "ocr_llm":
             self._validate_pipeline_settings("ocr_llm")
-            ocr_result = await self._ocr_document(pdf_path)
-            ocr_usage = OcrUsage(
-                input_chars=0,
-                output_chars=len(ocr_result.raw_markdown or ""),
-                pages=int(ocr_result.page_count or 0),
+            try:
+                ocr_result = await self._ocr_document(pdf_path)
+            except OcrProcessingError as exc:
+                await self._record_ocr_usage_events(
+                    events=exc.usage_events,
+                    document=document,
+                    version_id=version_id,
+                    source_job_id=source_job_id,
+                    actor_user_id=actor_user_id,
+                )
+                raise
+            await self._record_ocr_usage_events(
+                events=ocr_result.usage_events,
+                document=document,
+                version_id=version_id,
+                source_job_id=source_job_id,
+                actor_user_id=actor_user_id,
             )
             ocr_md_name = self._derive_ocr_md_name(document=document, pdf_path=pdf_path)
-            toc = await self._build_toc(
-                ocr_result.raw_markdown,
-                source_file=ocr_md_name,
-                ade_chunks=ocr_result.ade_chunks,
-            )
-            vlm_usage = VlmUsage(
-                input_tokens=int(self._toc_service.last_vlm_usage.get("input_tokens", 0)),
-                output_tokens=int(self._toc_service.last_vlm_usage.get("output_tokens", 0)),
-            )
+            try:
+                toc = await self._build_toc(
+                    ocr_result.raw_markdown,
+                    source_file=ocr_md_name,
+                    ade_chunks=ocr_result.ade_chunks,
+                )
+            finally:
+                for sequence, usage in enumerate(self._toc_service.last_usage_events, start=1):
+                    await self._record_model_usage(
+                        UsageEventInput(
+                            idempotency_key=f"ingestion:{source_job_id or version_id}:llm:toc:{sequence}",
+                            model_type="llm",
+                            operation="toc_generation",
+                            document_id=int(document.document_id),
+                            version_id=version_id,
+                            job_type="version_ingestion",
+                            source_job_id=str(source_job_id or version_id),
+                            actor_user_id=actor_user_id or document.created_by_user_id,
+                            account_id=document.owner_user_id,
+                            status=str(usage.get("status", "succeeded")),
+                            request_count=1,
+                            input_tokens=usage.get("input_tokens", 0),
+                            cached_input_tokens=usage.get("cached_input_tokens", 0),
+                            output_tokens=usage.get("output_tokens", 0),
+                            usage_source="provider_reported" if usage.get("input_tokens", 0) or usage.get("output_tokens", 0) else "estimated",
+                            request_sequence=sequence,
+                        )
+                    )
             chunk_payload = self._chunk_with_fuzzy_matching(
                 ocr_result.raw_markdown,
                 ocr_result.ade_chunks,
@@ -176,11 +207,6 @@ class DocumentIngestionPipelineService:
                 page_count=ocr_result.page_count,
             )
         document.pipeline_mode_used = effective_mode
-        await self._cost_service.record_document_cost(
-            document=document,
-            ocr_usage=ocr_usage,
-            vlm_usage=vlm_usage,
-        )
         logger.info(
             "Pipeline done | guideline_id=%s version_id=%s mode=%s sections=%s db_chunks=%s artifacts=%s",
             guideline_id,
@@ -194,6 +220,44 @@ class DocumentIngestionPipelineService:
             "artifact_dir": artifact_dir.as_posix(),
             **persist_stats,
         }
+
+    async def _record_model_usage(self, usage: UsageEventInput) -> None:
+        try:
+            await CostCalculationService.record_usage_isolated(usage)
+        except Exception:
+            # Accounting must not make a user document impossible to ingest;
+            # the error is explicit in logs and can be retried from the request key.
+            logger.exception("Unable to persist cost usage event | key=%s", usage.idempotency_key)
+
+    async def _record_ocr_usage_events(
+        self,
+        *,
+        events,
+        document: Document,
+        version_id: int,
+        source_job_id: int | None,
+        actor_user_id: int | None,
+    ) -> None:
+        for sequence, usage in enumerate(events, start=1):
+            await self._record_model_usage(
+                UsageEventInput(
+                    idempotency_key=f"ingestion:{source_job_id or version_id}:ocr:{sequence}",
+                    model_type="ocr",
+                    operation="ocr_parse",
+                    document_id=int(document.document_id),
+                    version_id=version_id,
+                    job_type="version_ingestion",
+                    source_job_id=str(source_job_id or version_id),
+                    actor_user_id=actor_user_id or document.created_by_user_id,
+                    account_id=document.owner_user_id,
+                    status=getattr(usage, "status", "succeeded"),
+                    page_count=usage.page_count,
+                    request_count=usage.request_count,
+                    output_chars=usage.output_chars,
+                    usage_source=usage.usage_source,
+                    request_sequence=sequence,
+                )
+            )
 
     def _validate_pipeline_settings(self, pipeline_mode: str) -> None:
         if pipeline_mode == "spatial_pdf":

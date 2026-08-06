@@ -40,6 +40,7 @@ class TocBuilderService:
         # markdown_service kept for backward-compatible kwargs; not used here.
         self._markdown_service = markdown_service
         self.last_vlm_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+        self.last_usage_events: list[dict[str, Any]] = []
 
     async def build_toc(
         self,
@@ -52,10 +53,11 @@ class TocBuilderService:
         markdown = raw_markdown if raw_markdown is not None else clean_text
         if markdown is None:
             raise ValueError("build_toc requires raw_markdown (or clean_text)")
-        toc, usage = await self._run_blocking(
+        toc, usage, usage_events = await self._run_blocking(
             self._build_sync, markdown, source_file, ade_chunks or []
         )
         self.last_vlm_usage = usage
+        self.last_usage_events = usage_events
         return toc
 
     async def openai_json_completion(
@@ -75,25 +77,30 @@ class TocBuilderService:
         raw_markdown: str,
         source_file: str,
         ade_chunks: list[dict],
-    ) -> tuple[dict, dict[str, int]]:
+    ) -> tuple[dict, dict[str, int], list[dict[str, Any]]]:
         client = self._make_client()
         _toc._init_phase2_prompts()
         usage = {"input_tokens": 0, "output_tokens": 0}
+        usage_events: list[dict[str, Any]] = []
 
         original_call_ai = _toc.call_ai
 
         def tracked_call_ai(client: OpenAI, system: str, user: str) -> dict:
-            response = client.responses.create(
-                model=_toc.MODEL,
-                input=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                text={"format": {"type": "json_object"}},
-                temperature=0.0,
-                max_output_tokens=32000,
-            )
-            self._accumulate_response_usage(response, usage)
+            try:
+                response = client.responses.create(
+                    model=_toc.MODEL,
+                    input=[
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    text={"format": {"type": "json_object"}},
+                    temperature=0.0,
+                    max_output_tokens=32000,
+                )
+            except Exception:
+                usage_events.append({"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "status": "failed"})
+                raise
+            self._accumulate_response_usage(response, usage, usage_events)
             return _toc.parse_json_response(response.output_text or "")
 
         with self._call_ai_patch_lock:
@@ -141,8 +148,11 @@ class TocBuilderService:
                         )
             finally:
                 _toc.call_ai = original_call_ai
+                # Keep successful calls even when a later phase fails.
+                self.last_usage_events = list(usage_events)
 
-        return toc, usage
+        self.last_usage_events = usage_events
+        return toc, usage, usage_events
 
     def _json_completion_sync(self, system_prompt: str, user_prompt: str) -> dict:
         client = self._make_client()
@@ -161,17 +171,34 @@ class TocBuilderService:
         return OpenAI(api_key=api_key)
 
     @staticmethod
-    def _accumulate_response_usage(response: Any, usage: dict[str, int]) -> None:
+    def _accumulate_response_usage(
+        response: Any,
+        usage: dict[str, int],
+        usage_events: list[dict[str, Any]] | None = None,
+    ) -> None:
         raw_usage = getattr(response, "usage", None)
         if raw_usage is None:
             return
         input_tokens = getattr(raw_usage, "input_tokens", None)
         output_tokens = getattr(raw_usage, "output_tokens", None)
+        cached_input_tokens = 0
         if isinstance(raw_usage, dict):
             input_tokens = raw_usage.get("input_tokens", input_tokens)
             output_tokens = raw_usage.get("output_tokens", output_tokens)
-        usage["input_tokens"] += max(0, int(input_tokens or 0))
-        usage["output_tokens"] += max(0, int(output_tokens or 0))
+            details = raw_usage.get("input_tokens_details") or raw_usage.get("prompt_tokens_details") or {}
+            cached_input_tokens = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
+        else:
+            details = getattr(raw_usage, "input_tokens_details", None) or getattr(raw_usage, "prompt_tokens_details", None)
+            cached_input_tokens = getattr(details, "cached_tokens", 0) if details is not None else 0
+        item = {
+            "input_tokens": max(0, int(input_tokens or 0)),
+            "cached_input_tokens": max(0, int(cached_input_tokens or 0)),
+            "output_tokens": max(0, int(output_tokens or 0)),
+        }
+        usage["input_tokens"] += item["input_tokens"]
+        usage["output_tokens"] += item["output_tokens"]
+        if usage_events is not None:
+            usage_events.append(item)
 
     @staticmethod
     async def _run_blocking(func, /, *args):
