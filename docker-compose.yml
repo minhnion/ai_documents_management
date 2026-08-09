@@ -17,6 +17,9 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    networks:
+      - default
+      - chatbot-db
 
   backend:
     build:
@@ -44,3 +47,8 @@ services:
 
 volumes:
   postgres_data:
+
+networks:
+  chatbot-db:
+    name: chatbot-db
+    external: true
