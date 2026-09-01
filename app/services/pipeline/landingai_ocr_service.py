@@ -1,4 +1,17 @@
+"""Async OCR service cho DPT-3.
 
+Wrapper async quanh LandingOcrPipeline từ ``landing_ocr_engine.py``.
+Không sửa gì logic gốc — chỉ:
+  1. Patch sys.path để bare-import hoạt động.
+  2. Chạy blocking code trong ThreadPoolExecutor.
+  3. Nhận pdf_path, trả về LandingAIOcrResult (ParseResult + usage_events).
+  4. Ghi artifact ``dpt3_ocr.json`` vào artifact_dir để debug.
+
+Điểm khác DPT-2 LandingAIOcrService:
+  • Gọi HTTP POST trực tiếp (httpx), KHÔNG dùng landingai-ade SDK.
+  • Không overlap trang; ghép bằng dịch offset số học (ParseResultMerger).
+  • Trả về ParseResult dataclass thay vì (raw_markdown str, ade_chunks list).
+"""
 
 from __future__ import annotations
 
@@ -6,40 +19,41 @@ import asyncio
 import json
 import logging
 import os
-import re
-import shutil
-import tempfile
-import time
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
-from typing import Any
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
-PDF_DIR        = Path("./data/01_raw_pdf")
-OUTPUT_MD_DIR  = Path("./data/02_ocr_markdown")
-OUTPUT_ADE_DIR = Path("./data/06_ade_chunks")
-PDF_FILES: list[str] = []  # Rỗng = tự động lấy tất cả PDF trong PDF_DIR
+# ── sys.path patch: thêm thư mục pipeline để các bare-import trong parse_models,
+#    build_toc, build_chunks, landing_ocr_engine hoạt động đúng.
+_PIPELINE_DIR = Path(__file__).parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
 
-MAX_PAGES     = 50    # Giới hạn trang / lần gọi LandingAI
-OVERLAP_PAGES = 3     # Overlap trang giữa các split chunk
-DELAY_SECONDS = 10    # Delay (giây) giữa các API call để tránh rate-limit
+# Import sau khi patch sys.path
+from parse_models import ParseResult  # noqa: E402  # type: ignore[import]
 
+
+# ── Result dataclasses ────────────────────────────────────────────────────────
 
 @dataclass(slots=True)
 class OcrRequestUsage:
     page_count: int
     request_count: int = 1
     output_chars: int = 0
-    usage_source: str = "estimated"
+    credit_usage: float = 0.0
+    usage_source: str = "provider_reported"
     status: str = "succeeded"
+
+
+@dataclass
+class LandingAIOcrResult:
+    parse_result: ParseResult
+    page_count: int
+    usage_events: list[OcrRequestUsage] = field(default_factory=list)
 
 
 class OcrProcessingError(RuntimeError):
@@ -48,375 +62,103 @@ class OcrProcessingError(RuntimeError):
         self.usage_events = usage_events or []
 
 
-@dataclass(slots=True)
-class LandingAIOcrResult:
-    raw_markdown: str
-    ade_chunks: list[dict[str, Any]]
-    page_count: int
-    usage_events: list[OcrRequestUsage] = field(default_factory=list)
+# ── Core sync function ────────────────────────────────────────────────────────
 
-def _make_client():
-    """Khởi tạo LandingAIADE client từ env. Raise nếu thiếu API key."""
-    try:
-        from landingai_ade import LandingAIADE
-    except ImportError as e:
-        raise ImportError(
-            "landingai-ade chưa được cài đặt. Chạy: pip install landingai-ade"
-        ) from e
+def _ocr_pdf_sync(
+    pdf_path: Path,
+    *,
+    api_key: str,
+    model: str,
+    environment: str,
+) -> LandingAIOcrResult:
+    """Chạy OCR DPT-3 đồng bộ, trả về LandingAIOcrResult (ParseResult in-memory)."""
+    # Import trực tiếp từ file landing_ocr_engine (đã copy vào cùng thư mục,
+    # đổi tên bỏ dấu cách để import bình thường được)
+    from landing_ocr_engine import LandingOcrConfig, LandingOcrClient, LandingOcrPipeline  # type: ignore[import]
 
-    api_key = os.environ.get("VISION_AGENT_API_KEY")
-    if not api_key:
-        raise EnvironmentError("VISION_AGENT_API_KEY chưa được set trong .env")
-    return LandingAIADE(apikey=api_key)
-
-
-def _chunk_to_dict(chunk: Any) -> dict:
-    grounding = getattr(chunk, "grounding", None)
-    if grounding is None:
-        groundings = []
-    elif isinstance(grounding, list):
-        groundings = grounding
-    else:
-        groundings = [grounding]
-
-    bboxes: list[dict] = []
-    for g in groundings:
-        box = getattr(g, "box", None)
-        if box is None:
-            continue
-        bboxes.append({
-            "page":   int(getattr(g, "page", 0)),
-            "left":   round(float(box.left),   6),
-            "top":    round(float(box.top),     6),
-            "right":  round(float(box.right),   6),
-            "bottom": round(float(box.bottom),  6),
-        })
-
-    return {
-        "id":       str(getattr(chunk, "id",       "")),
-        "type":     str(getattr(chunk, "type",     "text")),
-        "markdown": str(getattr(chunk, "markdown", "")),
-        "bboxes":   bboxes,
-    }
-
-
-# ==============================================================================
-# MARKDOWN MERGE HELPERS (dùng khi PDF > MAX_PAGES trang)
-# ==============================================================================
-
-def _find_overlap_cutoff(prev_md: str, curr_md: str, search_chars: int = 4000) -> int:
-    """Tìm vị trí kết thúc phần trùng lặp trong curr_md so với prev_md."""
-    tail = prev_md[-search_chars:].strip()
-    head = curr_md[:search_chars * 2]
-    best = 0
-    for window in [300, 200, 150, 100, 60]:
-        step = max(window // 3, 20)
-        for i in range(0, len(tail) - window, step):
-            fragment = tail[i : i + window].strip()
-            if len(fragment) < 40:
-                continue
-            pos = head.find(fragment)
-            if pos != -1:
-                best = max(best, pos + len(fragment))
-    return best
-
-
-def _find_table_offset(prev_md: str, curr_md: str) -> int:
-    """Tính offset cần cộng vào table id của curr_md để tiếp nối prev_md."""
-    page_break  = "<!-- PAGE BREAK -->"
-    prev_breaks = [m.start() for m in re.finditer(re.escape(page_break), prev_md)]
-    curr_breaks = [m.start() for m in re.finditer(re.escape(page_break), curr_md)]
-
-    overlap_prev = (prev_md[prev_breaks[-OVERLAP_PAGES]:]
-                    if len(prev_breaks) >= OVERLAP_PAGES else prev_md)
-    overlap_curr = (curr_md[:curr_breaks[OVERLAP_PAGES - 1]]
-                    if len(curr_breaks) >= OVERLAP_PAGES else curr_md)
-
-    t_prev = [int(m.group(1)) for m in re.finditer(r'<table id="(\d+)-', overlap_prev)]
-    t_curr = [int(m.group(1)) for m in re.finditer(r'<table id="(\d+)-', overlap_curr)]
-    if t_prev and t_curr:
-        return t_prev[0] - t_curr[0]
-
-    all_prev = [int(m.group(1)) for m in re.finditer(r'<table id="(\d+)-', prev_md)]
-    all_curr = [int(m.group(1)) for m in re.finditer(r'<table id="(\d+)-', curr_md)]
-    if all_prev and all_curr:
-        return max(all_prev) + 1 - min(all_curr)
-    return 0
-
-
-def _apply_table_offset(markdown: str, offset: int) -> str:
-    """Cộng offset vào tất cả table/td id dạng số trong markdown."""
-    if offset == 0:
-        return markdown
-
-    def replace(m: re.Match) -> str:
-        full_id = m.group(1)
-        if "-" not in full_id:
-            return m.group(0)
-        dash = full_id.index("-")
-        try:
-            return f'id="{int(full_id[:dash]) + offset}{full_id[dash:]}"'
-        except ValueError:
-            return m.group(0)
-
-    return re.sub(r'id="([^"]+)"', replace, markdown)
-
-
-def _merge_markdowns(parts: list[str]) -> str:
-    """Gộp các phần markdown (có overlap) thành 1 văn bản, cắt bỏ nội dung trùng."""
-    if len(parts) == 1:
-        return parts[0].strip()
-
-    merged = parts[0].strip()
-    for idx, curr in enumerate(parts[1:], start=2):
-        curr   = curr.strip()
-        cutoff = _find_overlap_cutoff(merged, curr)
-        if cutoff > 0:
-            newline     = curr.find("\n", cutoff)
-            cut_at      = newline + 1 if newline != -1 else cutoff
-            new_content = curr[cut_at:].strip()
-        else:
-            logger.warning("chunk %d: không tìm được overlap, nối toàn bộ", idx)
-            new_content = curr
-        if new_content:
-            merged += "\n\n" + new_content
-
-    return merged
-
-
-# ==============================================================================
-# CORE: GỌI API + SERIALIZE
-# ==============================================================================
-
-def _parse_pdf(client, pdf_path: Path, *, page_count: int) -> tuple[str, list[dict], OcrRequestUsage]:
-    result = client.parse(document=pdf_path, model="dpt-2-latest")
-    markdown = result.markdown or ""
-    return markdown, [_chunk_to_dict(c) for c in result.chunks], OcrRequestUsage(
-        page_count=max(0, int(page_count)),
-        output_chars=len(markdown),
-        usage_source="provider_reported" if _has_provider_usage(result) else "estimated",
+    config = LandingOcrConfig(
+        api_key=api_key,
+        model=model,
+        environment=environment,
     )
 
+    with LandingOcrClient(config) as client:
+        pipeline = LandingOcrPipeline(config, client)
+        parse_result: ParseResult = pipeline._parse_document(pdf_path)
 
-def _has_provider_usage(result: Any) -> bool:
-    """Detect optional billing metadata without coupling to a provider SDK."""
-    for name in ("usage", "billing", "metadata"):
-        value = result.get(name) if isinstance(result, dict) else getattr(result, name, None)
-        if value:
-            return True
-    return False
-
-
-def billable_page_count(page_count: int, *, max_pages: int = MAX_PAGES, overlap_pages: int = OVERLAP_PAGES) -> int:
-    """Return pages sent to OCR, including intentional split overlap."""
-    total = max(0, int(page_count))
-    if total <= max_pages:
-        return total
-    overlap = max(0, min(int(overlap_pages), max_pages - 1))
-    start = 0
-    billable = 0
-    while start < total:
-        end = min(start + max_pages, total)
-        billable += end - start
-        if end == total:
-            break
-        start = end - overlap
-    return billable
-
-
-def _get_page_count(pdf_path: Path) -> int:
-    try:
-        from pypdf import PdfReader
-        return len(PdfReader(str(pdf_path)).pages)
-    except Exception:
-        return 0
-
-
-def _ocr_pdf_in_memory(pdf_path: Path, client) -> LandingAIOcrResult:
-    """OCR 1 file PDF, trả về markdown + ADE chunks in-memory (không ghi file)."""
-    n_pages = _get_page_count(pdf_path)
-    logger.info("[%s] %d trang", pdf_path.name, n_pages)
-
-    if n_pages <= MAX_PAGES:
-        # ── Single parse ───────────────────────────────────────────────────────
-        try:
-            markdown, ade_chunks, request_usage = _parse_pdf(client, pdf_path, page_count=n_pages)
-        except Exception as exc:
-            raise OcrProcessingError(
-                str(exc),
-                [OcrRequestUsage(page_count=n_pages, usage_source="estimated", status="failed")],
-            ) from exc
-        usage_events = [request_usage]
-
-    else:
-        # ── Multi-chunk parse (split + merge) ──────────────────────────────────
-        logger.info(
-            "  PDF > %d trang → split %d chunk (overlap %d trang)",
-            MAX_PAGES,
-            -(-n_pages // (MAX_PAGES - OVERLAP_PAGES)),  # ceil approx
-            OVERLAP_PAGES,
+    usage_events = [
+        OcrRequestUsage(
+            page_count=parse_result.metadata.page_count,
+            output_chars=parse_result.metadata.markdown_chars,
+            credit_usage=parse_result.metadata.credit_usage,
+            usage_source="provider_reported",
         )
-        from pypdf import PdfReader, PdfWriter
-
-        reader     = PdfReader(str(pdf_path))
-        tmp_dir    = Path(tempfile.mkdtemp(prefix="landingai_"))
-        md_parts:   list[str]  = []
-        ade_chunks: list[dict] = []
-        usage_events: list[OcrRequestUsage] = []
-
-        try:
-            start = 0
-            part  = 0
-            while start < n_pages:
-                end    = min(start + MAX_PAGES, n_pages)
-                writer = PdfWriter()
-                for i in range(start, end):
-                    writer.add_page(reader.pages[i])
-
-                part_path = tmp_dir / f"part_{part:03d}.pdf"
-                with open(part_path, "wb") as fh:
-                    writer.write(fh)
-
-                logger.info(
-                    "  [%d] trang %d–%d ...", part + 1, start + 1, end
-                )
-                try:
-                    part_md, part_chunks, request_usage = _parse_pdf(
-                        client,
-                        part_path,
-                        page_count=end - start,
-                    )
-                except Exception as exc:
-                    usage_events.append(
-                        OcrRequestUsage(
-                            page_count=end - start,
-                            usage_source="estimated",
-                            status="failed",
-                        )
-                    )
-                    raise OcrProcessingError(str(exc), usage_events) from exc
-                usage_events.append(request_usage)
-                logger.info("  [%d] ok (%d chunks)", part + 1, len(part_chunks))
-
-                # ── Markdown: fix table IDs trước khi tích lũy ────────────────
-                if md_parts:
-                    part_md = _apply_table_offset(
-                        part_md, _find_table_offset(md_parts[-1], part_md)
-                    )
-                md_parts.append(part_md)
-
-                # ── ADE chunks: offset page → absolute page index ──────────────
-                for ch in part_chunks:
-                    for bbox in ch["bboxes"]:
-                        bbox["page"] += start
-
-                # Loại bỏ chunks thuộc vùng overlap với phần trước
-                if part > 0:
-                    cutoff_page = start + OVERLAP_PAGES
-                    part_chunks = [
-                        ch for ch in part_chunks
-                        if not ch["bboxes"]
-                        or ch["bboxes"][0]["page"] >= cutoff_page
-                    ]
-
-                ade_chunks.extend(part_chunks)
-                part += 1
-
-                if end == n_pages:
-                    break
-                start = end - OVERLAP_PAGES
-                time.sleep(DELAY_SECONDS)
-
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
-
-        # ── Sắp xếp ADE chunks theo thứ tự tài liệu ──────────────────────────
-        ade_chunks.sort(key=lambda ch: (
-            (ch["bboxes"][0]["page"], ch["bboxes"][0]["top"], ch["bboxes"][0]["left"])
-            if ch["bboxes"] else (9999, 9999, 9999)
-        ))
-
-        # ── Ghép markdown ─────────────────────────────────────────────────────
-        markdown = _merge_markdowns(md_parts)
+    ]
 
     return LandingAIOcrResult(
-        raw_markdown=markdown,
-        ade_chunks=ade_chunks,
-        page_count=n_pages,
+        parse_result=parse_result,
+        page_count=parse_result.metadata.page_count,
         usage_events=usage_events,
     )
 
 
-def ocr_pdf(pdf_path: Path, client) -> None:
-    """OCR 1 file PDF + lưu Markdown / ADE chunks JSON ra disk (CLI mode)."""
-    out_md  = OUTPUT_MD_DIR  / f"{pdf_path.stem}_ocr.md"
-    out_ade = OUTPUT_ADE_DIR / f"{pdf_path.stem}_ade_chunks.json"
-
-    if out_md.exists() and out_ade.exists():
-        logger.info("Cache hit — bỏ qua: %s", pdf_path.name)
-        return
-
-    result = _ocr_pdf_in_memory(pdf_path, client)
-
-    OUTPUT_MD_DIR.mkdir(parents=True, exist_ok=True)
-    out_md.write_text(result.raw_markdown, encoding="utf-8")
-    logger.info("  → %s", out_md.name)
-
-    OUTPUT_ADE_DIR.mkdir(parents=True, exist_ok=True)
-    out_ade.write_text(
-        json.dumps(result.ade_chunks, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    logger.info("  → %s  (%d chunks)", out_ade.name, len(result.ade_chunks))
-
+# ── Async service class ───────────────────────────────────────────────────────
 
 class LandingAIOcrService:
-    async def process_pdf(self, pdf_path: Path) -> LandingAIOcrResult:
-        return await self._run_blocking(self._process_pdf_sync, pdf_path)
+    """Async wrapper quanh DPT-3 OCR pipeline."""
 
-    async def ocr_markdown(self, pdf_path: Path) -> str:
-        result = await self.process_pdf(pdf_path)
-        return result.raw_markdown
+    DPT3_OCR_FILENAME = "dpt3_ocr.json"
 
-    def _process_pdf_sync(self, pdf_path: Path) -> LandingAIOcrResult:
-        client = _make_client()
-        return _ocr_pdf_in_memory(pdf_path, client)
+    async def process_pdf(
+        self,
+        pdf_path: Path,
+        *,
+        artifact_dir: Path | None = None,
+    ) -> LandingAIOcrResult:
+        """OCR một file PDF bằng DPT-3, trả về LandingAIOcrResult.
 
-    async def _run_blocking(self, func, /, *args):
+        Nếu artifact_dir được truyền, ghi ParseResult ra
+        ``artifact_dir/dpt3_ocr.json`` để debug/cache.
+        """
+        api_key, model, environment = self._read_env()
+        result = await self._run_blocking(
+            _ocr_pdf_sync, pdf_path,
+            api_key=api_key, model=model, environment=environment,
+        )
+        if artifact_dir is not None:
+            self._write_artifact(artifact_dir, result.parse_result)
+        return result
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_env() -> tuple[str, str, str]:
+        from app.core.config import settings
+        api_key = (
+            settings.LANDINGAI_API_KEY.strip()
+            or os.environ.get("VISION_AGENT_API_KEY", "").strip()
+        )
+        if not api_key:
+            raise RuntimeError("LANDINGAI_API_KEY (hoặc VISION_AGENT_API_KEY) chưa được set")
+        model = settings.DPT3_MODEL.strip() or "dpt-3-pro-latest"
+        environment = settings.LANDINGAI_ADE_ENVIRONMENT.strip() or "production"
+        return api_key, model, environment
+
+    @staticmethod
+    def _write_artifact(artifact_dir: Path, parse_result: ParseResult) -> None:
+        try:
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            out = artifact_dir / LandingAIOcrService.DPT3_OCR_FILENAME
+            out.write_text(
+                json.dumps(parse_result.to_json(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.info("DPT-3 OCR artifact → %s", out)
+        except Exception:
+            logger.warning("Không ghi được DPT-3 OCR artifact", exc_info=True)
+
+    @staticmethod
+    async def _run_blocking(func, /, *args, **kwargs):
         loop = asyncio.get_running_loop()
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return await loop.run_in_executor(executor, partial(func, *args))
-
-
-# ==============================================================================
-# MAIN
-# ==============================================================================
-
-def get_pdf_files() -> list[str]:
-    if PDF_FILES:
-        return PDF_FILES
-    PDF_DIR.mkdir(parents=True, exist_ok=True)
-    return [f.name for f in sorted(PDF_DIR.glob("*.pdf"))]
-
-
-def main() -> None:
-    files = get_pdf_files()
-    if not files:
-        logger.info("Không có file PDF nào trong %s", PDF_DIR)
-        return
-
-    client = _make_client()
-    for name in files:
-        path = PDF_DIR / name
-        if path.exists():
-            ocr_pdf(path, client)
-        else:
-            logger.warning("Không tìm thấy: %s", name)
-
-    logger.info(
-        "\nDone  md → %s  |  ade → %s",
-        OUTPUT_MD_DIR, OUTPUT_ADE_DIR,
-    )
-
-
-if __name__ == "__main__":
-    main()
+            return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
