@@ -37,6 +37,29 @@ if str(_PIPELINE_DIR) not in sys.path:
 from parse_models import ParseResult  # noqa: E402  # type: ignore[import]
 
 
+# ── DPT-2 legacy cost helpers ─────────────────────────────────────────────────
+
+MAX_PAGES = 50          # Giới hạn trang / lần gọi LandingAI
+OVERLAP_PAGES = 3       # Overlap trang giữa các split chunk
+
+
+def billable_page_count(page_count: int, *, max_pages: int = MAX_PAGES, overlap_pages: int = OVERLAP_PAGES) -> int:
+    """Return pages sent to OCR, including intentional split overlap."""
+    total = max(0, int(page_count))
+    if total <= max_pages:
+        return total
+    overlap = max(0, min(int(overlap_pages), max_pages - 1))
+    start = 0
+    billable = 0
+    while start < total:
+        end = min(start + max_pages, total)
+        billable += end - start
+        if end == total:
+            break
+        start = end - overlap
+    return billable
+
+
 # ── Result dataclasses ────────────────────────────────────────────────────────
 
 @dataclass(slots=True)

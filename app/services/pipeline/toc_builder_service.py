@@ -145,6 +145,29 @@ class TocBuilderService:
         return toc
 
     @staticmethod
+    def _accumulate_response_usage(response: Any, aggregate: dict[str, int], events: list[dict[str, int]]) -> None:
+        """Tích lũy token usage từ một OpenAI response (DPT-2 cost ledger helper)."""
+        raw = getattr(response, "usage", None)
+        if raw is None:
+            return
+
+        def _g(obj, key, default=0):
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+        input_tokens = max(0, int(_g(raw, "input_tokens") or _g(raw, "prompt_tokens") or 0))
+        output_tokens = max(0, int(_g(raw, "output_tokens") or _g(raw, "completion_tokens") or 0))
+        details = _g(raw, "input_tokens_details") or _g(raw, "prompt_tokens_details") or {}
+        cached = _g(details, "cached_tokens") if details else 0
+
+        aggregate["input_tokens"] = aggregate.get("input_tokens", 0) + input_tokens
+        aggregate["output_tokens"] = aggregate.get("output_tokens", 0) + output_tokens
+        events.append({
+            "input_tokens": input_tokens,
+            "cached_input_tokens": max(0, int(cached)),
+            "output_tokens": output_tokens,
+        })
+
+    @staticmethod
     def _read_env() -> tuple[str, str]:
         import os
         from app.core.config import settings
