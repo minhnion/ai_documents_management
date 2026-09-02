@@ -727,6 +727,9 @@ class ContentExtractor:
             cs, ce = max(s, content_start), min(e, end)
             if leaf.id in self._noise_ids:
                 substitutions.append((cs, ce, ""))
+            elif leaf.type == "figure":
+                # Hình ảnh được giữ trong landing_chunks; không ghép mô tả hình vào content.
+                substitutions.append((cs, ce, ""))
             elif leaf.type in MEDIA_TYPES:
                 full_text = self._result.markdown[s:e]
                 clipped_text = self._result.markdown[cs:ce]
