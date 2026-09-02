@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -303,7 +304,7 @@ class DocumentIngestionPipelineService:
 
     async def _record_model_usage(self, usage: UsageEventInput) -> None:
         try:
-            await CostCalculationService.record_usage_isolated(usage)
+            await CostCalculationService(self.db).record_usage_event(usage)
         except Exception:
             # Accounting must not make a user document impossible to ingest;
             # the error is explicit in logs and can be retried from the request key.

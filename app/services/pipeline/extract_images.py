@@ -78,7 +78,15 @@ class AllLeavesExtractor:
     def __init__(self, config: ImageConfig) -> None:
         self._config = config
 
-    def run(self, pdf_path: Path, source_path: Path, out_dir: Path, types_filter: set[str] | None) -> dict[str, int]:
+    def run(
+        self,
+        pdf_path: Path,
+        source_path: Path,
+        out_dir: Path,
+        types_filter: set[str] | None,
+        *,
+        flat: bool = False,
+    ) -> dict[str, int]:
         import fitz
 
         result = ParseResult.load(source_path)
@@ -94,8 +102,12 @@ class AllLeavesExtractor:
             if bbox is None:
                 stats["skipped"] += 1
                 continue
-            fname = f"p{bbox['page'] + 1:03d}_{_safe_filename(leaf.id)}.png"
-            out_path = out_dir / leaf.type / fname
+            if flat:
+                fname = f"{_safe_filename(leaf.id)}.png"
+                out_path = out_dir / fname
+            else:
+                fname = f"p{bbox['page'] + 1:03d}_{_safe_filename(leaf.id)}.png"
+                out_path = out_dir / leaf.type / fname
             if cropper.crop(bbox, out_path):
                 stats["saved"] += 1
             else:

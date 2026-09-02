@@ -34,17 +34,18 @@ def _extract_images_sync(
     *,
     dpi: int = 200,
 ) -> dict[str, int]:
-    """Đồng bộ: cắt ảnh heading + content theo section tree trong chunks.json."""
-    from extract_images import TocSectionExtractor, ImageConfig
+    """Đồng bộ: cắt ảnh landing chunks (table, figure, ...) từ dpt3_ocr.json."""
+    from extract_images import AllLeavesExtractor, ImageConfig
+    from parse_models import MEDIA_TYPES
 
     config = ImageConfig(dpi=dpi)
-    extractor = TocSectionExtractor(config)
+    extractor = AllLeavesExtractor(config)
     stats = extractor.run(
         pdf_path=pdf_path,
-        chunks_path=chunks_path,
+        source_path=source_path,
         out_dir=output_dir,
-        heading_only=False,   # lấy cả heading + content bboxes
-        flat=True,            # lưu flat để VersionAssetService phục vụ
+        types_filter=MEDIA_TYPES,
+        flat=True,  # lưu flat để VersionAssetService phục vụ
     )
     return stats
 
@@ -55,7 +56,7 @@ def _enrich_landing_chunks(
     version_id: int,
     images_dir: Path,
 ) -> None:
-    """Điền ``landing_chunks`` với ``image_url`` cho các leaf node DPT-3."""
+    """Điền ``image_url`` vào ``landing_chunks`` có sẵn (table, figure, ...)."""
     from build_toc import DEPTH_CHILD_KEYS
 
     def _children(node: dict) -> list[dict]:
@@ -65,39 +66,16 @@ def _enrich_landing_chunks(
         return out
 
     def _walk(node: dict) -> None:
-        children = _children(node)
-        if children:
-            for child in children:
-                _walk(child)
-            return
+        for child in _children(node):
+            _walk(child)
 
-        node_id = node.get("node_id")
-        if not node_id:
-            return
-
-        landing: list[dict[str, Any]] = []
-        heading_bbox = node.get("heading_bbox")
-        if heading_bbox:
-            asset_id = f"{node_id}_h0"
-            if (images_dir / f"{asset_id}.png").is_file():
-                landing.append({
-                    "id": asset_id,
-                    "type": "heading",
-                    "image_url": f"/versions/{version_id}/assets/{asset_id}",
-                    "bbox": heading_bbox,
-                })
-
-        for idx, bbox in enumerate(node.get("content_bboxes") or []):
-            asset_id = f"{node_id}_c{idx}"
-            if (images_dir / f"{asset_id}.png").is_file():
-                landing.append({
-                    "id": asset_id,
-                    "type": "content",
-                    "image_url": f"/versions/{version_id}/assets/{asset_id}",
-                    "bbox": bbox,
-                })
-
-        node["landing_chunks"] = landing
+        for entry in node.get("landing_chunks") or []:
+            if not isinstance(entry, dict):
+                continue
+            asset_id = entry.get("id")
+            if not asset_id or not (images_dir / f"{asset_id}.png").is_file():
+                continue
+            entry["image_url"] = f"/versions/{version_id}/assets/{asset_id}"
 
     for chapter in payload.get("chapters", []):
         _walk(chapter)
@@ -121,8 +99,8 @@ class ExtractImageService:
           - ``artifact_dir/chunks.json`` đã tồn tại (ghi bởi BBoxChunkingService)
           - ``artifact_dir/dpt3_ocr.json`` đã tồn tại (dùng để fallback validate)
 
-        Ảnh được ghi flat vào ``output_dir/`` với tên ``<node_id>_h.png`` / ``<node_id>_c{idx}.png``.
-        Nếu ``version_id`` được truyền, ``chunks.json`` sẽ được enrich thêm ``landing_chunks`` với ``image_url``.
+        Ảnh được ghi flat vào ``output_dir/`` với tên ``<landing_chunk_id>.png``.
+        Nếu ``version_id`` được truyền, ``chunks.json`` sẽ được enrich ``image_url`` cho các ``landing_chunks`` có sẵn.
         """
         chunks_path = artifact_dir / "chunks.json"
         source_path = artifact_dir / "dpt3_ocr.json"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import bisect
+import sys
 import hashlib
 import json
 import logging
@@ -9,10 +10,21 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+# sys.path patch để bare-import các module cùng thư mục pipeline hoạt động khi load dưới dạng package
+_PIPELINE_DIR = Path(__file__).resolve().parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
+
 from build_toc import DEPTH_CHILD_KEYS, TocTree
 from parse_models import (
-    LeafElement, MEDIA_TYPES, NOISE_TYPES, ParseResult, TableCellElement,
-    flatten_leaves, index_table_cells,
+    PAGE_BREAK,
+    LeafElement,
+    MEDIA_TYPES,
+    NOISE_TYPES,
+    ParseResult,
+    TableCellElement,
+    flatten_leaves,
+    index_table_cells,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -202,6 +214,9 @@ class HeadingLocator:
         seg_end = m.start() if m else span[1]
         segment = self._markdown[abs_start:seg_end]
         content_start = self._content_cut(segment, abs_start, seg_end, title, title_words)
+        # Nếu content nằm ở dòng kế tiếp, nhảy qua ký tự xuống dòng
+        if m and content_start == seg_end:
+            content_start = m.end()
         return abs_start, content_start
 
     @staticmethod
@@ -355,9 +370,15 @@ class HeadingLocator:
         end = cls._title_end(segment_text, title)
         if end is not None:
             rest = segment_text[end:]
-            stripped = rest.lstrip(" \t")
-            if stripped.startswith(":"):
-                end += len(rest) - len(stripped) + 1
+            # Bỏ marker bold đóng (**) và khoảng trắng/xuống dòng sau tiêu đề
+            rest = rest.lstrip("*").lstrip(" \t\n\r")
+            # Nếu nội dung bắt đầu sau dấu hai chấm trên cùng dòng, bỏ qua dấu đó
+            if rest.startswith(":"):
+                rest = rest[1:].lstrip("*").lstrip(" \t\n\r")
+            end += len(segment_text) - end - len(rest)
+            if end >= len(segment_text):
+                # Tiêu đề chiếm cả dòng → nội dung bắt đầu ở dòng kế tiếp
+                return abs_end
             return abs_start + end
         pos = cls._colon_split_pos(segment_text, title_words)
         return abs_start + pos + 1 if pos is not None else abs_end
@@ -604,6 +625,89 @@ class MediaContentRenderer:
 
 
 _RE_ORPHAN_BOLD_PAIR = re.compile(r"\*\*(\s*)\*\*")
+_RE_HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
+_RE_PAGE_BREAK = re.compile(re.escape(PAGE_BREAK))
+
+_RE_LIST_LINE = re.compile(r"^[-*+]\s+|^\d+\.\s+|^>\s*")
+_RE_MARKDOWN_BLOCK = re.compile(
+    r"^(\s*#{1,6}\s|\*\*.+\*\*|\s*\||```|~~~)"
+)
+
+
+def _is_list_line(line: str) -> bool:
+    return bool(_RE_LIST_LINE.match(line.strip()))
+
+
+def _is_structured_line(line: str) -> bool:
+    return bool(_RE_MARKDOWN_BLOCK.match(line.strip()))
+
+
+def reflow_text(text: str) -> str:
+    """Biến đoạn văn bị OCR cắt nhỏ thành paragraph liền mạch, nhưng vẫn giữ list/table/heading."""
+    if not text:
+        return text
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    paragraphs = text.split("\n\n")
+    out_paragraphs: list[str] = []
+    for para in paragraphs:
+        if not para.strip():
+            continue
+        lines = para.split("\n")
+        out_lines: list[str] = []
+        buffer: list[str] = []
+        buffer_type: str | None = None
+
+        def flush() -> None:
+            nonlocal buffer, buffer_type
+            if not buffer:
+                return
+            if buffer_type in ("PLAIN", "LIST"):
+                out_lines.append(" ".join(buffer))
+            else:
+                out_lines.append("\n".join(buffer))
+            buffer = []
+            buffer_type = None
+
+        n = len(lines)
+        for i, raw in enumerate(lines):
+            stripped = raw.strip()
+            if not stripped:
+                continue
+            if _is_list_line(stripped):
+                # Look ahead: if this is a single list line in the middle
+                # of a PLAIN paragraph, merge it as plain text to avoid
+                # splitting a paragraph into paragraph + bullet.
+                next_stripped = ""
+                for j in range(i + 1, n):
+                    if lines[j].strip():
+                        next_stripped = lines[j].strip()
+                        break
+                is_lonely_list = (
+                    buffer_type == "PLAIN"
+                    and next_stripped
+                    and not _is_list_line(next_stripped)
+                )
+                if is_lonely_list:
+                    buffer.append(raw)
+                    buffer_type = "PLAIN"
+                else:
+                    flush()
+                    buffer.append(raw)
+                    buffer_type = "LIST"
+            elif _is_structured_line(stripped):
+                flush()
+                buffer.append(raw)
+                buffer_type = "HEADING"
+            else:
+                if buffer and buffer_type not in ("PLAIN", "LIST"):
+                    flush()
+                buffer.append(raw)
+                if buffer_type is None:
+                    buffer_type = "PLAIN"
+        flush()
+        out_paragraphs.append("\n".join(out_lines))
+    return "\n\n".join(out_paragraphs)
 
 
 class ContentExtractor:
@@ -639,7 +743,10 @@ class ContentExtractor:
         if pos < end:
             parts.append(self._result.markdown[pos:end])
 
-        text = re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
+        text = _RE_PAGE_BREAK.sub(" ", "".join(parts))
+        text = _RE_HTML_COMMENT.sub(" ", text)
+        text = re.sub(r"[ \t]+", " ", text)
+        text = reflow_text(text)
         text = _RE_ORPHAN_BOLD_PAIR.sub(lambda m: m.group(1), text)
         if text.count("**") == 1:
             text = text.replace("**", "", 1)
@@ -701,7 +808,7 @@ class Phase6NodeAssembler:
             content_bboxes = BBoxAggregator.union_by_page(raw_boxes)
 
         landing_chunks = [
-            {"id": l.id, "type": l.type}
+            {"id": l.id, "type": l.type, "bbox": l.normalized_bbox()}
             for l in self._leaves
             if start is not None and end is not None and start <= l.span[0] < end and l.type in MEDIA_TYPES
         ]

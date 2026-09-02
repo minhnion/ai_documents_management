@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import bisect
+import sys
 import json
 import logging
 import os
@@ -11,6 +12,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
+# sys.path patch để bare-import các module cùng thư mục pipeline hoạt động khi load dưới dạng package
+_PIPELINE_DIR = Path(__file__).resolve().parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
 
 from parse_models import (
     NOISE_TYPES, PAGE_BREAK, LeafElement, ParseResult, TableCellElement,
@@ -187,6 +193,8 @@ _RE_BOLD_MARK = re.compile(r"\*{2,}")
 _RE_LEAD_NUM = re.compile(r"^(\d+(?:\.\d+)*)\.?(?:\s+|$)")
 _RE_LEAD_ALPHA = re.compile(r"^([A-Za-z])\.(?:\s+|$)")
 _RE_NUM_LABEL_ANY = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?=[.)\s]|$)")
+# Bỏ phần tiêu đề lặp lại ở cuối, ví dụ "Heading 1 Heading 1" → "Heading 1"
+_RE_DUP_TITLE = re.compile(r"(\b\S+(?:\s+\S+){0,3})\s+\1\s*$")
 _MAX_POSITION = 1 << 30
 
 
@@ -225,7 +233,12 @@ class TocTree:
     def norm_title(t: str) -> str:
         t = _RE_MD_HEADING_PREFIX.sub("", t)
         t = _RE_BOLD_MARK.sub("", t)
-        return re.sub(r"\s+", " ", t).strip()
+        t = re.sub(r"\s+", " ", t).strip()
+        m = _RE_DUP_TITLE.search(t)
+        if m:
+            prefix = t[: m.start()].strip()
+            t = f"{prefix} {m.group(1)}".strip() if prefix else m.group(1).strip()
+        return t
 
     @staticmethod
     def normalize_nodes(items: list, depth: int) -> list:

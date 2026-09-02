@@ -11,8 +11,9 @@ from app.core.config import settings
 from app.core.exceptions import NotFoundException
 from app.models.guideline_version import GuidelineVersion
 
-# Landing AI chunk_id is a v4-style UUID.
-_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+# Landing AI chunk_id may be a v4-style UUID, a DPT-3 node id, or a
+# flat leaf id such as ``figure-0`` / ``table-1``.
+_ASSET_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 @dataclass
@@ -38,7 +39,7 @@ class VersionAssetService:
         version_id: int,
         landing_chunk_id: str,
     ) -> VersionAssetFile:
-        if not _UUID_RE.match(landing_chunk_id):
+        if not _ASSET_ID_RE.match(landing_chunk_id):
             raise NotFoundException("Version asset", landing_chunk_id)
 
         version = await self._get_version(version_id)

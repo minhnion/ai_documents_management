@@ -22,6 +22,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="toc_builder_")
+
 # sys.path patch — đồng nhất với dpt3_ocr_service
 _PIPELINE_DIR = Path(__file__).parent
 if str(_PIPELINE_DIR) not in sys.path:
@@ -180,5 +182,4 @@ class TocBuilderService:
     @staticmethod
     async def _run_blocking(func, /, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return await loop.run_in_executor(executor, partial(func, *args, **kwargs))
+        return await loop.run_in_executor(_executor, partial(func, *args, **kwargs))
