@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -19,7 +20,6 @@ from app.services.pipeline import (
     BBoxChunkingService,
     ExtractImageService,
     LandingAIOcrService,
-    MarkdownProcessingService,
     PipelinePersistenceService,
     TocBuilderService,
 )
@@ -34,14 +34,17 @@ if TYPE_CHECKING:
 class DocumentIngestionPipelineService:
     """End-to-end pipeline orchestrator.
 
-    The implementation is intentionally split into dedicated sub-services:
-    OCR -> markdown cleanup -> TOC build -> fuzzy chunking -> persistence.
+    The implementation is split into dedicated sub-services:
+    OCR -> TOC build -> chunking -> image extraction -> persistence.
+
+    Supported pipeline modes:
+      - ``dpt3``      : default OCR + span-based chunking (formerly DPT-3)
+      - ``spatial_pdf``: pymupdf native pipeline
     """
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-        self._markdown_service = MarkdownProcessingService()
         self._ocr_service = LandingAIOcrService()
         self._toc_service = TocBuilderService()
         self._chunking_service = BBoxChunkingService()
@@ -84,7 +87,22 @@ class DocumentIngestionPipelineService:
 
         effective_mode = selection.mode
         persist_stats: dict[str, int]
-        if effective_mode == "spatial_pdf":
+
+        # ── DPT-3 branch ─────────────────────────────────────────────────────
+        if effective_mode == "dpt3":
+            self._validate_pipeline_settings("dpt3")
+            self._hydrate_core_pipeline_env()
+            persist_stats = await self._process_with_dpt3(
+                pdf_path=pdf_path,
+                artifact_dir=artifact_dir,
+                document=document,
+                version_id=version_id,
+                source_job_id=source_job_id,
+                actor_user_id=actor_user_id,
+            )
+
+        # ── Spatial PDF branch ───────────────────────────────────────────────
+        elif effective_mode == "spatial_pdf":
             self._validate_pipeline_settings("spatial_pdf")
             try:
                 spatial_result = await self._process_with_spatial_pdf(
@@ -94,20 +112,36 @@ class DocumentIngestionPipelineService:
             except Exception:
                 if requested_mode == "auto":
                     logger.warning(
-                        "Spatial pipeline failed in auto mode; falling back to ocr_llm | file=%s",
+                        "Spatial pipeline failed in auto mode; falling back to dpt3 | file=%s",
                         pdf_path.name,
                         exc_info=True,
                     )
-                    effective_mode = "ocr_llm"
+                    persist_stats = await self._process_with_dpt3(
+                        pdf_path=pdf_path,
+                        artifact_dir=artifact_dir,
+                        document=document,
+                        version_id=version_id,
+                        source_job_id=source_job_id,
+                        actor_user_id=actor_user_id,
+                    )
+                    effective_mode = "dpt3"
                 else:
                     raise
             else:
                 if requested_mode == "auto" and not self._is_spatial_result_usable(spatial_result):
                     logger.warning(
-                        "Spatial pipeline result deemed low-confidence; falling back to ocr_llm | file=%s",
+                        "Spatial pipeline result deemed low-confidence; falling back to dpt3 | file=%s",
                         pdf_path.name,
                     )
-                    effective_mode = "ocr_llm"
+                    persist_stats = await self._process_with_dpt3(
+                        pdf_path=pdf_path,
+                        artifact_dir=artifact_dir,
+                        document=document,
+                        version_id=version_id,
+                        source_job_id=source_job_id,
+                        actor_user_id=actor_user_id,
+                    )
+                    effective_mode = "dpt3"
                 else:
                     self._write_artifacts(
                         artifact_dir=artifact_dir,
@@ -125,86 +159,10 @@ class DocumentIngestionPipelineService:
                         page_count=spatial_result.page_count,
                     )
 
-        if effective_mode == "ocr_llm":
-            self._validate_pipeline_settings("ocr_llm")
-            try:
-                ocr_result = await self._ocr_document(pdf_path)
-            except OcrProcessingError as exc:
-                await self._record_ocr_usage_events(
-                    events=exc.usage_events,
-                    document=document,
-                    version_id=version_id,
-                    source_job_id=source_job_id,
-                    actor_user_id=actor_user_id,
-                )
-                raise
-            await self._record_ocr_usage_events(
-                events=ocr_result.usage_events,
-                document=document,
-                version_id=version_id,
-                source_job_id=source_job_id,
-                actor_user_id=actor_user_id,
-            )
-            ocr_md_name = self._derive_ocr_md_name(document=document, pdf_path=pdf_path)
-            try:
-                toc = await self._build_toc(
-                    ocr_result.raw_markdown,
-                    source_file=ocr_md_name,
-                    ade_chunks=ocr_result.ade_chunks,
-                )
-            finally:
-                for sequence, usage in enumerate(self._toc_service.last_usage_events, start=1):
-                    await self._record_model_usage(
-                        UsageEventInput(
-                            idempotency_key=f"ingestion:{source_job_id or version_id}:llm:toc:{sequence}",
-                            model_type="llm",
-                            operation="toc_generation",
-                            document_id=int(document.document_id),
-                            version_id=version_id,
-                            job_type="version_ingestion",
-                            source_job_id=str(source_job_id or version_id),
-                            actor_user_id=actor_user_id or document.created_by_user_id,
-                            account_id=document.owner_user_id,
-                            status=str(usage.get("status", "succeeded")),
-                            request_count=1,
-                            input_tokens=usage.get("input_tokens", 0),
-                            cached_input_tokens=usage.get("cached_input_tokens", 0),
-                            output_tokens=usage.get("output_tokens", 0),
-                            usage_source="provider_reported" if usage.get("input_tokens", 0) or usage.get("output_tokens", 0) else "estimated",
-                            request_sequence=sequence,
-                        )
-                    )
-            chunk_payload = self._chunk_with_fuzzy_matching(
-                ocr_result.raw_markdown,
-                ocr_result.ade_chunks,
-                toc,
-            )
-            await self._extract_landing_chunk_images_best_effort(
-                pdf_path=pdf_path,
-                ade_chunks=ocr_result.ade_chunks,
-                artifact_dir=artifact_dir,
-            )
-
-            # Write artifacts before enrichment so chunks.json on disk keeps the partner core shape; FE-only fields are added after, only on the in-memory copy.
-            self._write_artifacts(
-                artifact_dir=artifact_dir,
-                raw_md=ocr_result.raw_markdown,
-                clean_md=None,
-                ade_chunks=ocr_result.ade_chunks,
-                toc=toc,
-                chunk_payload=chunk_payload,
-            )
-            self._enrich_landing_chunks(
-                chunk_payload=chunk_payload,
-                ade_chunks=ocr_result.ade_chunks,
-                version_id=version_id,
-            )
-            persist_stats = await self._persist_chunk_payload(
-                version_id=version_id,
-                document=document,
-                chunk_payload=chunk_payload,
-                clean_text=None,
-                page_count=ocr_result.page_count,
+        # ── Removed / unknown modes ──────────────────────────────────────────
+        else:
+            raise BadRequestException(
+                "DOCUMENT_PIPELINE_MODE must be one of: auto, dpt3, spatial_pdf."
             )
         document.pipeline_mode_used = effective_mode
         logger.info(
@@ -221,27 +179,42 @@ class DocumentIngestionPipelineService:
             **persist_stats,
         }
 
-    async def _record_model_usage(self, usage: UsageEventInput) -> None:
-        try:
-            await CostCalculationService.record_usage_isolated(usage)
-        except Exception:
-            # Accounting must not make a user document impossible to ingest;
-            # the error is explicit in logs and can be retried from the request key.
-            logger.exception("Unable to persist cost usage event | key=%s", usage.idempotency_key)
 
-    async def _record_ocr_usage_events(
+
+    # ── DPT-3 private helpers ────────────────────────────────────────────────
+
+    async def _process_with_dpt3(
         self,
         *,
-        events,
+        pdf_path: Path,
+        artifact_dir: Path,
         document: Document,
         version_id: int,
         source_job_id: int | None,
         actor_user_id: int | None,
-    ) -> None:
-        for sequence, usage in enumerate(events, start=1):
+    ) -> dict[str, int]:
+        """Chạy toàn bộ DPT-3 pipeline: OCR → TOC → Chunk → Image → Persist."""
+        from app.services.pipeline.landingai_ocr_service import LandingAIOcrService, OcrProcessingError
+        from app.services.pipeline.toc_builder_service import TocBuilderService
+        from app.services.pipeline.chunking_service import BBoxChunkingService
+        from app.services.pipeline.extract_image_service import ExtractImageService
+
+        dpt3_ocr = LandingAIOcrService()
+        dpt3_toc = TocBuilderService()
+        dpt3_chunk = BBoxChunkingService()
+        dpt3_img = ExtractImageService()
+
+        # ── Bước 1: OCR ─────────────────────────────────────────────────────
+        try:
+            ocr_result = await dpt3_ocr.process_pdf(pdf_path, artifact_dir=artifact_dir)
+        except Exception as exc:
+            raise OcrProcessingError(str(exc)) from exc
+
+        # Record OCR usage
+        for sequence, usage in enumerate(ocr_result.usage_events, start=1):
             await self._record_model_usage(
                 UsageEventInput(
-                    idempotency_key=f"ingestion:{source_job_id or version_id}:ocr:{sequence}",
+                    idempotency_key=f"ingestion:{source_job_id or version_id}:dpt3_ocr:{sequence}",
                     model_type="ocr",
                     operation="ocr_parse",
                     document_id=int(document.document_id),
@@ -250,7 +223,7 @@ class DocumentIngestionPipelineService:
                     source_job_id=str(source_job_id or version_id),
                     actor_user_id=actor_user_id or document.created_by_user_id,
                     account_id=document.owner_user_id,
-                    status=getattr(usage, "status", "succeeded"),
+                    status=usage.status,
                     page_count=usage.page_count,
                     request_count=usage.request_count,
                     output_chars=usage.output_chars,
@@ -259,24 +232,95 @@ class DocumentIngestionPipelineService:
                 )
             )
 
+        # ── Bước 2: TOC ─────────────────────────────────────────────────────
+        source_filename = (
+            Path(document.original_filename or "").stem or pdf_path.stem
+        ) + "_dpt3.json"
+        try:
+            toc = await dpt3_toc.build_toc(
+                parse_result=ocr_result.parse_result,
+                artifact_dir=artifact_dir,
+                source_filename=source_filename,
+            )
+        finally:
+            for sequence, usage in enumerate(dpt3_toc.last_usage_events, start=1):
+                await self._record_model_usage(
+                    UsageEventInput(
+                        idempotency_key=f"ingestion:{source_job_id or version_id}:dpt3_toc:{sequence}",
+                        model_type="llm",
+                        operation="toc_generation",
+                        document_id=int(document.document_id),
+                        version_id=version_id,
+                        job_type="version_ingestion",
+                        source_job_id=str(source_job_id or version_id),
+                        actor_user_id=actor_user_id or document.created_by_user_id,
+                        account_id=document.owner_user_id,
+                        status=str(usage.get("status", "succeeded")),
+                        request_count=1,
+                        input_tokens=usage.get("input_tokens", 0),
+                        cached_input_tokens=usage.get("cached_input_tokens", 0),
+                        output_tokens=usage.get("output_tokens", 0),
+                        usage_source="provider_reported" if usage.get("input_tokens", 0) or usage.get("output_tokens", 0) else "estimated",
+                        request_sequence=sequence,
+                    )
+                )
+
+        # ── Bước 3: Chunking ────────────────────────────────────────────────
+        chunk_payload = await dpt3_chunk.build_chunk_payload(
+            parse_result=ocr_result.parse_result,
+            toc=toc,
+            artifact_dir=artifact_dir,
+        )
+
+        # ── Bước 4: Extract images (best-effort) ────────────────────────────
+        try:
+            await dpt3_img.extract_images(
+                pdf_path=pdf_path,
+                artifact_dir=artifact_dir,
+                output_dir=artifact_dir / "images",
+                version_id=version_id,
+            )
+            # Reload chunk payload vì extract_images đã enrich landing_chunks + image_url
+            chunks_path = artifact_dir / "chunks.json"
+            if chunks_path.exists():
+                chunk_payload = json.loads(chunks_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning(
+                "DPT-3 extract images failed (best-effort) | file=%s",
+                pdf_path.name, exc_info=True,
+            )
+
+        # ── Bước 5: Persist DB ──────────────────────────────────────────────
+        persist_stats = await self._persist_chunk_payload(
+            version_id=version_id,
+            document=document,
+            chunk_payload=chunk_payload,
+            clean_text=None,
+            page_count=ocr_result.page_count,
+        )
+        return persist_stats
+
+    # ── Shared helpers (giữ nguyên từ DPT-2) ─────────────────────────────────
+
+    async def _record_model_usage(self, usage: UsageEventInput) -> None:
+        try:
+            await CostCalculationService(self.db).record_usage_event(usage)
+        except Exception:
+            # Accounting must not make a user document impossible to ingest;
+            # the error is explicit in logs and can be retried from the request key.
+            logger.exception("Unable to persist cost usage event | key=%s", usage.idempotency_key)
+
+
     def _validate_pipeline_settings(self, pipeline_mode: str) -> None:
         if pipeline_mode == "spatial_pdf":
             return
-        if pipeline_mode not in {"ocr_llm"}:
-            raise BadRequestException(
-                "DOCUMENT_PIPELINE_MODE must be one of: auto, ocr_llm, spatial_pdf."
-            )
         self._hydrate_core_pipeline_env()
         if not settings.LANDINGAI_API_KEY.strip():
-            raise BadRequestException("LANDINGAI_API_KEY is required for OCR pipeline.")
-        if not settings.LANDINGAI_MODEL_NAME.strip():
-            raise BadRequestException("LANDINGAI_MODEL_NAME is required for OCR pipeline.")
+            raise BadRequestException("LANDINGAI_API_KEY is required for DPT-3 pipeline.")
         if not settings.OPENAI_API_KEY.strip():
-            raise BadRequestException("OPENAI_API_KEY is required for TOC and chunk pipeline.")
+            raise BadRequestException("OPENAI_API_KEY is required for DPT-3 TOC pipeline.")
         if not settings.OPENAI_MODEL_NAME.strip():
-            raise BadRequestException("OPENAI_MODEL_NAME is required for TOC pipeline.")
-        if not 0.0 < float(settings.SCORE_THRESHOLD) < 1.0:
-            raise BadRequestException("SCORE_THRESHOLD must be > 0 and < 1.")
+            raise BadRequestException("OPENAI_MODEL_NAME is required for DPT-3 TOC pipeline.")
 
     def _hydrate_core_pipeline_env(self) -> None:
         if settings.LANDINGAI_API_KEY.strip():
@@ -290,13 +334,18 @@ class DocumentIngestionPipelineService:
             os.environ["OPENAI_API_URL"] = settings.OPENAI_API_URL.strip().strip('"').strip("'")
         if settings.OPENAI_MODEL_NAME.strip():
             os.environ["OPENAI_MODEL_NAME"] = settings.OPENAI_MODEL_NAME.strip()
+        # DPT-3 specific env
+        if settings.DPT3_MODEL.strip():
+            os.environ["DPT3_MODEL"] = settings.DPT3_MODEL.strip()
+        if settings.LANDINGAI_ADE_ENVIRONMENT.strip():
+            os.environ["LANDINGAI_ADE_ENVIRONMENT"] = settings.LANDINGAI_ADE_ENVIRONMENT.strip()
 
     def _resolve_pipeline_mode(self) -> str:
         raw_mode = str(settings.DOCUMENT_PIPELINE_MODE).strip().lower()
         if raw_mode in {"", "auto"}:
             return "auto"
-        if raw_mode in {"ocr", "ocr_llm"}:
-            return "ocr_llm"
+        if raw_mode in {"dpt3", "dpt-3"}:
+            return "dpt3"
         if raw_mode in {"spatial", "spatial_pdf", "native_pdf", "pymupdf"}:
             return "spatial_pdf"
         return raw_mode
@@ -309,23 +358,15 @@ class DocumentIngestionPipelineService:
     ) -> DocumentPipelineSelection:
         if requested_mode == "auto":
             return await self._pipeline_selector_service.select_mode(pdf_path)
-        if requested_mode in {"ocr_llm", "spatial_pdf"}:
+        if requested_mode in {"spatial_pdf", "dpt3"}:
             return DocumentPipelineSelection(
                 mode=requested_mode,
                 reason="manual_override",
                 metrics={},
             )
         raise BadRequestException(
-            "DOCUMENT_PIPELINE_MODE must be one of: auto, ocr_llm, spatial_pdf."
+            "DOCUMENT_PIPELINE_MODE must be one of: auto, dpt3, spatial_pdf."
         )
-
-    def _derive_ocr_md_name(self, *, document: Document, pdf_path: Path) -> str:
-        # Mirrors the partner CLI: Phase 1/2/3 prompts embed the OCR markdown filename, so we feed the user-uploaded stem + "_ocr.md".
-        raw = (document.original_filename or "").strip()
-        stem = Path(raw).stem if raw else pdf_path.stem
-        if not stem:
-            stem = pdf_path.stem
-        return f"{stem}_ocr.md"
 
     def _resolve_pdf_path(self, document: Document) -> Path:
         if document.storage_uri is None or not document.storage_uri.strip():
@@ -346,54 +387,6 @@ class DocumentIngestionPipelineService:
         else:
             storage_root = storage_root.resolve()
         return storage_root / "guidelines" / str(guideline_id) / str(version_id) / "pipeline"
-
-    async def _process_with_spatial_pdf(
-        self,
-        *,
-        pdf_path: Path,
-        artifact_dir: Path,
-    ) -> SpatialPdfPipelineResult:
-        if self._spatial_pdf_service is None:
-            from app.services.pipeline.spatial_pdf import SpatialPdfPipelineService
-
-            self._spatial_pdf_service = SpatialPdfPipelineService()
-        return await self._spatial_pdf_service.process_pdf(
-            pdf_path=pdf_path,
-            artifact_dir=artifact_dir,
-        )
-
-    async def _ocr_document(self, pdf_path: Path):
-        return await self._ocr_service.process_pdf(pdf_path)
-
-    async def _ocr_markdown(self, pdf_path: Path) -> str:
-        return await self._ocr_service.ocr_markdown(pdf_path)
-
-    async def _build_toc(
-        self,
-        clean_text: str,
-        source_file: str,
-        ade_chunks: list[dict] | None = None,
-    ) -> dict:
-        return await self._toc_service.build_toc(
-            clean_text=clean_text,
-            source_file=source_file,
-            ade_chunks=ade_chunks,
-        )
-
-    def _clean_markdown(self, raw_text: str) -> str:
-        return self._markdown_service.clean_markdown(raw_text)
-
-    def _chunk_with_fuzzy_matching(
-        self,
-        clean_text: str,
-        ade_chunks: list[dict],
-        toc: dict,
-    ) -> dict:
-        return self._chunking_service.build_chunk_payload(
-            ocr_md_text=clean_text,
-            ade_chunks=ade_chunks,
-            toc_data=toc,
-        )
 
     async def _persist_chunk_payload(
         self,
@@ -429,95 +422,21 @@ class DocumentIngestionPipelineService:
             chunk_payload=chunk_payload,
         )
 
-    async def _extract_landing_chunk_images_best_effort(
+    async def _process_with_spatial_pdf(
         self,
         *,
         pdf_path: Path,
-        ade_chunks: list[dict],
         artifact_dir: Path,
-    ) -> None:
-        if not ade_chunks:
-            return
-        try:
-            stats = await self._extract_image_service.extract_landing_chunk_images(
-                pdf_path=pdf_path,
-                ade_chunks=ade_chunks,
-                output_dir=artifact_dir / "images",
-            )
-            logger.info(
-                "Asset extraction done | file=%s saved=%s skipped=%s error=%s",
-                pdf_path.name,
-                stats.get("saved"),
-                stats.get("skipped"),
-                stats.get("error"),
-            )
-        except Exception:
-            logger.warning(
-                "Asset extraction failed | file=%s artifact_dir=%s",
-                pdf_path.name,
-                artifact_dir.as_posix(),
-                exc_info=True,
-            )
+    ) -> SpatialPdfPipelineResult:
+        if self._spatial_pdf_service is None:
+            from app.services.pipeline.spatial_pdf import SpatialPdfPipelineService
 
-    def _enrich_landing_chunks(
-        self,
-        *,
-        chunk_payload: dict,
-        ade_chunks: list[dict],
-        version_id: int,
-    ) -> None:
-        """Bơm ``bbox`` (từ ADE) và ``image_url`` (asset endpoint) vào mỗi
-        landing_chunks entry trong chunk_payload, đệ quy theo cây section.
-        """
-        ade_by_id: dict[str, dict] = {}
-        for chunk in ade_chunks:
-            cid = chunk.get("id")
-            if cid:
-                ade_by_id[cid] = chunk
+            self._spatial_pdf_service = SpatialPdfPipelineService()
+        return await self._spatial_pdf_service.process_pdf(
+            pdf_path=pdf_path,
+            artifact_dir=artifact_dir,
+        )
 
-        # URL is relative to the FE axios baseURL (= API_V1_PREFIX), so the
-        # FE can call ``api.get(image_url, {responseType: 'blob'})`` and add
-        # the auth header automatically.
-        url_prefix = f"/versions/{version_id}/assets"
-
-        def _walk(node: object) -> None:
-            if not isinstance(node, dict):
-                return
-            entries = node.get("landing_chunks")
-            if isinstance(entries, list):
-                enriched: list[dict] = []
-                for entry in entries:
-                    if not isinstance(entry, dict):
-                        continue
-                    cid = entry.get("id")
-                    if not cid:
-                        continue
-                    out = {"id": cid, "type": entry.get("type", "text")}
-                    raw = ade_by_id.get(cid)
-                    if raw is not None:
-                        bboxes = raw.get("bboxes") or []
-                        if isinstance(bboxes, list) and bboxes:
-                            out["bbox"] = bboxes[0]
-                            if len(bboxes) > 1:
-                                out["bboxes"] = bboxes
-                    out["image_url"] = f"{url_prefix}/{cid}"
-                    enriched.append(out)
-                node["landing_chunks"] = enriched
-            for key in (
-                "chapters",
-                "sections",
-                "subsections",
-                "subsubsections",
-                "subsubsubsections",
-                "subsubsubsubsections",
-                "children",
-            ):
-                children = node.get(key)
-                if isinstance(children, list):
-                    for child in children:
-                        _walk(child)
-
-        _walk(chunk_payload)
 
     def _is_spatial_result_usable(self, spatial_result: SpatialPdfPipelineResult) -> bool:
         chapters = []
@@ -588,9 +507,3 @@ class DocumentIngestionPipelineService:
             "textual_nodes": textual_nodes,
         }
 
-    async def _openai_json_completion(self, prompt: str) -> dict:
-        # Backward-compatible helper used by diagnostics/tests.
-        return await self._toc_service.openai_json_completion(
-            system_prompt="You are a strict JSON generator. Return valid JSON only.",
-            user_prompt=prompt,
-        )

@@ -28,7 +28,7 @@ class DocumentPipelineSelectorService:
       3. The document must carry a vector text layer that is actually
          extractable (i.e. the PDF is not a pure scan).
 
-    Anything missing one of these characteristics falls back to ocr_llm.
+    Anything missing one of these characteristics falls back to dpt3.
     PDFs with extractable text but weak document structure also fall back to
     OCR, because spatial chunking needs reliable anchors, not just selectable
     text.
@@ -59,7 +59,7 @@ class DocumentPipelineSelectorService:
             page_count = len(document)
             if page_count == 0:
                 return DocumentPipelineSelection(
-                    mode="ocr_llm",
+                    mode="dpt3",
                     reason="empty_pdf",
                     metrics={"page_count": 0},
                 )
@@ -138,28 +138,28 @@ class DocumentPipelineSelectorService:
             metrics["detected_vietnamese"] = detected_vietnamese
             if detected_vietnamese:
                 return DocumentPipelineSelection(
-                    mode="ocr_llm",
+                    mode="dpt3",
                     reason="detected_vietnamese_forced_ocr",
                     metrics=metrics,
                 )
 
             if not has_native_outline_tree:
                 return DocumentPipelineSelection(
-                    mode="ocr_llm",
+                    mode="dpt3",
                     reason="missing_native_outline_tree",
                     metrics=metrics,
                 )
 
             if not text_layer_extractable:
                 return DocumentPipelineSelection(
-                    mode="ocr_llm",
+                    mode="dpt3",
                     reason="native_outline_but_text_layer_unextractable",
                     metrics=metrics,
                 )
 
             if weak_document_structure:
                 return DocumentPipelineSelection(
-                    mode="ocr_llm",
+                    mode="dpt3",
                     reason="extractable_text_but_weak_document_structure",
                     metrics=metrics,
                 )
