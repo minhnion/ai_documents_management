@@ -19,7 +19,7 @@ if str(_PIPELINE_DIR) not in sys.path:
     sys.path.insert(0, str(_PIPELINE_DIR))
 
 from parse_models import (
-    NOISE_TYPES, PAGE_BREAK, LeafElement, ParseResult, TableCellElement,
+    MEDIA_TYPES, NOISE_TYPES, PAGE_BREAK, LeafElement, ParseResult, TableCellElement,
     flatten_leaves, index_table_cells,
 )
 
@@ -195,6 +195,10 @@ _RE_LEAD_ALPHA = re.compile(r"^([A-Za-z])\.(?:\s+|$)")
 _RE_NUM_LABEL_ANY = re.compile(r"(?<![\d.])(\d+(?:\.\d+)+)(?=[.)\s]|$)")
 # Bỏ phần tiêu đề lặp lại ở cuối, ví dụ "Heading 1 Heading 1" → "Heading 1"
 _RE_DUP_TITLE = re.compile(r"(\b\S+(?:\s+\S+){0,3})\s+\1\s*$")
+_RE_PLACEHOLDER_TITLE = re.compile(
+    r"^\s*(?:nội\s+dung|nội\s+dung\s+chương|nội\s+dung\s+chính|mục\s+lục|table\s+of\s+contents?|contents?)\s*$",
+    re.IGNORECASE,
+)
 _MAX_POSITION = 1 << 30
 
 
@@ -238,6 +242,8 @@ class TocTree:
         if m:
             prefix = t[: m.start()].strip()
             t = f"{prefix} {m.group(1)}".strip() if prefix else m.group(1).strip()
+        # Bỏ dấu câu thừa ở cuối tiêu đề để so khớp text chính xác hơn
+        t = t.rstrip(":.,;")
         return t
 
     @staticmethod
@@ -1147,6 +1153,8 @@ class HeadingElementMatcher:
         toc_end_leaf_page = LeafElementSummary.toc_end_leaf_page(result, toc_end_md_page)
         table_cells_by_leaf = index_table_cells(result)
         summary = LeafElementSummary.build(result, leaves, toc_end_leaf_page, 1500, table_cells_by_leaf=table_cells_by_leaf)
+        # Không dùng figure làm heading element vì chunk figure sẽ bị loại bỏ → content rỗng
+        summary = [e for e in summary if e.get("type") != "figure"]
         if not summary:
             return
 
@@ -1162,7 +1170,11 @@ class HeadingElementMatcher:
         self._phase3_order_check(flat_refs, id_pos, initial_landmarks)
         self._phase3_orphan_pass(flat_refs, summary, valid_ids, id_pos, landmarks, n_elem)
         self._phase3_order_check(flat_refs, id_pos, initial_landmarks)
-        self._phase3_verify_pass(flat_refs, summary, id_pos, ElementText(result, leaves, table_cells_by_leaf))
+        text = ElementText(result, leaves, table_cells_by_leaf)
+        self._phase3_verify_pass(flat_refs, summary, id_pos, text)
+        n_text_search = self._phase3_text_search_fallbacks(flat_refs, summary, valid_ids, id_pos, text)
+        if n_text_search:
+            logger.info("  Phase 3 [TextSearch]: %d node matched by text search", n_text_search)
         self._phase3_cascade_inherit(flat_refs)
         self._phase3_deterministic_fallbacks(flat_refs, id_pos)
 
@@ -1396,6 +1408,61 @@ class HeadingElementMatcher:
                     node["heading_element_id"] = parent["heading_element_id"]
 
     @staticmethod
+    def _phase3_text_search_fallbacks(
+        flat_refs: list[tuple], summary: list[dict], valid_ids: set[str], id_pos: dict[str, int], text: ElementText,
+    ) -> int:
+        """Tìm heading element cho các node chưa match bằng cách so khớp text thuần túy, không gọi LLM."""
+        matched = 0
+        n_elem = len(summary)
+        path_to_node = {p: n for p, n in flat_refs}
+        for i, (path, node) in enumerate(flat_refs):
+            if node.get("heading_element_id"):
+                continue
+            title = node.get("title", "")
+            if _RE_PLACEHOLDER_TITLE.search(title) or len(TocTree.norm_title(title)) < 6:
+                continue
+            prev_pos = 0
+            next_pos = n_elem
+            for j in range(i - 1, -1, -1):
+                eid = flat_refs[j][1].get("heading_element_id")
+                if eid and eid in id_pos:
+                    prev_pos = max(prev_pos, id_pos[eid] + 1)
+                    break
+            for j in range(i + 1, len(flat_refs)):
+                eid = flat_refs[j][1].get("heading_element_id")
+                if eid and eid in id_pos:
+                    next_pos = min(next_pos, id_pos[eid])
+                    break
+            if "/" in path:
+                parent_path = path.rsplit("/", 1)[0]
+                parent = path_to_node.get(parent_path)
+                if parent and parent.get("heading_element_id") in id_pos:
+                    parent_pos = id_pos[parent["heading_element_id"]]
+                    if parent_pos + 1 > prev_pos:
+                        prev_pos = parent_pos + 1
+                child_prefix = path + "/"
+                child_positions = [
+                    id_pos[n["heading_element_id"]]
+                    for p, n in flat_refs
+                    if p.startswith(child_prefix) and n.get("heading_element_id") in id_pos
+                ]
+                if child_positions:
+                    min_child = min(child_positions)
+                    if min_child < next_pos:
+                        next_pos = min_child
+            if prev_pos >= next_pos:
+                continue
+            for j in range(prev_pos, next_pos):
+                e = summary[j]
+                if e["id"] not in valid_ids:
+                    continue
+                if text.contains(e["id"], title):
+                    node["heading_element_id"] = e["id"]
+                    matched += 1
+                    break
+        return matched
+
+    @staticmethod
     def _phase3_deterministic_fallbacks(flat_refs: list[tuple], id_pos: dict[str, int]) -> None:
         for i, (_, node) in enumerate(flat_refs):
             if node.get("heading_element_id"):
@@ -1525,7 +1592,8 @@ class GapFillResolver:
                 if not quote or window_text.count(quote) != 1:
                     continue
                 leaf = GapFillResolver._leaf_at(leaves, starts, floor + window_text.find(quote))
-                if leaf is None:
+                if leaf is None or leaf.type in MEDIA_TYPES:
+                    # Không điền heading vào figure/table vì chunk media bị loại/sẽ rỗng
                     continue
                 title = TocTree.norm_title(quote)
                 if not title:
