@@ -254,7 +254,7 @@ class HeadingLocator:
 
     @staticmethod
     def _extract_prefix_token(text: str) -> str | None:
-        stripped = text.strip()
+        stripped = re.sub(r"^[*#`\s]+", "", text.strip())
         alpha_m = _RE_ALPHA_PREFIX.match(stripped)
         if alpha_m:
             return alpha_m.group(1).upper()
@@ -269,8 +269,9 @@ class HeadingLocator:
         if token is None:
             return None
         if re.match(r"^[A-Za-z]$", token):
-            return re.compile(r"(?<![A-Za-z0-9])" + re.escape(token) + r"\.")
-        return re.compile(r"(?<![.\d])" + re.escape(token) + r"(?:[.\s]|$)")
+            return re.compile(r"(?<![A-Za-z0-9])" + re.escape(token) + r"\.(?![A-Za-z0-9])")
+        # Token như 1.2.3 không được là phần đầu của 1.2.3.4
+        return re.compile(r"(?<![.\d])" + re.escape(token) + r"(?![\d.])")
 
     def prefix_conflict(self, title: str, start: int) -> bool:
         title_token = self._extract_prefix_token(title)
@@ -297,10 +298,15 @@ class HeadingLocator:
                     best_score, best = score, (s, self._content_cut(segment, s, e, title, title_words))
             if prefix_re is None:
                 continue
+            title_token = self._extract_prefix_token(title)
             for m in prefix_re.finditer(segment):
                 sub_raw = segment[m.start():]
                 sub_clean = _RE_HTML_TAG.sub(" ", sub_raw).strip()
                 if not sub_clean:
+                    continue
+                # Đảm bảo prefix số của ứng viên khớp cấp độ của title
+                candidate_token = self._extract_prefix_token(sub_clean)
+                if title_token is not None and candidate_token is not None and candidate_token != title_token:
                     continue
                 sub_score = self._score_candidates(sub_clean, title_words, threshold)
                 if sub_score >= threshold and sub_score > best_score:
@@ -372,8 +378,8 @@ class HeadingLocator:
             rest = segment_text[end:]
             # Bỏ marker bold đóng (**) và khoảng trắng/xuống dòng sau tiêu đề
             rest = rest.lstrip("*").lstrip(" \t\n\r")
-            # Nếu nội dung bắt đầu sau dấu hai chấm trên cùng dòng, bỏ qua dấu đó
-            if rest.startswith(":"):
+            # Nếu nội dung bắt đầu sau dấu hai chấm / gạch ngang / đầu dòng list trên cùng dòng, bỏ qua
+            if rest.startswith(":") or rest.startswith("–") or rest.startswith("-") or rest.startswith("*"):
                 rest = rest[1:].lstrip("*").lstrip(" \t\n\r")
             end += len(segment_text) - end - len(rest)
             if end >= len(segment_text):
@@ -472,16 +478,27 @@ class Phase5BoundaryResolver:
 
     def _resolve_ends(self, nodes: list[dict], chapters: list[dict], doc_end: int) -> None:
         descendants = self._descendant_ids(chapters)
-        placed = sorted((n for n in nodes if n.get("_start") is not None), key=lambda n: n["_start"])
+        placed = sorted(
+            (n for n in nodes if n.get("_start") is not None),
+            key=lambda n: (n["_start"], n.get("_content_start", n["_start"]), n.get("_leaf_idx", -1)),
+        )
         for i, node in enumerate(placed):
             own = descendants[id(node)]
             end = doc_end
             for j in range(i + 1, len(placed)):
-                if id(placed[j]) in own:
+                nxt = placed[j]
+                if id(nxt) in own:
                     continue
-                end = placed[j]["_start"]
+                # Nếu node kế nằm ở leaf trước hoặc bắt đầu trước nội dung của node hiện tại
+                # thì bỏ qua để tránh cắt content về 0 hoặc nuốt content của node trước.
+                if nxt.get("_leaf_idx") is not None and node.get("_leaf_idx") is not None:
+                    if nxt["_leaf_idx"] < node["_leaf_idx"]:
+                        continue
+                    if nxt["_leaf_idx"] == node["_leaf_idx"] and nxt["_start"] < node.get("_content_start", node["_start"]):
+                        continue
+                end = nxt["_start"]
                 break
-            node["_end"] = max(end, node["_content_start"])
+            node["_end"] = max(end, node.get("_content_start", node["_start"]))
 
     @staticmethod
     def _descendant_ids(chapters: list[dict]) -> dict[int, set[int]]:
@@ -628,9 +645,20 @@ _RE_ORPHAN_BOLD_PAIR = re.compile(r"\*\*(\s*)\*\*")
 _RE_HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
 _RE_PAGE_BREAK = re.compile(re.escape(PAGE_BREAK))
 
-_RE_LIST_LINE = re.compile(r"^[-*+]\s+|^\d+\.\s+|^>\s*")
+_RE_LIST_LINE = re.compile(r"^[-*+]\s+|^\d+(?:\.\d+)*[.\s]\s+|^>\s*")
 _RE_MARKDOWN_BLOCK = re.compile(
     r"^(\s*#{1,6}\s|\*\*.+\*\*|\s*\||```|~~~)"
+)
+# Heading dạng: 1.2.3. Tiêu đề, I. Tiêu đề, a) Tiêu đề, CHƯƠNG/PHẦN 3, hoặc dòng toàn chữ hoa ngắn
+_RE_HEADING_LIKE = re.compile(
+    r"^\s*(?:\d+(?:\.\d+)*[.\s]|[IVXLCDM]+[.)]|[A-Za-zĐ][.)]|"
+    r"(?:CHƯƠNG|CHUONG|PHẦN|PHAN|CHAPTER|PART|BÀI|BAI)\s+\d+|[IVXLCDM]+)\s+",
+    re.IGNORECASE,
+)
+_RE_ALLCAPS_HEADING = re.compile(r"^[A-ZÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÊẾỀỂỄỆÔỐỒỔỖỘƠỚỜỞỠỢƯỨỪỬỮỰ\s]{3,40}$")
+_RE_PLACEHOLDER_TITLE = re.compile(
+    r"^\s*(?:nội\s+dung|nội\s+dung\s+chương|nội\s+dung\s+chính|mục\s+lục|table\s+of\s+contents?|contents?)\s*$",
+    re.IGNORECASE,
 )
 
 
@@ -638,8 +666,17 @@ def _is_list_line(line: str) -> bool:
     return bool(_RE_LIST_LINE.match(line.strip()))
 
 
+def _is_heading_like(line: str) -> bool:
+    stripped = line.strip()
+    if _RE_HEADING_LIKE.match(stripped):
+        return True
+    if _RE_ALLCAPS_HEADING.match(stripped):
+        return True
+    return False
+
+
 def _is_structured_line(line: str) -> bool:
-    return bool(_RE_MARKDOWN_BLOCK.match(line.strip()))
+    return bool(_RE_MARKDOWN_BLOCK.match(line.strip())) or _is_heading_like(line)
 
 
 def reflow_text(text: str) -> str:
@@ -699,6 +736,9 @@ def reflow_text(text: str) -> str:
                 flush()
                 buffer.append(raw)
                 buffer_type = "HEADING"
+                # Nếu heading-like không phải list, đừng để dòng kế tiếp bị gộp vào heading
+                if _is_heading_like(stripped) and not _is_list_line(stripped):
+                    continue
             else:
                 if buffer and buffer_type not in ("PLAIN", "LIST"):
                     flush()
@@ -841,6 +881,22 @@ class ChunkDocumentBuilder:
     def __init__(self, config: ChunkConfig) -> None:
         self._config = config
 
+    @staticmethod
+    def _prune_placeholder_leaves(nodes: list[dict]) -> None:
+        """Loại bỏ các node lá tiêu đề rỗng như 'NỘI DUNG' hoặc 'MỤC LỤC' — không mất chữ."""
+        filtered: list[dict] = []
+        for node in nodes:
+            if not isinstance(node, dict):
+                continue
+            for key in DEPTH_CHILD_KEYS.values():
+                if node.get(key):
+                    ChunkDocumentBuilder._prune_placeholder_leaves(node[key])
+            is_leaf = not any(node.get(k) for k in DEPTH_CHILD_KEYS.values())
+            if is_leaf and not node.get("content") and _RE_PLACEHOLDER_TITLE.search(node.get("title", "")):
+                continue
+            filtered.append(node)
+        nodes[:] = filtered
+
     def build(self, toc_path: Path, source_path: Path) -> dict:
         toc = json.loads(toc_path.read_text(encoding="utf-8"))
         result = ParseResult.load(source_path)
@@ -860,6 +916,7 @@ class ChunkDocumentBuilder:
         builder = Phase6NodeAssembler(result, leaves, extractor, pages)
 
         top_chunks = [builder.build(c, "") for c in chapters]
+        self._prune_placeholder_leaves(top_chunks)
         matched, reasons, empty = self._count_matches(top_chunks)
         unmatched = sum(reasons.values())
         logger.info(
