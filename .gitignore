@@ -64,3 +64,7 @@ core_and_example_ocr/
 test UI/
 *.md
 .pnpm-store/
+
+# External DPT-3 reference/data folders (not part of this repo)
+/app_dpt3/
+/dpt3/

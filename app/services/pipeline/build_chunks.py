@@ -1,30 +1,25 @@
 from __future__ import annotations
 
-import bisect
+import os
 import sys
+from pathlib import Path
+
+_PIPELINE_DIR = Path(__file__).resolve().parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
+
+import bisect
 import hashlib
 import json
 import logging
 import re
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path
-
-# sys.path patch để bare-import các module cùng thư mục pipeline hoạt động khi load dưới dạng package
-_PIPELINE_DIR = Path(__file__).resolve().parent
-if str(_PIPELINE_DIR) not in sys.path:
-    sys.path.insert(0, str(_PIPELINE_DIR))
 
 from build_toc import DEPTH_CHILD_KEYS, TocTree
 from parse_models import (
-    PAGE_BREAK,
-    LeafElement,
-    MEDIA_TYPES,
-    NOISE_TYPES,
-    ParseResult,
-    TableCellElement,
-    flatten_leaves,
-    index_table_cells,
+    LeafElement, MEDIA_TYPES, NOISE_TYPES, ParseResult, TableCellElement,
+    flatten_leaves, index_table_cells,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -214,9 +209,6 @@ class HeadingLocator:
         seg_end = m.start() if m else span[1]
         segment = self._markdown[abs_start:seg_end]
         content_start = self._content_cut(segment, abs_start, seg_end, title, title_words)
-        # Nếu content nằm ở dòng kế tiếp, nhảy qua ký tự xuống dòng
-        if m and content_start == seg_end:
-            content_start = m.end()
         return abs_start, content_start
 
     @staticmethod
@@ -254,7 +246,7 @@ class HeadingLocator:
 
     @staticmethod
     def _extract_prefix_token(text: str) -> str | None:
-        stripped = re.sub(r"^[*#`\s]+", "", text.strip())
+        stripped = text.strip()
         alpha_m = _RE_ALPHA_PREFIX.match(stripped)
         if alpha_m:
             return alpha_m.group(1).upper()
@@ -269,9 +261,8 @@ class HeadingLocator:
         if token is None:
             return None
         if re.match(r"^[A-Za-z]$", token):
-            return re.compile(r"(?<![A-Za-z0-9])" + re.escape(token) + r"\.(?![A-Za-z0-9])")
-        # Token như 1.2.3 không được là phần đầu của 1.2.3.4
-        return re.compile(r"(?<![.\d])" + re.escape(token) + r"(?![\d.])")
+            return re.compile(r"(?<![A-Za-z0-9])" + re.escape(token) + r"\.")
+        return re.compile(r"(?<![.\d])" + re.escape(token) + r"(?:[.\s]|$)")
 
     def prefix_conflict(self, title: str, start: int) -> bool:
         title_token = self._extract_prefix_token(title)
@@ -298,15 +289,10 @@ class HeadingLocator:
                     best_score, best = score, (s, self._content_cut(segment, s, e, title, title_words))
             if prefix_re is None:
                 continue
-            title_token = self._extract_prefix_token(title)
             for m in prefix_re.finditer(segment):
                 sub_raw = segment[m.start():]
                 sub_clean = _RE_HTML_TAG.sub(" ", sub_raw).strip()
                 if not sub_clean:
-                    continue
-                # Đảm bảo prefix số của ứng viên khớp cấp độ của title
-                candidate_token = self._extract_prefix_token(sub_clean)
-                if title_token is not None and candidate_token is not None and candidate_token != title_token:
                     continue
                 sub_score = self._score_candidates(sub_clean, title_words, threshold)
                 if sub_score >= threshold and sub_score > best_score:
@@ -376,15 +362,9 @@ class HeadingLocator:
         end = cls._title_end(segment_text, title)
         if end is not None:
             rest = segment_text[end:]
-            # Bỏ marker bold đóng (**) và khoảng trắng/xuống dòng sau tiêu đề
-            rest = rest.lstrip("*").lstrip(" \t\n\r")
-            # Nếu nội dung bắt đầu sau dấu hai chấm / gạch ngang / đầu dòng list trên cùng dòng, bỏ qua
-            if rest.startswith(":") or rest.startswith("–") or rest.startswith("-") or rest.startswith("*"):
-                rest = rest[1:].lstrip("*").lstrip(" \t\n\r")
-            end += len(segment_text) - end - len(rest)
-            if end >= len(segment_text):
-                # Tiêu đề chiếm cả dòng → nội dung bắt đầu ở dòng kế tiếp
-                return abs_end
+            stripped = rest.lstrip(" \t")
+            if stripped.startswith(":"):
+                end += len(rest) - len(stripped) + 1
             return abs_start + end
         pos = cls._colon_split_pos(segment_text, title_words)
         return abs_start + pos + 1 if pos is not None else abs_end
@@ -478,27 +458,16 @@ class Phase5BoundaryResolver:
 
     def _resolve_ends(self, nodes: list[dict], chapters: list[dict], doc_end: int) -> None:
         descendants = self._descendant_ids(chapters)
-        placed = sorted(
-            (n for n in nodes if n.get("_start") is not None),
-            key=lambda n: (n["_start"], n.get("_content_start", n["_start"]), n.get("_leaf_idx", -1)),
-        )
+        placed = sorted((n for n in nodes if n.get("_start") is not None), key=lambda n: n["_start"])
         for i, node in enumerate(placed):
             own = descendants[id(node)]
             end = doc_end
             for j in range(i + 1, len(placed)):
-                nxt = placed[j]
-                if id(nxt) in own:
+                if id(placed[j]) in own:
                     continue
-                # Nếu node kế nằm ở leaf trước hoặc bắt đầu trước nội dung của node hiện tại
-                # thì bỏ qua để tránh cắt content về 0 hoặc nuốt content của node trước.
-                if nxt.get("_leaf_idx") is not None and node.get("_leaf_idx") is not None:
-                    if nxt["_leaf_idx"] < node["_leaf_idx"]:
-                        continue
-                    if nxt["_leaf_idx"] == node["_leaf_idx"] and nxt["_start"] < node.get("_content_start", node["_start"]):
-                        continue
-                end = nxt["_start"]
+                end = placed[j]["_start"]
                 break
-            node["_end"] = max(end, node.get("_content_start", node["_start"]))
+            node["_end"] = max(end, node["_content_start"])
 
     @staticmethod
     def _descendant_ids(chapters: list[dict]) -> dict[int, set[int]]:
@@ -642,112 +611,6 @@ class MediaContentRenderer:
 
 
 _RE_ORPHAN_BOLD_PAIR = re.compile(r"\*\*(\s*)\*\*")
-_RE_HTML_COMMENT = re.compile(r"<!--[\s\S]*?-->")
-_RE_PAGE_BREAK = re.compile(re.escape(PAGE_BREAK))
-
-_RE_LIST_LINE = re.compile(r"^[-*+]\s+|^\d+(?:\.\d+)*[.\s]\s+|^>\s*")
-_RE_MARKDOWN_BLOCK = re.compile(
-    r"^(\s*#{1,6}\s|\*\*.+\*\*|\s*\||```|~~~)"
-)
-# Heading dạng: 1.2.3. Tiêu đề, I. Tiêu đề, a) Tiêu đề, CHƯƠNG/PHẦN 3, hoặc dòng toàn chữ hoa ngắn
-_RE_HEADING_LIKE = re.compile(
-    r"^\s*(?:\d+(?:\.\d+)*[.\s]|[IVXLCDM]+[.)]|[A-Za-zĐ][.)]|"
-    r"(?:CHƯƠNG|CHUONG|PHẦN|PHAN|CHAPTER|PART|BÀI|BAI)\s+\d+|[IVXLCDM]+)\s+",
-    re.IGNORECASE,
-)
-_RE_ALLCAPS_HEADING = re.compile(r"^[A-ZÁÀẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬĐÊẾỀỂỄỆÔỐỒỔỖỘƠỚỜỞỠỢƯỨỪỬỮỰ\s]{3,40}$")
-_RE_PLACEHOLDER_TITLE = re.compile(
-    r"^\s*(?:nội\s+dung|nội\s+dung\s+chương|nội\s+dung\s+chính|mục\s+lục|table\s+of\s+contents?|contents?)\s*$",
-    re.IGNORECASE,
-)
-
-
-def _is_list_line(line: str) -> bool:
-    return bool(_RE_LIST_LINE.match(line.strip()))
-
-
-def _is_heading_like(line: str) -> bool:
-    stripped = line.strip()
-    if _RE_HEADING_LIKE.match(stripped):
-        return True
-    if _RE_ALLCAPS_HEADING.match(stripped):
-        return True
-    return False
-
-
-def _is_structured_line(line: str) -> bool:
-    return bool(_RE_MARKDOWN_BLOCK.match(line.strip())) or _is_heading_like(line)
-
-
-def reflow_text(text: str) -> str:
-    """Biến đoạn văn bị OCR cắt nhỏ thành paragraph liền mạch, nhưng vẫn giữ list/table/heading."""
-    if not text:
-        return text
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    paragraphs = text.split("\n\n")
-    out_paragraphs: list[str] = []
-    for para in paragraphs:
-        if not para.strip():
-            continue
-        lines = para.split("\n")
-        out_lines: list[str] = []
-        buffer: list[str] = []
-        buffer_type: str | None = None
-
-        def flush() -> None:
-            nonlocal buffer, buffer_type
-            if not buffer:
-                return
-            if buffer_type in ("PLAIN", "LIST"):
-                out_lines.append(" ".join(buffer))
-            else:
-                out_lines.append("\n".join(buffer))
-            buffer = []
-            buffer_type = None
-
-        n = len(lines)
-        for i, raw in enumerate(lines):
-            stripped = raw.strip()
-            if not stripped:
-                continue
-            if _is_list_line(stripped):
-                # Look ahead: if this is a single list line in the middle
-                # of a PLAIN paragraph, merge it as plain text to avoid
-                # splitting a paragraph into paragraph + bullet.
-                next_stripped = ""
-                for j in range(i + 1, n):
-                    if lines[j].strip():
-                        next_stripped = lines[j].strip()
-                        break
-                is_lonely_list = (
-                    buffer_type == "PLAIN"
-                    and next_stripped
-                    and not _is_list_line(next_stripped)
-                )
-                if is_lonely_list:
-                    buffer.append(raw)
-                    buffer_type = "PLAIN"
-                else:
-                    flush()
-                    buffer.append(raw)
-                    buffer_type = "LIST"
-            elif _is_structured_line(stripped):
-                flush()
-                buffer.append(raw)
-                buffer_type = "HEADING"
-                # Nếu heading-like không phải list, đừng để dòng kế tiếp bị gộp vào heading
-                if _is_heading_like(stripped) and not _is_list_line(stripped):
-                    continue
-            else:
-                if buffer and buffer_type not in ("PLAIN", "LIST"):
-                    flush()
-                buffer.append(raw)
-                if buffer_type is None:
-                    buffer_type = "PLAIN"
-        flush()
-        out_paragraphs.append("\n".join(out_lines))
-    return "\n\n".join(out_paragraphs)
 
 
 class ContentExtractor:
@@ -767,9 +630,6 @@ class ContentExtractor:
             cs, ce = max(s, content_start), min(e, end)
             if leaf.id in self._noise_ids:
                 substitutions.append((cs, ce, ""))
-            elif leaf.type == "figure":
-                # Hình ảnh được giữ trong landing_chunks; không ghép mô tả hình vào content.
-                substitutions.append((cs, ce, ""))
             elif leaf.type in MEDIA_TYPES:
                 full_text = self._result.markdown[s:e]
                 clipped_text = self._result.markdown[cs:ce]
@@ -786,10 +646,7 @@ class ContentExtractor:
         if pos < end:
             parts.append(self._result.markdown[pos:end])
 
-        text = _RE_PAGE_BREAK.sub(" ", "".join(parts))
-        text = _RE_HTML_COMMENT.sub(" ", text)
-        text = re.sub(r"[ \t]+", " ", text)
-        text = reflow_text(text)
+        text = re.sub(r"\n{3,}", "\n\n", "".join(parts)).strip()
         text = _RE_ORPHAN_BOLD_PAIR.sub(lambda m: m.group(1), text)
         if text.count("**") == 1:
             text = text.replace("**", "", 1)
@@ -851,7 +708,7 @@ class Phase6NodeAssembler:
             content_bboxes = BBoxAggregator.union_by_page(raw_boxes)
 
         landing_chunks = [
-            {"id": l.id, "type": l.type, "bbox": l.normalized_bbox()}
+            {"id": l.id, "type": l.type}
             for l in self._leaves
             if start is not None and end is not None and start <= l.span[0] < end and l.type in MEDIA_TYPES
         ]
@@ -881,22 +738,6 @@ class ChunkDocumentBuilder:
     def __init__(self, config: ChunkConfig) -> None:
         self._config = config
 
-    @staticmethod
-    def _prune_placeholder_leaves(nodes: list[dict]) -> None:
-        """Loại bỏ các node lá tiêu đề rỗng như 'NỘI DUNG' hoặc 'MỤC LỤC' — không mất chữ."""
-        filtered: list[dict] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                continue
-            for key in DEPTH_CHILD_KEYS.values():
-                if node.get(key):
-                    ChunkDocumentBuilder._prune_placeholder_leaves(node[key])
-            is_leaf = not any(node.get(k) for k in DEPTH_CHILD_KEYS.values())
-            if is_leaf and not node.get("content") and _RE_PLACEHOLDER_TITLE.search(node.get("title", "")):
-                continue
-            filtered.append(node)
-        nodes[:] = filtered
-
     def build(self, toc_path: Path, source_path: Path) -> dict:
         toc = json.loads(toc_path.read_text(encoding="utf-8"))
         result = ParseResult.load(source_path)
@@ -916,7 +757,6 @@ class ChunkDocumentBuilder:
         builder = Phase6NodeAssembler(result, leaves, extractor, pages)
 
         top_chunks = [builder.build(c, "") for c in chapters]
-        self._prune_placeholder_leaves(top_chunks)
         matched, reasons, empty = self._count_matches(top_chunks)
         unmatched = sum(reasons.values())
         logger.info(

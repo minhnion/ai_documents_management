@@ -54,14 +54,30 @@ def _make_tracked_caller(base_caller_class, usage_events: list[dict[str, Any]]):
             })
 
         def call(self, system: str, user: str) -> dict:
-            result = super().call(system, user)
-            self._record(self._last_response)
-            return result
+            from build_toc import JsonRepair
+
+            response = self._client.responses.create(
+                model=self._model,
+                input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                text={"format": {"type": "json_object"}},
+                temperature=0.0,
+                max_output_tokens=32000,
+            )
+            self._record(response)
+            return JsonRepair.parse(response.output_text or "")
 
         def call_structured(self, system: str, user: str, schema: dict, name: str) -> dict:
-            result = super().call_structured(system, user, schema, name)
-            self._record(self._last_response)
-            return result
+            from build_toc import JsonRepair
+
+            response = self._client.responses.create(
+                model=self._model,
+                input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                text={"format": {"type": "json_schema", "name": name, "schema": schema, "strict": True}},
+                temperature=0.0,
+                max_output_tokens=32000,
+            )
+            self._record(response)
+            return JsonRepair.parse(response.output_text or "")
 
     return _TrackedCaller
 
