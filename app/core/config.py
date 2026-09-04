@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     LOCAL_STORAGE_ROOT: str = "uploads"
     SCORE_THRESHOLD: float = 0.65
     CHUNK_MAX_CHARS: int = 3000
-    DOCUMENT_PIPELINE_MODE: str = "auto"
+    DOCUMENT_PIPELINE_MODE: str = "dpt3"
+    DPT3_MODEL: str = ""
+    LANDINGAI_ADE_ENVIRONMENT: str = "production"
 
     # API
     API_V1_PREFIX: str = "/api/v1"

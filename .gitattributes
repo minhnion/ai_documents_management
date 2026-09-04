@@ -1,0 +1,2 @@
+# Ensure Python files stay LF for Linux/Docker compatibility
+*.py text eol=lf

@@ -1,207 +1,201 @@
-"""Async wrapper around the partner-maintained 3-phase TOC pipeline.
+"""Async TOC-builder service cho DPT-3.
 
-The core logic (phase1 / phase2 / phase3 in ``toc_service.py``) is owned by
-the partner team and must NOT be modified here. This module only:
-  • Surfaces a stable async API ``TocBuilderService.build_toc(...)``.
-  • Hides blocking OpenAI calls behind a thread-pool executor.
-  • Hydrates the OpenAI client from environment variables.
+Wrapper async quanh TocBuilder / TocBuilderPipeline từ ``build_toc.py``.
+Không sửa gì logic gốc — chỉ:
+  1. sys.path được patch bởi dpt3_ocr_service khi đã loaded (dùng chung _PIPELINE_DIR).
+  2. Subclass OpenAiJsonCaller để track LLM usage mà không monkey-patch.
+  3. Chạy blocking code trong ThreadPoolExecutor.
+  4. Nhận ParseResult đã có trong artifact_dir/dpt3_ocr.json.
+  5. Ghi artifact toc_structure.json vào artifact_dir.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import os
-import threading
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from pathlib import Path
 from typing import Any
-
-from dotenv import load_dotenv
-from openai import OpenAI
-
-from app.services.pipeline import toc_service as _toc
 
 logger = logging.getLogger(__name__)
 
+_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="toc_builder_")
+
+# sys.path patch — đồng nhất với dpt3_ocr_service
+_PIPELINE_DIR = Path(__file__).parent
+if str(_PIPELINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_PIPELINE_DIR))
+
+
+TOC_FILENAME = "toc_structure.json"
+
+
+# ── Tracked caller (subclass OpenAiJsonCaller để ghi usage events) ────────────
+
+def _make_tracked_caller(base_caller_class, usage_events: list[dict[str, Any]]):
+    """Tạo instance OpenAiJsonCaller có ghi lại usage tokens."""
+
+    class _TrackedCaller(base_caller_class):
+        def _record(self, response: Any) -> None:
+            raw = getattr(response, "usage", None)
+            if raw is None:
+                return
+            def _g(obj, key, default=0):
+                return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+            details = _g(raw, "input_tokens_details") or _g(raw, "prompt_tokens_details") or {}
+            cached = _g(details, "cached_tokens") if details else 0
+            usage_events.append({
+                "input_tokens": max(0, int(_g(raw, "input_tokens"))),
+                "cached_input_tokens": max(0, int(cached)),
+                "output_tokens": max(0, int(_g(raw, "output_tokens"))),
+            })
+
+        def call(self, system: str, user: str) -> dict:
+            from build_toc import JsonRepair
+
+            response = self._client.responses.create(
+                model=self._model,
+                input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                text={"format": {"type": "json_object"}},
+                temperature=0.0,
+                max_output_tokens=32000,
+            )
+            self._record(response)
+            return JsonRepair.parse(response.output_text or "")
+
+        def call_structured(self, system: str, user: str, schema: dict, name: str) -> dict:
+            from build_toc import JsonRepair
+
+            response = self._client.responses.create(
+                model=self._model,
+                input=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                text={"format": {"type": "json_schema", "name": name, "schema": schema, "strict": True}},
+                temperature=0.0,
+                max_output_tokens=32000,
+            )
+            self._record(response)
+            return JsonRepair.parse(response.output_text or "")
+
+    return _TrackedCaller
+
+
+def _build_toc_sync(
+    dpt3_json_path: Path,
+    *,
+    api_key: str,
+    model: str,
+    output_path: Path,
+    usage_events: list[dict[str, Any]],
+) -> dict:
+    """Đồng bộ: chạy TocBuilder, lưu artifact, trả về toc dict."""
+    from openai import OpenAI
+    import build_toc as _bt
+    from build_toc import TocBuilder, TocConfig, OpenAiJsonCaller
+
+    config = TocConfig(
+        input_dir=dpt3_json_path.parent,
+        output_dir=output_path.parent,
+        model=model,
+    )
+    client = OpenAI(api_key=api_key)
+
+    # Tạo tracked caller class
+    TrackedCaller = _make_tracked_caller(OpenAiJsonCaller, usage_events)
+
+    # Monkey-patch tạm thời OpenAiJsonCaller trong module build_toc
+    original = _bt.OpenAiJsonCaller
+    _bt.OpenAiJsonCaller = TrackedCaller
+    try:
+        builder = TocBuilder(config, client)
+        toc = builder.build(dpt3_json_path)
+    finally:
+        _bt.OpenAiJsonCaller = original
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(toc, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("DPT-3 TOC artifact → %s", output_path.name)
+
+    return toc
+
 
 class TocBuilderService:
-    """Async front-end for ``toc_service.phase1/2/3``.
+    """Async front-end cho TocBuilder của DPT-3."""
 
-    Args (kwargs only):
-      raw_markdown — full OCR markdown (PAGE_BREAK markers + ADE anchors intact).
-      source_file  — original PDF filename (used in metadata + LLM prompts).
-      ade_chunks   — list of LandingAI ADE chunks (raw, with ``id`` + ``bboxes``).
-    """
-
-    _call_ai_patch_lock = threading.Lock()
-
-    def __init__(self, *, markdown_service=None) -> None:
-        # markdown_service kept for backward-compatible kwargs; not used here.
-        self._markdown_service = markdown_service
-        self.last_vlm_usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
+    def __init__(self) -> None:
         self.last_usage_events: list[dict[str, Any]] = []
 
     async def build_toc(
         self,
         *,
-        clean_text: str | None = None,
-        raw_markdown: str | None = None,
-        source_file: str,
-        ade_chunks: list[dict] | None = None,
+        parse_result,
+        artifact_dir: Path,
+        source_filename: str,
     ) -> dict:
-        markdown = raw_markdown if raw_markdown is not None else clean_text
-        if markdown is None:
-            raise ValueError("build_toc requires raw_markdown (or clean_text)")
-        toc, usage, usage_events = await self._run_blocking(
-            self._build_sync, markdown, source_file, ade_chunks or []
+        """Dựng TOC từ ParseResult.
+
+        Yêu cầu: ``artifact_dir/dpt3_ocr.json`` tồn tại (từ LandingAIOcrService).
+        Ghi ``artifact_dir/toc_structure.json`` làm artifact.
+        """
+        dpt3_json_path = artifact_dir / "dpt3_ocr.json"
+        if not dpt3_json_path.exists():
+            # Fallback nếu chưa có
+            dpt3_json_path.write_text(
+                json.dumps(parse_result.to_json(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+        toc_out_path = artifact_dir / TOC_FILENAME
+        api_key, model = self._read_env()
+
+        usage_events: list[dict[str, Any]] = []
+        toc = await self._run_blocking(
+            _build_toc_sync,
+            dpt3_json_path,
+            api_key=api_key,
+            model=model,
+            output_path=toc_out_path,
+            usage_events=usage_events,
         )
-        self.last_vlm_usage = usage
         self.last_usage_events = usage_events
         return toc
 
-    async def openai_json_completion(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-    ) -> dict:
-        return await self._run_blocking(
-            self._json_completion_sync, system_prompt, user_prompt
-        )
-
-    # ── Blocking implementations executed inside a worker thread ────────────
-
-    def _build_sync(
-        self,
-        raw_markdown: str,
-        source_file: str,
-        ade_chunks: list[dict],
-    ) -> tuple[dict, dict[str, int], list[dict[str, Any]]]:
-        client = self._make_client()
-        _toc._init_phase2_prompts()
-        usage = {"input_tokens": 0, "output_tokens": 0}
-        usage_events: list[dict[str, Any]] = []
-
-        original_call_ai = _toc.call_ai
-
-        def tracked_call_ai(client: OpenAI, system: str, user: str) -> dict:
-            try:
-                response = client.responses.create(
-                    model=_toc.MODEL,
-                    input=[
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                    text={"format": {"type": "json_object"}},
-                    temperature=0.0,
-                    max_output_tokens=32000,
-                )
-            except Exception:
-                usage_events.append({"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "status": "failed"})
-                raise
-            self._accumulate_response_usage(response, usage, usage_events)
-            return _toc.parse_json_response(response.output_text or "")
-
-        with self._call_ai_patch_lock:
-            _toc.call_ai = tracked_call_ai
-            try:
-                raw_toc, found_toc, toc_end = _toc.phase1(client, raw_markdown, source_file)
-                toc = _toc.ensure_schema(raw_toc, source_file)
-
-                if not toc.get("total_pages"):
-                    toc["total_pages"] = raw_markdown.count(_toc.PAGE_BREAK) + 1
-
-                total_pages = toc.get("total_pages") or 0
-                # The toc_service module gates Phase 2 depth heuristics off of a
-                # module-level constant, so update it before invoking Phase 2.
-                _toc.MIN_SECTION_DEPTH = (
-                    _toc.MIN_SECTION_DEPTH_LONG
-                    if total_pages >= _toc.PAGE_THRESHOLD_FOR_DEPTH
-                    else _toc.MIN_SECTION_DEPTH_SHORT
-                )
-
-                if not found_toc or _toc.toc_is_shallow(toc):
-                    try:
-                        toc = _toc.ensure_schema(
-                            _toc.phase2(
-                                client,
-                                raw_markdown,
-                                toc,
-                                source_file,
-                                body_start_page=toc_end,
-                            ),
-                            source_file,
-                        )
-                    except Exception:
-                        logger.exception("Phase 2 failed — keeping Phase 1 result")
-
-                if ade_chunks:
-                    try:
-                        toc_end_ade = _toc._compute_toc_end_ade_page(
-                            raw_markdown, ade_chunks, toc_end
-                        )
-                        toc = _toc.phase3(client, toc, ade_chunks, toc_end_page=toc_end_ade)
-                    except Exception:
-                        logger.exception(
-                            "Phase 3 mapping failed — TOC will have no heading_chunk_id"
-                        )
-            finally:
-                _toc.call_ai = original_call_ai
-                # Keep successful calls even when a later phase fails.
-                self.last_usage_events = list(usage_events)
-
-        self.last_usage_events = usage_events
-        return toc, usage, usage_events
-
-    def _json_completion_sync(self, system_prompt: str, user_prompt: str) -> dict:
-        client = self._make_client()
-        return _toc.call_ai(client, system_prompt, user_prompt)
-
-    # ── Helpers ─────────────────────────────────────────────────────────────
-
     @staticmethod
-    def _make_client() -> OpenAI:
-        load_dotenv(override=False)
-        api_key = os.getenv("OPENAI_API_KEY", "").strip().strip('"').strip("'")
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY missing — required for the TOC pipeline"
-            )
-        return OpenAI(api_key=api_key)
-
-    @staticmethod
-    def _accumulate_response_usage(
-        response: Any,
-        usage: dict[str, int],
-        usage_events: list[dict[str, Any]] | None = None,
-    ) -> None:
-        raw_usage = getattr(response, "usage", None)
-        if raw_usage is None:
+    def _accumulate_response_usage(response: Any, aggregate: dict[str, int], events: list[dict[str, int]]) -> None:
+        """Tích lũy token usage từ một OpenAI response (DPT-2 cost ledger helper)."""
+        raw = getattr(response, "usage", None)
+        if raw is None:
             return
-        input_tokens = getattr(raw_usage, "input_tokens", None)
-        output_tokens = getattr(raw_usage, "output_tokens", None)
-        cached_input_tokens = 0
-        if isinstance(raw_usage, dict):
-            input_tokens = raw_usage.get("input_tokens", input_tokens)
-            output_tokens = raw_usage.get("output_tokens", output_tokens)
-            details = raw_usage.get("input_tokens_details") or raw_usage.get("prompt_tokens_details") or {}
-            cached_input_tokens = details.get("cached_tokens", 0) if isinstance(details, dict) else 0
-        else:
-            details = getattr(raw_usage, "input_tokens_details", None) or getattr(raw_usage, "prompt_tokens_details", None)
-            cached_input_tokens = getattr(details, "cached_tokens", 0) if details is not None else 0
-        item = {
-            "input_tokens": max(0, int(input_tokens or 0)),
-            "cached_input_tokens": max(0, int(cached_input_tokens or 0)),
-            "output_tokens": max(0, int(output_tokens or 0)),
-        }
-        usage["input_tokens"] += item["input_tokens"]
-        usage["output_tokens"] += item["output_tokens"]
-        if usage_events is not None:
-            usage_events.append(item)
+
+        def _g(obj, key, default=0):
+            return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
+
+        input_tokens = max(0, int(_g(raw, "input_tokens") or _g(raw, "prompt_tokens") or 0))
+        output_tokens = max(0, int(_g(raw, "output_tokens") or _g(raw, "completion_tokens") or 0))
+        details = _g(raw, "input_tokens_details") or _g(raw, "prompt_tokens_details") or {}
+        cached = _g(details, "cached_tokens") if details else 0
+
+        aggregate["input_tokens"] = aggregate.get("input_tokens", 0) + input_tokens
+        aggregate["output_tokens"] = aggregate.get("output_tokens", 0) + output_tokens
+        events.append({
+            "input_tokens": input_tokens,
+            "cached_input_tokens": max(0, int(cached)),
+            "output_tokens": output_tokens,
+        })
 
     @staticmethod
-    async def _run_blocking(func, /, *args):
+    def _read_env() -> tuple[str, str]:
+        import os
+        from app.core.config import settings
+        api_key = settings.OPENAI_API_KEY.strip() or os.environ.get("OPENAI_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY chưa được set — cần cho DPT-3 TOC pipeline")
+        model = settings.OPENAI_MODEL_NAME.strip() or os.environ.get("TOC_MODEL", "gpt-5.1")
+        return api_key, model
+
+    @staticmethod
+    async def _run_blocking(func, /, *args, **kwargs):
         loop = asyncio.get_running_loop()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            return await loop.run_in_executor(executor, partial(func, *args))
+        return await loop.run_in_executor(_executor, partial(func, *args, **kwargs))
